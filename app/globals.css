@@ -1,26 +1,273 @@
 @import "tailwindcss";
 
+/* ==========================================
+   GOWTRAIN BRAND TOKENS
+========================================== */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --ink-black: #14171a;
+  --volt-green: #d6ff3f;
+  --action-red: #ff4b3e;
+  --stone-grey: #8a8f94;
+  --white: #ffffff;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+/* ==========================================
+   RESET
+========================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  scroll-behavior: smooth;
 }
+
+html,
+body {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+}
+
+/* ==========================================
+   BODY
+========================================== */
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--white);
+  color: var(--ink-black);
+  font-family: var(--font-inter), Arial, sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ==========================================
+   TYPOGRAPHY
+========================================== */
+
+/* Voor Anton: headings, labels en knoppen */
+.font-display {
+  font-family: var(--font-anton), Impact, sans-serif;
+  line-height: 0.95;
+  text-transform: uppercase;
+}
+
+/* Voor Inter: normale bodytekst */
+.font-body {
+  font-family: var(--font-inter), Arial, sans-serif;
+}
+
+/* ==========================================
+   DEFAULT ELEMENTS
+========================================== */
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  font-family: var(--font-anton), Impact, sans-serif;
+  line-height: 0.95;
+  text-transform: uppercase;
+}
+
+p {
+  margin: 0;
+  line-height: 1.7;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  cursor: pointer;
+  font: inherit;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+::selection {
+  background-color: var(--volt-green);
+  color: var(--ink-black);
+}
+
+/* ==========================================
+   GOWTRAIN TEKST HELPERS
+========================================== */
+
+.text-gow-black {
+  color: var(--ink-black);
+}
+
+.text-gow-green {
+  color: var(--volt-green);
+}
+
+.text-gow-red {
+  color: var(--action-red);
+}
+
+.text-gow-grey {
+  color: var(--stone-grey);
+}
+
+/* ==========================================
+   GOWTRAIN BACKGROUND HELPERS
+========================================== */
+
+.bg-gow-black {
+  background-color: var(--ink-black);
+}
+
+.bg-gow-green {
+  background-color: var(--volt-green);
+}
+
+.bg-gow-red {
+  background-color: var(--action-red);
+}
+
+.bg-gow-white {
+  background-color: var(--white);
+}
+
+/* ==========================================
+   BUTTONS
+========================================== */
+
+.btn-gow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background-color: var(--action-red);
+  color: var(--white);
+  padding: 14px 28px;
+  font-family: var(--font-anton), Impact, sans-serif;
+  font-size: 1rem;
+  line-height: 1;
+  text-transform: uppercase;
+  transition:
+    transform 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.btn-gow:hover {
+  transform: translateY(-2px);
+  background-color: var(--volt-green);
+  color: var(--ink-black);
+}
+
+.btn-dark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background-color: var(--ink-black);
+  color: var(--volt-green);
+  padding: 14px 28px;
+  font-family: var(--font-anton), Impact, sans-serif;
+  font-size: 1rem;
+  line-height: 1;
+  text-transform: uppercase;
+  transition:
+    transform 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.btn-dark:hover {
+  transform: translateY(-2px);
+  background-color: var(--volt-green);
+  color: var(--ink-black);
+}
+
+.btn-outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--ink-black);
+  background-color: transparent;
+  color: var(--ink-black);
+  padding: 12px 26px;
+  font-family: var(--font-anton), Impact, sans-serif;
+  font-size: 1rem;
+  line-height: 1;
+  text-transform: uppercase;
+  transition:
+    transform 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.btn-outline:hover {
+  transform: translateY(-2px);
+  background-color: var(--ink-black);
+  color: var(--white);
+}
+
+.btn-outline-light {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--white);
+  background-color: transparent;
+  color: var(--white);
+  padding: 12px 26px;
+  font-family: var(--font-anton), Impact, sans-serif;
+  font-size: 1rem;
+  line-height: 1;
+  text-transform: uppercase;
+  transition:
+    transform 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.btn-outline-light:hover {
+  transform: translateY(-2px);
+  background-color: var(--white);
+  color: var(--ink-black);
+}
+
+/* ==========================================
+   SECTION HELPER
+========================================== */
+
+.section {
+  padding-top: 100px;
+  padding-bottom: 100px;
+}
+
+/* ==========================================
+   ACCESSIBILITY
+========================================== */
+
+:focus-visible {
+  outline: 3px solid var(--volt-green);
+  outline-offset: 4px;
+}
+
+/* ==========================================
+   MOBILE
+========================================== */
+
+@media (max-width: 768px) {
+  .section {
+    padding-top: 72px;
+    padding-bottom: 72px;
+  }
 }
