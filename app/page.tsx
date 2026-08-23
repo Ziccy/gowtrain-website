@@ -132,7 +132,7 @@ export default function Home() {
 
             <a
               href="#spelers"
-              className="bg-[#FF4B3E] px-4 py-3 font-display text-sm text-white transition hover:bg-[#D6FF3F] hover:text-[#14171A] sm:px-5"
+              className="bg-[#FF4B3E] px-4 py-3 font-display text-sm text-white transition hover:bg-[#D6FF3F] hover:!text-[#14171A] sm:px-5"
             >
               GOW!
             </a>
@@ -160,13 +160,12 @@ export default function Home() {
                 </p>
 
                 <p className="max-w-sm border-l-2 border-[#FF4B3E] pl-5 text-base leading-relaxed text-[#D7D9DA] sm:mt-2 sm:text-lg">
-                  Vind de trainer die bij jou past. Kies je moment. Sta sneller
-                  op de baan.
-                </p>
+  Download GowTrain, vind trainers in jouw buurt en boek je les rechtstreeks in de app.
+</p>
               </div>
 
               {/* Hero buttons */}
-              <div className="mt-10 flex flex-col gap-4 sm:flex-row">
+<div className="mt-10 flex flex-col gap-4 sm:flex-row">
   <a
     href="#spelers"
     className="inline-flex items-center justify-center gap-4 bg-[#FF4B3E] px-7 py-5 font-display text-xl text-white transition duration-200 hover:-translate-y-1 hover:bg-[#D6FF3F] hover:!text-[#14171A]"
@@ -187,6 +186,7 @@ export default function Home() {
     </span>
   </a>
 </div>
+
             </div>
 
             {/* TOM PEETERS TRAINERKAART */}
@@ -308,6 +308,91 @@ export default function Home() {
           </div>
         </div>
       </section>
+
+
+{/* DOWNLOAD DE APP */}
+<section
+  id="download"
+  className="relative overflow-hidden bg-[#14171A] py-20 text-white sm:py-28"
+>
+  <div
+    aria-hidden="true"
+    className="pointer-events-none absolute -right-10 -top-24 select-none font-display text-[18rem] leading-none text-[#D6FF3F] opacity-[0.06] sm:text-[28rem]"
+  >
+    APP
+  </div>
+
+  <div className="relative mx-auto grid max-w-7xl gap-12 px-5 sm:px-8 lg:grid-cols-[1fr_0.8fr] lg:items-end">
+    <div>
+      <p className="font-display text-lg text-[#FF4B3E]">
+        ALLES IN ÉÉN APP
+      </p>
+
+      <h2 className="mt-4 max-w-4xl font-display text-6xl leading-[0.83] sm:text-7xl lg:text-8xl">
+        JOUW TRAINING.
+        <br />
+        JOUW MOMENT.
+        <br />
+        GOW!
+      </h2>
+
+      <p className="mt-8 max-w-xl text-lg leading-relaxed text-[#D7D9DA] sm:text-xl">
+        Zoek trainers, vergelijk specialisaties, bekijk beschikbaarheid en
+        boek je les. Alles regel je snel en overzichtelijk in de GowTrain-app.
+      </p>
+
+      <div className="mt-10 flex flex-col gap-4 sm:flex-row">
+        {/* Vervang href later door de echte Apple App Store-link */}
+        <a
+  href="#"
+  className="inline-flex items-center justify-center gap-3 bg-white px-6 py-4 font-display text-lg !text-[#14171A] transition hover:-translate-y-1 hover:bg-[#D6FF3F] hover:!text-[#14171A]"
+>
+  DOWNLOAD VOOR IOS
+  <span aria-hidden="true" className="text-inherit">
+    →
+  </span>
+</a>
+
+        {/* Vervang href later door de echte Google Play-link */}
+        <a
+          href="#"
+          className="inline-flex items-center justify-center gap-3 border-2 border-white px-6 py-4 font-display text-lg text-white transition hover:-translate-y-1 hover:bg-white hover:!text-[#14171A]"
+        >
+          DOWNLOAD VOOR ANDROID
+          <span aria-hidden="true" className="text-inherit">
+            →
+          </span>
+        </a>
+      </div>
+
+      <p className="mt-5 text-sm text-[#8A8F94]">
+        Binnenkort beschikbaar in de App Store en Google Play.
+      </p>
+    </div>
+
+{/* iPhone-preview: onderkant bewust afgesneden zonder zichtbare lijn */}
+<div className="relative mx-auto h-[560px] w-full max-w-[380px] overflow-hidden">
+  {/* Telefoon loopt onderaan door buiten de zichtbare container */}
+  <div className="relative min-h-[760px] rounded-t-[3.5rem] border-x-[8px] border-t-[8px] border-[#2A2E31] bg-[#14171A] p-[7px]">
+    {/* Dynamic Island */}
+    <div
+      aria-hidden="true"
+      className="absolute left-1/2 top-5 z-20 h-[26px] w-[118px] -translate-x-1/2 rounded-full bg-[#050607]"
+    />
+
+    {/* App screenshot */}
+    <div className="h-[745px] overflow-hidden rounded-t-[2.85rem] bg-[#14171A]">
+      <img
+        src="/images/gowtrain-app.png"
+        alt="GowTrain app waarin je een trainer en beschikbaar moment kiest"
+        className="h-full w-full object-cover object-top"
+      />
+    </div>
+  </div>
+</div>
+  </div>
+</section>
+
 
       {/* TRAINER OVERZICHT */}
       <section
@@ -518,76 +603,183 @@ export default function Home() {
 <section className="bg-white py-20 text-[#14171A] sm:py-28">
   <div className="mx-auto flex max-w-7xl flex-col items-center px-5 text-center sm:px-8">
     <p className="font-display text-lg text-[#FF4B3E]">
-      JOUW VOLGENDE TRAINING WACHT
+      DOWNLOAD DE APP. GOW!
     </p><br></br>
 
     <h2 className="mt-5 w-full max-w-5xl font-display text-6xl leading-[0.83] sm:text-7xl lg:text-8xl">
-      <span className="block text-center">STA JIJ</span>
-      <span className="block text-center">STRAKS OP DE BAAN?</span>
+      <span className="block text-center">JOUW VOLGENDE</span>
+<span className="block text-center">TRAINING BEGINT HIER.</span>
     </h2>
 
-    <a
-      href="#trainers-overzicht"
-      className="mt-10 inline-flex items-center gap-4 bg-[#FF4B3E] px-8 py-5 font-display text-xl text-white transition hover:-translate-y-1 hover:bg-[#14171A] hover:!text-white"
-    >
-      VIND JE TRAINER. GOW!
-      <span aria-hidden="true" className="text-inherit">
-        →
-      </span>
-    </a>
+<div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
+  <a
+    href="#"
+    className="inline-flex w-full items-center justify-center gap-4 bg-[#FF4B3E] px-8 py-5 font-display text-xl text-white transition hover:-translate-y-1 hover:bg-[#14171A] hover:!text-white sm:w-auto"
+  >
+    DOWNLOAD VOOR IOS
+    <span aria-hidden="true" className="text-inherit">
+      →
+    </span>
+  </a>
+
+  <a
+    href="#"
+    className="inline-flex w-full items-center justify-center gap-4 border-2 border-[#14171A] px-8 py-5 font-display text-xl text-[#14171A] transition hover:-translate-y-1 hover:bg-[#14171A] hover:!text-white sm:w-auto"
+  >
+    DOWNLOAD VOOR ANDROID
+    <span aria-hidden="true" className="text-inherit">
+      →
+    </span>
+  </a>
+</div>
   </div>
 </section>
 
       {/* FOOTER */}
-      <footer className="bg-[#14171A] text-white">
-        <div className="mx-auto max-w-7xl px-5 py-10 sm:px-8">
-          <div className="flex flex-col justify-between gap-10 border-b border-white/20 pb-10 md:flex-row md:items-start">
-            <a
-              href="#home"
-              aria-label="GowTrain home"
-              className="inline-flex items-center gap-2"
-            >
-              <span className="font-display text-4xl leading-none text-[#D6FF3F]">
-                GOWTRAIN
-              </span>
+<footer className="bg-[#14171A] text-white">
+  <div className="mx-auto max-w-7xl px-5 py-10 sm:px-8">
+    <div className="flex flex-col justify-between gap-10 border-b border-white/20 pb-10 md:flex-row md:items-start">
+      {/* Linkerkant: logo + download badges */}
+      <div className="flex flex-col items-start gap-6">
+        <a
+          href="#home"
+          aria-label="GowTrain home"
+          className="inline-flex items-center gap-2"
+        >
+          <span className="font-display text-4xl leading-none text-[#D6FF3F]">
+            GOWTRAIN
+          </span>
 
-              <span className="mt-1 h-0 w-0 border-b-[11px] border-l-[9px] border-t-[11px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
-            </a>
+          <span className="mt-1 h-0 w-0 border-b-[11px] border-l-[9px] border-t-[11px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
+        </a>
 
-            <div className="grid grid-cols-2 gap-x-12 gap-y-4 font-display text-lg sm:flex sm:gap-8">
-              <a href="#spelers" className="transition hover:text-[#D6FF3F]">
-                SPELERS
-              </a>
+        {/* App Store / Google Play badges */}
+        <div className="flex flex-wrap items-center gap-3">
+          <a
+            href="#"
+            aria-label="Download GowTrain in de App Store"
+            className="transition duration-200 hover:-translate-y-1 hover:opacity-85"
+          >
+            <img
+              src="/images/apple.png"
+              alt="Download on the App Store"
+              className="h-11 w-auto"
+            />
+          </a>
 
-              <a href="#trainers" className="transition hover:text-[#D6FF3F]">
-                TRAINERS
-              </a>
-
-              <a
-                href="mailto:info@gowtrain.nl"
-                className="transition hover:text-[#D6FF3F]"
-              >
-                CONTACT
-              </a>
-
-              <a
-                href="/privacy"
-                className="transition hover:text-[#D6FF3F]"
-              >
-                PRIVACY
-              </a>
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-3 pt-6 text-sm text-[#8A8F94] sm:flex-row sm:items-center sm:justify-between">
-            <p>
-              © {new Date().getFullYear()} GowTrain. Alle rechten voorbehouden.
-            </p>
-
-            <p>TRAINERS VINDEN. BOEKEN. GOW!</p>
-          </div>
+          <a
+            href="#"
+            aria-label="Download GowTrain via Google Play"
+            className="transition duration-200 hover:-translate-y-1 hover:opacity-85"
+          >
+            <img
+              src="/images/google.png"
+              alt="Get it on Google Play"
+              className="h-11 w-auto"
+            />
+          </a>
         </div>
-      </footer>
+      </div>
+
+{/* Rechterkant: navigatie + socials */}
+<div className="flex flex-col items-start gap-7 md:items-end">
+  <nav className="grid grid-cols-2 gap-x-12 gap-y-4 font-display text-lg sm:flex sm:gap-8">
+    <a href="#spelers" className="transition hover:text-[#D6FF3F]">
+      SPELERS
+    </a>
+
+    <a href="#trainers" className="transition hover:text-[#D6FF3F]">
+      TRAINERS
+    </a>
+
+    <a
+      href="mailto:info@gowtrain.nl"
+      className="transition hover:text-[#D6FF3F]"
+    >
+      CONTACT
+    </a>
+
+    <a href="/privacy" className="transition hover:text-[#D6FF3F]">
+      PRIVACY
+    </a>
+  </nav>
+
+  {/* Social media */}
+  <div className="flex items-center gap-3">
+    {/* Facebook */}
+    <a
+      href="#"
+      aria-label="Volg GowTrain op Facebook"
+      className="flex h-10 w-10 items-center justify-center border-2 border-white text-white transition hover:-translate-y-1 hover:border-[#D6FF3F] hover:bg-[#D6FF3F]  hover:!text-[#14171A]"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+        className="h-5 w-5 fill-current"
+      >
+        <path d="M13.5 21v-8h2.7l.4-3.1h-3.1V7.93c0-.9.25-1.51 1.54-1.51h1.65V3.65c-.29-.04-1.27-.12-2.42-.12-2.4 0-4.04 1.47-4.04 4.17V9.9H7.5V13h2.71v8h3.29Z" />
+      </svg>
+    </a>
+
+    {/* Instagram */}
+    <a
+      href="#"
+      aria-label="Volg GowTrain op Instagram"
+      className="flex h-10 w-10 items-center justify-center border-2 border-white text-white transition hover:-translate-y-1 hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:!text-[#14171A]"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+        className="h-5 w-5 fill-none stroke-current stroke-[2]"
+      >
+        <rect x="3" y="3" width="18" height="18" rx="5" />
+        <circle cx="12" cy="12" r="4" />
+        <circle cx="17.5" cy="6.5" r="1" className="fill-current stroke-none" />
+      </svg>
+    </a>
+
+    {/* TikTok */}
+    <a
+      href="#"
+      aria-label="Volg GowTrain op TikTok"
+      className="flex h-10 w-10 items-center justify-center border-2 border-white text-white transition hover:-translate-y-1 hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:!text-[#14171A]"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+        className="h-5 w-5 fill-current"
+      >
+        <path d="M16.73 5.3c.64.73 1.58 1.24 2.7 1.31v3.04a7.18 7.18 0 0 1-2.67-.52v5.96a5.4 5.4 0 1 1-5.4-5.4c.2 0 .4.01.6.04v3.02a2.38 2.38 0 1 0 1.78 2.3V3h2.99c0 .83.28 1.62 1 2.3Z" />
+      </svg>
+    </a>
+
+    {/* YouTube */}
+    <a
+      href="#"
+      aria-label="Volg GowTrain op YouTube"
+      className="flex h-10 w-10 items-center justify-center border-2 border-white text-white transition hover:-translate-y-1 hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:!text-[#14171A]"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+        className="h-5 w-5 fill-current"
+      >
+        <path d="M21.58 7.19a2.97 2.97 0 0 0-2.09-2.1C17.65 4.6 12 4.6 12 4.6s-5.65 0-7.49.49a2.97 2.97 0 0 0-2.09 2.1C1.93 9.03 1.93 12 1.93 12s0 2.97.49 4.81a2.97 2.97 0 0 0 2.09 2.1c1.84.49 7.49.49 7.49.49s5.65 0 7.49-.49a2.97 2.97 0 0 0 2.09-2.1c.49-1.84.49-4.81.49-4.81s0-2.97-.49-4.81ZM9.9 15.02V8.98L15.16 12 9.9 15.02Z" />
+      </svg>
+    </a>
+  </div>
+</div>
+    </div>
+
+    <div className="flex flex-col gap-3 pt-6 text-sm text-[#8A8F94] sm:flex-row sm:items-center sm:justify-between">
+      <p>
+        © {new Date().getFullYear()} GowTrain. Alle rechten voorbehouden.
+      </p>
+
+      <p>TRAINERS VINDEN. BOEKEN. GOW!</p>
+    </div>
+  </div>
+</footer>
     </main>
   );
 }
