@@ -88,9 +88,6 @@ function BookingSuccesContent() {
     setErrorMessage("");
 
     try {
-      /*
-        RLS zorgt ervoor dat een speler alleen een eigen booking kan zien.
-      */
       const { data, error } = await supabase
         .from("bookings")
         .select(
@@ -266,14 +263,14 @@ function BookingSuccesContent() {
               <div className="mt-8 flex flex-col gap-3 sm:flex-row">
                 <Link
                   href="/mijn-boekingen"
-                  className="inline-flex items-center justify-center bg-[#14171A] px-5 py-4 font-display text-base text-white transition hover:bg-white hover:text-[#14171A]"
+                  className="inline-flex items-center justify-center bg-[#14171A] px-5 py-4 font-display text-base !text-white transition hover:bg-white hover:!text-[#14171A]"
                 >
                   MIJN BOEKINGEN →
                 </Link>
 
                 <Link
                   href="/trainers"
-                  className="inline-flex items-center justify-center border-2 border-[#14171A] px-5 py-4 font-display text-base text-[#14171A] transition hover:bg-[#14171A] hover:text-white"
+                  className="inline-flex items-center justify-center border-2 border-[#14171A] bg-transparent px-5 py-4 font-display text-base !text-[#14171A] transition hover:bg-[#14171A] hover:!text-white"
                 >
                   BEKIJK MEER TRAINERS
                 </Link>
@@ -305,14 +302,14 @@ function BookingSuccesContent() {
                         void loadBooking(checkoutSessionId);
                       }
                     }}
-                    className="bg-[#D6FF3F] px-5 py-4 font-display text-base text-[#14171A] transition hover:bg-white"
+                    className="bg-[#D6FF3F] px-5 py-4 font-display text-base !text-[#14171A] font-bold transition hover:bg-white"
                   >
                     ↻ OPNIEUW CONTROLEREN
                   </button>
 
                   <Link
                     href="/mijn-boekingen"
-                    className="inline-flex items-center justify-center border-2 border-white px-5 py-4 font-display text-base text-white transition hover:bg-white hover:text-[#14171A]"
+                    className="inline-flex items-center justify-center border-2 border-white bg-transparent px-5 py-4 font-display text-base !text-white transition hover:bg-white hover:!text-[#14171A]"
                   >
                     MIJN BOEKINGEN →
                   </Link>

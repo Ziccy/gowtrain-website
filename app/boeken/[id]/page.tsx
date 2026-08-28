@@ -849,7 +849,7 @@ function BoekenContent() {
                   type="button"
                   onClick={() => void handleCheckout()}
                   disabled={openingCheckout}
-                  className="inline-flex items-center justify-center gap-3 bg-[#14171A] px-6 py-4 font-display text-lg text-white transition hover:bg-white hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex items-center justify-center gap-3 bg-[#14171A] px-6 py-4 font-display text-lg !text-white transition hover:bg-white hover:!text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {openingCheckout
                     ? "BETAALPAGINA OPENEN..."
@@ -862,7 +862,7 @@ function BoekenContent() {
 
                 <Link
                   href={`/trainers/${trainer.id}`}
-                  className="inline-flex items-center justify-center border-2 border-[#14171A] px-5 py-4 font-display text-base text-[#14171A] transition hover:bg-[#14171A] hover:text-white"
+                  className="inline-flex items-center justify-center border-2 border-[#14171A] bg-transparent px-5 py-4 font-display text-base !text-[#14171A] transition hover:bg-[#14171A] hover:!text-white"
                 >
                   TERUG NAAR TRAINER
                 </Link>
