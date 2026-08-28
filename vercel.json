@@ -2,11 +2,11 @@
   "crons": [
     {
       "path": "/api/cron/release-expired-holds",
-      "schedule": "*/5 * * * *"
+      "schedule": "0 3 * * *"
     },
     {
       "path": "/api/cron/trainer-payouts",
-      "schedule": "0 * * * *"
+      "schedule": "0 4 * * *"
     }
   ]
 }
