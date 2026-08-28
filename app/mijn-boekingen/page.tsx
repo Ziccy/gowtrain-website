@@ -207,6 +207,7 @@ export default function MijnBoekingenPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [cancellingBookingId, setCancellingBookingId] = useState<string | null>();
+  const [payingBookingId, setPayingBookingId] = useState<string | null>();
 
   const [pendingCancellation, setPendingCancellation] = useState<PlayerBooking | null>();
   const [pendingIssueBooking, setPendingIssueBooking] = useState<PlayerBooking | null>();
@@ -408,6 +409,52 @@ export default function MijnBoekingenPage() {
     clearMessages();
     await loadPlayerBookings(false);
     setRefreshing(false);
+  }
+
+  async function handleCheckout(bookingId: string): Promise<void> {
+    setPayingBookingId(bookingId);
+    clearMessages();
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        router.replace("/speler-login");
+        return;
+      }
+
+      const response = await fetch("/api/stripe/checkout/create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ bookingId }),
+      });
+
+      const result = (await response.json()) as {
+        checkoutUrl?: string;
+        error?: string;
+      };
+
+      if (!response.ok || !result.checkoutUrl) {
+        console.error("Stripe Checkout fout:", result.error);
+        showError(
+          result.error ||
+            "De betaalpagina kon niet worden geopend. Probeer het opnieuw."
+        );
+        return;
+      }
+
+      window.location.href = result.checkoutUrl;
+    } catch (error) {
+      console.error("Onverwachte Checkout-fout:", error);
+      showError("De betaalpagina kon niet worden geopend. Probeer het opnieuw.");
+    } finally {
+      setPayingBookingId(null);
+    }
   }
 
   function openCancellationConfirmation(booking: PlayerBooking): void {
@@ -872,14 +919,18 @@ export default function MijnBoekingenPage() {
                               )}
                             </div>
 
-                            {/* DIREKTE BETAALKNOP ALS BETALING OPEN STAAT */}
-                            {booking.status === "payment_pending" && trainer && (
-                              <Link
-                                href={`/boeken/${trainer.id}`}
-                                className="mt-6 flex w-full items-center justify-center gap-2 bg-[#D6FF3F] px-4 py-3.5 font-display text-lg text-[#14171A] transition hover:bg-white"
+                            {/* DIRECTE BETAALKNOP MET STRIPE CHECKOUT INTEGRATIE */}
+                            {booking.status === "payment_pending" && (
+                              <button
+                                type="button"
+                                disabled={payingBookingId === booking.id}
+                                onClick={() => void handleCheckout(booking.id)}
+                                className="mt-6 flex w-full items-center justify-center gap-2 bg-[#D6FF3F] px-4 py-3.5 font-display text-lg !text-[#14171A] font-bold transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
                               >
-                                ROND BETALING AF. GOW! →
-                              </Link>
+                                {payingBookingId === booking.id
+                                  ? "BETAALPAGINA OPENEN..."
+                                  : "ROND BETALING AF. GOW! →"}
+                              </button>
                             )}
 
                             {/* ANNULEERKNOP */}
@@ -912,7 +963,7 @@ export default function MijnBoekingenPage() {
                               <div className="mt-5 pt-2 border-t border-white/10 flex justify-between items-center">
                                 <Link
                                   href={`/trainers/${trainer.id}`}
-                                  className="font-display text-xs text-[#D6FF3F] transition hover:text-white"
+                                  className="font-display text-xs text-[#D6FF3F] transition hover:text-[#FF4B3E]"
                                 >
                                   PROFIEL TRAINER →
                                 </Link>
