@@ -1,8 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import {
+  useParams,
+  useRouter,
+  useSearchParams,
+} from "next/navigation";
+import {
+  Suspense,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
@@ -68,10 +77,18 @@ function getTrainerInitials(trainer: Trainer): string {
   }
 
   const nameParts = trainer.name.trim().split(" ").filter(Boolean);
-  if (nameParts.length === 0) return "GT";
-  if (nameParts.length === 1) return nameParts[0].slice(0, 2).toUpperCase();
 
-  return `${nameParts[0][0]}${nameParts[nameParts.length - 1][0]}`.toUpperCase();
+  if (nameParts.length === 0) {
+    return "GT";
+  }
+
+  if (nameParts.length === 1) {
+    return nameParts[0].slice(0, 2).toUpperCase();
+  }
+
+  return `${nameParts[0][0]}${
+    nameParts[nameParts.length - 1][0]
+  }`.toUpperCase();
 }
 
 function formatDate(value: string): string {
@@ -113,45 +130,74 @@ function getTrainerLocation(trainer: Trainer): string {
   if (trainer.city && trainer.province) {
     return `${trainer.city} · ${trainer.province}`;
   }
-  if (trainer.city) return trainer.city;
-  if (trainer.province) return trainer.province;
+
+  if (trainer.city) {
+    return trainer.city;
+  }
+
+  if (trainer.province) {
+    return trainer.province;
+  }
+
   return "Locatie volgt";
 }
 
 function getVenueLabel(venue: VenueSummary | null): string {
-  if (!venue) return "LOCATIE VOLGT";
+  if (!venue) {
+    return "LOCATIE VOLGT";
+  }
+
   return `${venue.city.toUpperCase()} — ${venue.name}`;
 }
 
-function getRedirectPath(trainerId: string | undefined, slotId?: string | null): string {
-  if (!trainerId) return "/trainers";
-  if (slotId) return `/boeken/${trainerId}?slot=${slotId}`;
+function getRedirectPath(
+  trainerId: string | undefined,
+  slotId?: string | null
+): string {
+  if (!trainerId) {
+    return "/trainers";
+  }
+
+  if (slotId) {
+    return `/boeken/${trainerId}?slot=${slotId}`;
+  }
+
   return `/boeken/${trainerId}`;
 }
 
-export default function BoekenPage() {
+function BoekenContent() {
   const params = useParams<{ id: string }>();
   const searchParams = useSearchParams();
   const router = useRouter();
 
-  const trainerId = Array.isArray(params.id) ? params.id[0] : params.id;
+  const trainerId = Array.isArray(params.id)
+    ? params.id[0]
+    : params.id;
+
   const requestedSlotId = searchParams.get("slot");
 
-  const [player, setPlayer] = useState<AuthenticatedPlayer | null>();
+  const [player, setPlayer] =
+    useState<AuthenticatedPlayer | null>();
   const [trainer, setTrainer] = useState<Trainer | null>();
   const [slots, setSlots] = useState<AvailabilitySlot[]>([]);
 
-  const [selectedSlotId, setSelectedSlotId] = useState<string>("");
-  const [participantCount, setParticipantCount] = useState<number>(1);
+  const [selectedSlotId, setSelectedSlotId] =
+    useState<string>("");
+  const [participantCount, setParticipantCount] =
+    useState<number>(1);
 
-  const [bookingHold, setBookingHold] = useState<BookingHold | null>();
+  const [bookingHold, setBookingHold] =
+    useState<BookingHold | null>();
 
   const [loading, setLoading] = useState<boolean>(true);
   const [booking, setBooking] = useState<boolean>(false);
-  const [openingCheckout, setOpeningCheckout] = useState<boolean>(false);
+  const [openingCheckout, setOpeningCheckout] =
+    useState<boolean>(false);
 
-  const [errorMessage, setErrorMessage] = useState<string>("");
-  const [successMessage, setSuccessMessage] = useState<string>("");
+  const [errorMessage, setErrorMessage] =
+    useState<string>("");
+  const [successMessage, setSuccessMessage] =
+    useState<string>("");
 
   useEffect(() => {
     if (!trainerId) {
@@ -163,12 +209,21 @@ export default function BoekenPage() {
     void initializeBookingPage(trainerId);
   }, [trainerId]);
 
-  const selectedSlot = useMemo((): AvailabilitySlot | null => {
-    return slots.find((slot) => slot.id === selectedSlotId) ?? null;
-  }, [slots, selectedSlotId]);
+  const selectedSlot = useMemo(
+    (): AvailabilitySlot | null => {
+      return (
+        slots.find((slot) => slot.id === selectedSlotId) ??
+        null
+      );
+    },
+    [slots, selectedSlotId]
+  );
 
   const participantOptions = useMemo(() => {
-    if (!selectedSlot) return [1];
+    if (!selectedSlot) {
+      return [1];
+    }
+
     return Array.from(
       { length: selectedSlot.max_participants },
       (_, index) => index + 1
@@ -181,11 +236,21 @@ export default function BoekenPage() {
   }
 
   function redirectToPlayerLogin(): void {
-    const redirectTo = getRedirectPath(trainerId, requestedSlotId);
-    router.replace(`/speler-login?redirectTo=${encodeURIComponent(redirectTo)}`);
+    const redirectTo = getRedirectPath(
+      trainerId,
+      requestedSlotId
+    );
+
+    router.replace(
+      `/speler-login?redirectTo=${encodeURIComponent(
+        redirectTo
+      )}`
+    );
   }
 
-  async function initializeBookingPage(selectedTrainerId: string): Promise<void> {
+  async function initializeBookingPage(
+    selectedTrainerId: string
+  ): Promise<void> {
     setLoading(true);
     setErrorMessage("");
 
@@ -210,14 +275,21 @@ export default function BoekenPage() {
         return;
       }
 
-      const { data: profileData, error: profileError } = await supabase
+      const {
+        data: profileData,
+        error: profileError,
+      } = await supabase
         .from("profiles")
         .select("full_name, role")
         .eq("id", user.id)
         .maybeSingle();
 
       if (profileError || !profileData) {
-        console.error("Spelerprofiel ophalen fout:", profileError?.message);
+        console.error(
+          "Spelerprofiel ophalen fout:",
+          profileError?.message
+        );
+
         await supabase.auth.signOut();
         redirectToPlayerLogin();
         return;
@@ -239,20 +311,33 @@ export default function BoekenPage() {
       setPlayer({
         id: user.id,
         email: user.email,
-        fullName: profile.full_name?.trim() || user.email.split("@")[0],
+        fullName:
+          profile.full_name?.trim() ||
+          user.email.split("@")[0],
       });
 
       await loadTrainerAndSlots(selectedTrainerId);
     } catch (error) {
-      console.error("Onverwachte boekingspagina-fout:", error);
-      setErrorMessage("De boekingspagina kon niet worden geladen. Probeer het opnieuw.");
+      console.error(
+        "Onverwachte boekingspagina-fout:",
+        error
+      );
+
+      setErrorMessage(
+        "De boekingspagina kon niet worden geladen. Probeer het opnieuw."
+      );
     } finally {
       setLoading(false);
     }
   }
 
-  async function loadTrainerAndSlots(selectedTrainerId: string): Promise<void> {
-    const { data: trainerData, error: trainerError } = await supabase
+  async function loadTrainerAndSlots(
+    selectedTrainerId: string
+  ): Promise<void> {
+    const {
+      data: trainerData,
+      error: trainerError,
+    } = await supabase
       .from("trainers")
       .select(
         `
@@ -272,16 +357,26 @@ export default function BoekenPage() {
       .single();
 
     if (trainerError || !trainerData) {
-      console.error("Trainer ophalen fout:", trainerError?.message);
+      console.error(
+        "Trainer ophalen fout:",
+        trainerError?.message
+      );
+
       setTrainer(null);
       setSlots([]);
-      setErrorMessage("Deze trainer is niet gevonden of niet beschikbaar.");
+      setErrorMessage(
+        "Deze trainer is niet gevonden of niet beschikbaar."
+      );
+
       return;
     }
 
     setTrainer(trainerData as Trainer);
 
-    const { data: slotData, error: slotError } = await supabase
+    const {
+      data: slotData,
+      error: slotError,
+    } = await supabase
       .from("availability_slots")
       .select(
         `
@@ -307,17 +402,30 @@ export default function BoekenPage() {
       .order("starts_at", { ascending: true });
 
     if (slotError) {
-      console.error("Slots ophalen fout:", slotError.message);
+      console.error(
+        "Slots ophalen fout:",
+        slotError.message
+      );
+
       setSlots([]);
-      setErrorMessage("De beschikbare momenten konden niet worden geladen.");
+      setErrorMessage(
+        "De beschikbare momenten konden niet worden geladen."
+      );
+
       return;
     }
 
-    const availableSlots = (slotData ?? []) as unknown as AvailabilitySlot[];
+    const availableSlots =
+      (slotData ?? []) as unknown as AvailabilitySlot[];
+
     setSlots(availableSlots);
 
-    /* 💡 SLIMME SELECTIE: Kies het opgevraagde slot uit de URL, of anders het allereerste slot */
-    if (requestedSlotId && availableSlots.some((s) => s.id === requestedSlotId)) {
+    if (
+      requestedSlotId &&
+      availableSlots.some(
+        (slot) => slot.id === requestedSlotId
+      )
+    ) {
       setSelectedSlotId(requestedSlotId);
     } else if (availableSlots.length > 0) {
       setSelectedSlotId(availableSlots[0].id);
@@ -330,9 +438,12 @@ export default function BoekenPage() {
     setSelectedSlotId(slotId);
 
     const slot = slots.find((item) => item.id === slotId);
+
     if (slot) {
       setParticipantCount((currentCount) =>
-        currentCount > slot.max_participants ? 1 : currentCount
+        currentCount > slot.max_participants
+          ? 1
+          : currentCount
       );
     }
   }
@@ -371,18 +482,26 @@ export default function BoekenPage() {
     setBooking(true);
 
     try {
-      const { data, error } = await supabase.rpc("create_booking_hold", {
-        p_slot_id: selectedSlot.id,
-        p_participant_count: participantCount,
-        p_player_name: player.fullName,
-      });
+      const { data, error } = await supabase.rpc(
+        "create_booking_hold",
+        {
+          p_slot_id: selectedSlot.id,
+          p_participant_count: participantCount,
+          p_player_name: player.fullName,
+        }
+      );
 
       if (error) {
-        console.error("Tijdelijke reservering fout:", error.message);
+        console.error(
+          "Tijdelijke reservering fout:",
+          error.message
+        );
+
         setErrorMessage(
           error.message ||
             "Dit moment kon niet tijdelijk worden gereserveerd. Kies een ander moment."
         );
+
         await loadTrainerAndSlots(trainer.id);
         return;
       }
@@ -391,8 +510,14 @@ export default function BoekenPage() {
         Array.isArray(data) ? data[0] : data
       ) as CreateBookingHoldResult | null;
 
-      if (!result?.booking_id || !result.hold_expires_at) {
-        setErrorMessage("Je reservering kon niet worden aangemaakt. Probeer het opnieuw.");
+      if (
+        !result?.booking_id ||
+        !result.hold_expires_at
+      ) {
+        setErrorMessage(
+          "Je reservering kon niet worden aangemaakt. Probeer het opnieuw."
+        );
+
         await loadTrainerAndSlots(trainer.id);
         return;
       }
@@ -409,13 +534,21 @@ export default function BoekenPage() {
       );
 
       setSlots((currentSlots) =>
-        currentSlots.filter((slot) => slot.id !== selectedSlot.id)
+        currentSlots.filter(
+          (slot) => slot.id !== selectedSlot.id
+        )
       );
 
       setSelectedSlotId("");
     } catch (error) {
-      console.error("Onverwachte reserveringsfout:", error);
-      setErrorMessage("Dit moment kon niet tijdelijk worden gereserveerd. Probeer het opnieuw.");
+      console.error(
+        "Onverwachte reserveringsfout:",
+        error
+      );
+
+      setErrorMessage(
+        "Dit moment kon niet tijdelijk worden gereserveerd. Probeer het opnieuw."
+      );
     } finally {
       setBooking(false);
     }
@@ -423,7 +556,10 @@ export default function BoekenPage() {
 
   async function handleCheckout(): Promise<void> {
     if (!bookingHold) {
-      setErrorMessage("Je reservering kon niet worden gevonden. Kies opnieuw een moment.");
+      setErrorMessage(
+        "Je reservering kon niet worden gevonden. Kies opnieuw een moment."
+      );
+
       return;
     }
 
@@ -440,16 +576,19 @@ export default function BoekenPage() {
         return;
       }
 
-      const response = await fetch("/api/stripe/checkout/create", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          bookingId: bookingHold.bookingId,
-        }),
-      });
+      const response = await fetch(
+        "/api/stripe/checkout/create",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            bookingId: bookingHold.bookingId,
+          }),
+        }
+      );
 
       const result = (await response.json()) as {
         checkoutUrl?: string;
@@ -457,23 +596,34 @@ export default function BoekenPage() {
       };
 
       if (!response.ok || !result.checkoutUrl) {
-        console.error("Stripe Checkout fout:", result.error);
-        setErrorMessage(
-          result.error || "De betaalpagina kon niet worden geopend. Probeer het opnieuw."
+        console.error(
+          "Stripe Checkout fout:",
+          result.error
         );
+
+        setErrorMessage(
+          result.error ||
+            "De betaalpagina kon niet worden geopend. Probeer het opnieuw."
+        );
+
         return;
       }
 
       window.location.href = result.checkoutUrl;
     } catch (error) {
-      console.error("Onverwachte Checkout-fout:", error);
-      setErrorMessage("De betaalpagina kon niet worden geopend. Probeer het opnieuw.");
+      console.error(
+        "Onverwachte Checkout-fout:",
+        error
+      );
+
+      setErrorMessage(
+        "De betaalpagina kon niet worden geopend. Probeer het opnieuw."
+      );
     } finally {
       setOpeningCheckout(false);
     }
   }
 
-  /* BRANDBOOK BRANDED LOADER */
   if (loading) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
@@ -482,8 +632,10 @@ export default function BoekenPage() {
             <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">
               GOWTRAIN
             </span>
+
             <span className="h-0 w-0 animate-pulse border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
           </div>
+
           <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">
             MOMENTEN LADEN...
           </p>
@@ -492,7 +644,11 @@ export default function BoekenPage() {
     );
   }
 
-  if (!trainer || errorMessage === "Deze trainer is niet gevonden of niet beschikbaar.") {
+  if (
+    !trainer ||
+    errorMessage ===
+      "Deze trainer is niet gevonden of niet beschikbaar."
+  ) {
     return (
       <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
         <header className="border-b border-white/15">
@@ -505,6 +661,7 @@ export default function BoekenPage() {
               <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
                 GOWTRAIN
               </span>
+
               <span
                 aria-hidden="true"
                 className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1 sm:border-b-[11px] sm:border-l-[9px] sm:border-t-[11px]"
@@ -523,13 +680,19 @@ export default function BoekenPage() {
         <section className="flex flex-1 items-center justify-center px-5 py-16">
           <div className="w-full max-w-xl border-2 border-white bg-white p-3 text-[#14171A] shadow-[10px_10px_0_0_#FF4B3E]">
             <div className="bg-[#14171A] p-6 text-white sm:p-8">
-              <p className="font-display text-lg text-[#FF4B3E]">TRAINER NIET BESCHIKBAAR</p>
+              <p className="font-display text-lg text-[#FF4B3E]">
+                TRAINER NIET BESCHIKBAAR
+              </p>
+
               <h1 className="mt-4 font-display text-5xl leading-[0.85] sm:text-6xl">
                 DEZE MATCH IS EVEN WEG.
               </h1>
+
               <p className="mt-6 text-lg leading-relaxed text-[#B9BEC2]">
-                {errorMessage || "Deze trainer is op dit moment niet beschikbaar."}
+                {errorMessage ||
+                  "Deze trainer is op dit moment niet beschikbaar."}
               </p>
+
               <Link
                 href="/trainers"
                 className="mt-8 inline-flex bg-[#FF4B3E] px-6 py-4 font-display text-lg text-white transition hover:bg-[#D6FF3F] hover:text-[#14171A]"
@@ -547,7 +710,6 @@ export default function BoekenPage() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* HEADER */}
       <header className="border-b border-white/15">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
           <Link
@@ -558,6 +720,7 @@ export default function BoekenPage() {
             <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
               GOWTRAIN
             </span>
+
             <span
               aria-hidden="true"
               className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1 sm:border-b-[11px] sm:border-l-[9px] sm:border-t-[11px]"
@@ -582,7 +745,6 @@ export default function BoekenPage() {
         </div>
       </header>
 
-      {/* CONTENT */}
       <section className="relative flex-1 overflow-hidden py-12 sm:py-16 lg:py-20">
         <div
           aria-hidden="true"
@@ -592,21 +754,25 @@ export default function BoekenPage() {
         </div>
 
         <div className="relative mx-auto max-w-6xl px-5 sm:px-8">
-          
-          {/* TOP BAR */}
           <div className="flex flex-col justify-between gap-7 border-b-2 border-white/20 pb-8 lg:flex-row lg:items-end">
             <div>
-              <p className="font-display text-lg text-[#FF4B3E]">BOEK JE TRAINING</p>
+              <p className="font-display text-lg text-[#FF4B3E]">
+                BOEK JE TRAINING
+              </p>
+
               <h1 className="mt-3 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
-                KIES JE<br />
+                KIES JE
+                <br />
                 MOMENT. GOW!
               </h1>
+
               <p className="mt-6 max-w-2xl text-lg leading-relaxed text-[#D7D9DA]">
-                Kies je gewenste datum en tijd bij {trainer.name}. De getoonde prijs is inclusief de gehele training en de baanhuur.
+                Kies je gewenste datum en tijd bij {trainer.name}. De
+                getoonde prijs is inclusief de gehele training en de
+                baanhuur.
               </p>
             </div>
 
-            {/* TRAINER BADGE */}
             <div className="flex items-center gap-3 border-2 border-white bg-white p-3 text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E]">
               <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-[#14171A] bg-[#D6FF3F]">
                 {trainer.image_url ? (
@@ -623,7 +789,10 @@ export default function BoekenPage() {
               </div>
 
               <div>
-                <p className="font-display text-xl">{trainer.name}</p>
+                <p className="font-display text-xl">
+                  {trainer.name}
+                </p>
+
                 <p className="mt-0.5 text-xs text-[#53595E]">
                   {trainer.sport} · {getTrainerLocation(trainer)}
                 </p>
@@ -640,27 +809,38 @@ export default function BoekenPage() {
             </div>
           )}
 
-          {/* STATUS 1: GELUKTE TIJDELIJKE RESERVERING (GO TO CHECKOUT) */}
           {successMessage && bookingHold ? (
             <section
               role="status"
               className="mt-8 border-2 border-[#D6FF3F] bg-[#D6FF3F] p-5 text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E] sm:p-7"
             >
-              <p className="font-display text-3xl">MOMENT GERESERVEERD!</p>
+              <p className="font-display text-3xl">
+                MOMENT GERESERVEERD!
+              </p>
+
               <p className="mt-2 max-w-2xl font-semibold leading-relaxed">
                 {successMessage}
               </p>
 
               <div className="mt-5 border-y-2 border-[#14171A]/20 py-4">
-                <p className="font-display text-sm opacity-80">TOTAALBEDRAG</p>
-                <p className="mt-1 font-display text-4xl">
-                  {formatEuro(bookingHold.totalPriceCents, bookingHold.currency)}
+                <p className="font-display text-sm opacity-80">
+                  TOTAALBEDRAG
                 </p>
+
+                <p className="mt-1 font-display text-4xl">
+                  {formatEuro(
+                    bookingHold.totalPriceCents,
+                    bookingHold.currency
+                  )}
+                </p>
+
                 <p className="mt-2 text-xs font-semibold">
                   Inclusief professionele training &amp; baanhuur.
                 </p>
+
                 <p className="mt-3 text-xs font-bold text-[#FF4B3E]">
-                  ⏱️ Reservering verloopt om {formatTime(bookingHold.holdExpiresAt)}
+                  ⏱️ Reservering verloopt om{" "}
+                  {formatTime(bookingHold.holdExpiresAt)}
                 </p>
               </div>
 
@@ -671,8 +851,13 @@ export default function BoekenPage() {
                   disabled={openingCheckout}
                   className="inline-flex items-center justify-center gap-3 bg-[#14171A] px-6 py-4 font-display text-lg text-white transition hover:bg-white hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {openingCheckout ? "BETAALPAGINA OPENEN..." : "BETAAL NU VIA STRIPE. GOW!"}
-                  {!openingCheckout && <span aria-hidden="true">→</span>}
+                  {openingCheckout
+                    ? "BETAALPAGINA OPENEN..."
+                    : "BETAAL NU VIA STRIPE. GOW!"}
+
+                  {!openingCheckout && (
+                    <span aria-hidden="true">→</span>
+                  )}
                 </button>
 
                 <Link
@@ -685,21 +870,24 @@ export default function BoekenPage() {
             </section>
           ) : null}
 
-          {/* MAIN FORM: STAP 1 & STAP 2 */}
           {!bookingHold && (
             <div className="mt-10 grid gap-10 lg:grid-cols-[1.05fr_0.95fr]">
-              
-              {/* STAP 1: KIES EEN MOMENT */}
               <section>
-                <p className="font-display text-lg text-[#FF4B3E]">STAP 1 / 2</p>
+                <p className="font-display text-lg text-[#FF4B3E]">
+                  STAP 1 / 2
+                </p>
+
                 <h2 className="mt-2 font-display text-5xl leading-[0.83] sm:text-6xl">
-                  KIES JE<br />MOMENT.
+                  KIES JE
+                  <br />
+                  MOMENT.
                 </h2>
 
                 {slots.length > 0 ? (
                   <div className="mt-6 space-y-3">
                     {slots.map((slot) => {
-                      const isSelected = selectedSlotId === slot.id;
+                      const isSelected =
+                        selectedSlotId === slot.id;
 
                       return (
                         <button
@@ -716,17 +904,28 @@ export default function BoekenPage() {
                             <div className="flex items-start justify-between gap-4">
                               <div>
                                 <span className="bg-[#D6FF3F] px-2.5 py-0.5 font-display text-xs text-[#14171A]">
-                                  {formatShortDate(slot.starts_at)}
+                                  {formatShortDate(
+                                    slot.starts_at
+                                  )}
                                 </span>
+
                                 <p className="mt-2 font-display text-3xl">
-                                  {formatTime(slot.starts_at)} – {formatTime(slot.ends_at)}
+                                  {formatTime(
+                                    slot.starts_at
+                                  )}{" "}
+                                  –{" "}
+                                  {formatTime(slot.ends_at)}
                                 </p>
                               </div>
 
                               <div className="text-right">
                                 <p className="font-display text-2xl text-[#D6FF3F]">
-                                  {formatEuro(slot.price_cents, slot.currency)}
+                                  {formatEuro(
+                                    slot.price_cents,
+                                    slot.currency
+                                  )}
                                 </p>
+
                                 <p className="mt-0.5 font-display text-[10px] text-[#B9BEC2]">
                                   INCL. BAANHUUR
                                 </p>
@@ -735,15 +934,22 @@ export default function BoekenPage() {
 
                             <div className="mt-4 grid gap-3 border-t border-white/20 pt-3 sm:grid-cols-2">
                               <div>
-                                <p className="font-display text-[10px] text-[#8A8F94]">SPORT</p>
+                                <p className="font-display text-[10px] text-[#8A8F94]">
+                                  SPORT
+                                </p>
+
                                 <p className="mt-0.5 font-display text-sm text-white">
-                                  {slot.sport.toUpperCase()} · Max. {slot.max_participants} spelers
+                                  {slot.sport.toUpperCase()} · Max.{" "}
+                                  {slot.max_participants} spelers
                                 </p>
                               </div>
 
                               <div>
-                                <p className="font-display text-[10px] text-[#8A8F94]">LOCATIE</p>
-                                <p className="mt-0.5 font-display text-sm text-white leading-tight truncate">
+                                <p className="font-display text-[10px] text-[#8A8F94]">
+                                  LOCATIE
+                                </p>
+
+                                <p className="mt-0.5 truncate font-display text-sm leading-tight text-white">
                                   {getVenueLabel(slot.venue)}
                                 </p>
                               </div>
@@ -752,9 +958,14 @@ export default function BoekenPage() {
 
                           <div className="flex items-center justify-between px-2 pt-2">
                             <span className="font-display text-xs">
-                              {isSelected ? "✓ MOMENT GEKOZEN" : "SELECTEER DIT MOMENT"}
+                              {isSelected
+                                ? "✓ MOMENT GEKOZEN"
+                                : "SELECTEER DIT MOMENT"}
                             </span>
-                            <span className="font-display text-base">→</span>
+
+                            <span className="font-display text-base">
+                              →
+                            </span>
                           </div>
                         </button>
                       );
@@ -763,10 +974,15 @@ export default function BoekenPage() {
                 ) : (
                   <div className="mt-6 border-2 border-white bg-white p-3 text-[#14171A]">
                     <div className="bg-[#14171A] p-6 text-white">
-                      <p className="font-display text-3xl text-[#D6FF3F]">GEEN MOMENTEN BESCHIKBAAR.</p>
-                      <p className="mt-3 leading-relaxed text-[#B9BEC2]">
-                        Deze trainer heeft momenteel geen open slots. Bekijk andere trainers op het platform.
+                      <p className="font-display text-3xl text-[#D6FF3F]">
+                        GEEN MOMENTEN BESCHIKBAAR.
                       </p>
+
+                      <p className="mt-3 leading-relaxed text-[#B9BEC2]">
+                        Deze trainer heeft momenteel geen open slots. Bekijk
+                        andere trainers op het platform.
+                      </p>
+
                       <Link
                         href="/trainers"
                         className="mt-6 inline-flex bg-[#FF4B3E] px-5 py-3 font-display text-base text-white transition hover:bg-[#D6FF3F] hover:text-[#14171A]"
@@ -778,45 +994,71 @@ export default function BoekenPage() {
                 )}
               </section>
 
-              {/* STAP 2: JOUW DETAILS & BEVESTIGEN */}
               <section>
-                <p className="font-display text-lg text-[#FF4B3E]">STAP 2 / 2</p>
+                <p className="font-display text-lg text-[#FF4B3E]">
+                  STAP 2 / 2
+                </p>
+
                 <h2 className="mt-2 font-display text-5xl leading-[0.83] sm:text-6xl">
-                  JOUW<br />TRAINING.
+                  JOUW
+                  <br />
+                  TRAINING.
                 </h2>
 
                 <div className="mt-6 border-2 border-white bg-white p-3 text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E]">
                   <div className="bg-[#14171A] p-5 text-white sm:p-6">
                     {selectedSlot ? (
                       <div className="border-l-2 border-[#D6FF3F] pl-4">
-                        <p className="font-display text-xs text-[#D6FF3F]">GEKOZEN MOMENT</p>
+                        <p className="font-display text-xs text-[#D6FF3F]">
+                          GEKOZEN MOMENT
+                        </p>
+
                         <p className="mt-1 font-display text-xl">
-                          {formatDate(selectedSlot.starts_at)}
+                          {formatDate(
+                            selectedSlot.starts_at
+                          )}
                         </p>
+
                         <p className="mt-0.5 text-sm text-[#D7D9DA]">
-                          {formatTime(selectedSlot.starts_at)} – {formatTime(selectedSlot.ends_at)}
+                          {formatTime(
+                            selectedSlot.starts_at
+                          )}{" "}
+                          –{" "}
+                          {formatTime(selectedSlot.ends_at)}
                         </p>
+
                         <p className="mt-2 font-display text-3xl text-[#D6FF3F]">
-                          {formatEuro(selectedSlot.price_cents, selectedSlot.currency)}
+                          {formatEuro(
+                            selectedSlot.price_cents,
+                            selectedSlot.currency
+                          )}
                         </p>
+
                         <p className="mt-0.5 text-xs text-[#B9BEC2]">
                           Inclusief training en baanhuur.
                         </p>
                       </div>
                     ) : (
                       <div className="border-l-2 border-[#FF4B3E] pl-4">
-                        <p className="font-display text-xs text-[#FF4B3E]">KIES EERST EEN MOMENT</p>
+                        <p className="font-display text-xs text-[#FF4B3E]">
+                          KIES EERST EEN MOMENT
+                        </p>
+
                         <p className="mt-1 text-sm leading-relaxed text-[#B9BEC2]">
-                          Klik links op een beschikbaar tijdstip om verder te gaan.
+                          Klik links op een beschikbaar tijdstip om verder te
+                          gaan.
                         </p>
                       </div>
                     )}
 
-                    {/* AANTAL SPELERS */}
                     <div className="mt-6 border-y border-white/20 py-5">
-                      <p className="font-display text-xs text-[#FF4B3E]">AANTAL SPELERS</p>
+                      <p className="font-display text-xs text-[#FF4B3E]">
+                        AANTAL SPELERS
+                      </p>
+
                       <p className="mt-1 text-xs text-[#B9BEC2]">
-                        Jij reserveert het hele moment. Nodig eventueel je medespelers uit.
+                        Jij reserveert het hele moment. Nodig eventueel je
+                        medespelers uit.
                       </p>
 
                       <div className="mt-3 flex flex-wrap gap-2">
@@ -825,66 +1067,115 @@ export default function BoekenPage() {
                             key={count}
                             type="button"
                             disabled={!selectedSlot || booking}
-                            onClick={() => selectParticipantCount(count)}
+                            onClick={() =>
+                              selectParticipantCount(count)
+                            }
                             className={`border-2 px-4 py-2.5 font-display text-sm transition disabled:cursor-not-allowed disabled:opacity-40 ${
                               participantCount === count
                                 ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A]"
                                 : "border-white/30 text-white hover:border-white"
                             }`}
                           >
-                            {count} {count === 1 ? "SPELER" : "SPELERS"}
+                            {count}{" "}
+                            {count === 1
+                              ? "SPELER"
+                              : "SPELERS"}
                           </button>
                         ))}
                       </div>
                     </div>
 
-                    {/* GEBRUIKER DETAILS */}
                     <div className="mt-5">
-                      <p className="font-display text-xs text-[#FF4B3E]">SPELER</p>
+                      <p className="font-display text-xs text-[#FF4B3E]">
+                        SPELER
+                      </p>
+
                       <p className="mt-1 font-display text-xl text-white">
                         {player?.fullName || "SPELER"}
                       </p>
-                      <p className="text-xs text-[#B9BEC2]">{player?.email}</p>
+
+                      <p className="text-xs text-[#B9BEC2]">
+                        {player?.email}
+                      </p>
                     </div>
 
-                    {/* LOCATIE DETAILS */}
                     {selectedSlot?.venue && (
                       <div className="mt-5 border-t border-white/20 pt-4">
-                        <p className="font-display text-xs text-[#FF4B3E]">LOCATIE</p>
+                        <p className="font-display text-xs text-[#FF4B3E]">
+                          LOCATIE
+                        </p>
+
                         <p className="mt-1 font-display text-base text-white">
                           {getVenueLabel(selectedSlot.venue)}
                         </p>
+
                         <p className="mt-1 text-xs text-[#B9BEC2]">
-                          {selectedSlot.venue.address_line}, {selectedSlot.venue.city}
+                          {selectedSlot.venue.address_line},{" "}
+                          {selectedSlot.venue.city}
                         </p>
                       </div>
                     )}
 
-                    {/* SUBMIT BUTTON */}
                     <button
                       type="button"
                       onClick={() => void handleBooking()}
-                      disabled={booking || !selectedSlot || slots.length === 0}
+                      disabled={
+                        booking ||
+                        !selectedSlot ||
+                        slots.length === 0
+                      }
                       className="mt-7 flex w-full items-center justify-center gap-3 bg-[#FF4B3E] px-6 py-5 font-display text-xl text-white transition hover:-translate-y-1 hover:bg-[#D6FF3F] hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
                     >
-                      {booking ? "RESERVEREN..." : "RESERVEER MOMENT. GOW!"}
-                      {!booking && <span aria-hidden="true">→</span>}
+                      {booking
+                        ? "RESERVEREN..."
+                        : "RESERVEER MOMENT. GOW!"}
+
+                      {!booking && (
+                        <span aria-hidden="true">→</span>
+                      )}
                     </button>
 
                     <p className="mt-4 text-center text-xs leading-relaxed text-[#8A8F94]">
-                      Na reservering wordt dit tijdslot 30 minuten voor je vastgehouden om de betaling af te ronden.
+                      Na reservering wordt dit tijdslot 30 minuten voor je
+                      vastgehouden om de betaling af te ronden.
                     </p>
                   </div>
                 </div>
               </section>
-
             </div>
           )}
-
         </div>
       </section>
 
       <SiteFooter />
     </main>
+  );
+}
+
+function BoekenFallback() {
+  return (
+    <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
+      <div className="flex flex-col items-center">
+        <div className="flex items-center gap-2">
+          <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">
+            GOWTRAIN
+          </span>
+
+          <span className="h-0 w-0 animate-pulse border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
+        </div>
+
+        <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">
+          BOEKING LADEN...
+        </p>
+      </div>
+    </main>
+  );
+}
+
+export default function BoekenPage() {
+  return (
+    <Suspense fallback={<BoekenFallback />}>
+      <BoekenContent />
+    </Suspense>
   );
 }

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
@@ -65,7 +65,7 @@ function formatEuro(cents: number, currency = "eur"): string {
   }).format(cents / 100);
 }
 
-export default function BookingSuccesPage() {
+function BookingSuccesContent() {
   const searchParams = useSearchParams();
   const checkoutSessionId = searchParams.get("session_id");
 
@@ -325,5 +325,27 @@ export default function BookingSuccesPage() {
 
       <SiteFooter />
     </main>
+  );
+}
+
+function BookingSuccesFallback() {
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-[#14171A] px-5 text-white">
+      <div className="text-center">
+        <p className="font-display text-5xl text-[#D6FF3F]">GOW!</p>
+
+        <p className="mt-4 font-display text-lg text-[#FF4B3E]">
+          BETALING CONTROLEREN...
+        </p>
+      </div>
+    </main>
+  );
+}
+
+export default function BookingSuccesPage() {
+  return (
+    <Suspense fallback={<BookingSuccesFallback />}>
+      <BookingSuccesContent />
+    </Suspense>
   );
 }
