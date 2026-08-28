@@ -14,13 +14,22 @@ function getRequiredEnv(name: string): string {
   return value;
 }
 
+function getAppUrl(): string {
+  const url =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    (process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : "https://gowtrain-website.vercel.app");
+
+  return url.replace(/\/$/, "");
+}
+
 const stripeSecretKey = getRequiredEnv("STRIPE_SECRET_KEY");
 const supabaseUrl = getRequiredEnv("NEXT_PUBLIC_SUPABASE_URL");
 const supabaseAnonKey = getRequiredEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
 const supabaseServiceRoleKey = getRequiredEnv(
   "SUPABASE_SERVICE_ROLE_KEY"
 );
-const appUrl = getRequiredEnv("NEXT_PUBLIC_APP_URL");
 
 const stripe = new Stripe(stripeSecretKey);
 
@@ -218,22 +227,25 @@ export async function POST(request: NextRequest) {
 
     /*
       Als er al een actieve Checkout Session bestaat, hergebruiken we die.
-      Dit voorkomt dubbelklikken en dubbele betaalpagina's.
     */
     if (booking.stripe_checkout_session_id) {
-      const existingSession = await stripe.checkout.sessions.retrieve(
-        booking.stripe_checkout_session_id
-      );
+      try {
+        const existingSession = await stripe.checkout.sessions.retrieve(
+          booking.stripe_checkout_session_id
+        );
 
-      if (
-        existingSession.status === "open" &&
-        existingSession.url &&
-        existingSession.expires_at &&
-        existingSession.expires_at * 1000 > Date.now()
-      ) {
-        return NextResponse.json({
-          checkoutUrl: existingSession.url,
-        });
+        if (
+          existingSession.status === "open" &&
+          existingSession.url &&
+          existingSession.expires_at &&
+          existingSession.expires_at * 1000 > Date.now()
+        ) {
+          return NextResponse.json({
+            checkoutUrl: existingSession.url,
+          });
+        }
+      } catch (e) {
+        console.warn("Bestaande Stripe sessie ophalen mislukt, nieuwe maken:", e);
       }
     }
 
@@ -250,12 +262,16 @@ export async function POST(request: NextRequest) {
       .join(" · ");
 
     /*
-      Checkout Session vervalt op hetzelfde moment als de hold.
-      Stripe Checkout vereist minimaal 30 minuten, daarom is de hold ook 30 min.
+      Stripe Checkout eist dat expires_at MINIMAAL 30 minuten in de toekomst ligt.
+      Daarom garanderen we nu dat expiresAt altijd minimaal nu + 30 min (+ 5 sec) is.
     */
-    const expiresAt = Math.floor(
+    const nowInSeconds = Math.floor(Date.now() / 1000);
+    const holdExpiresInSeconds = Math.floor(
       new Date(booking.hold_expires_at).getTime() / 1000
     );
+    const expiresAt = Math.max(holdExpiresInSeconds, nowInSeconds + 1805);
+
+    const appUrl = getAppUrl();
 
     const session = await stripe.checkout.sessions.create(
       {
@@ -291,7 +307,7 @@ export async function POST(request: NextRequest) {
         },
 
         success_url: `${appUrl}/boeken/succes?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${appUrl}/boeken/annuleren?booking_id=${booking.id}`,
+        cancel_url: `${appUrl}/mijn-boekingen`,
 
         expires_at: expiresAt,
       },
