@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
@@ -89,8 +90,7 @@ export default function AdminVenuesPage() {
       }
 
       await loadVenues();
-    } catch (error) {
-      console.error("Admin venues verificatie fout:", error);
+    } catch {
       showError("Toegang kon niet worden geverifieerd.");
     } finally {
       setLoading(false);
@@ -105,7 +105,6 @@ export default function AdminVenuesPage() {
       .order("name", { ascending: true });
 
     if (error) {
-      console.error("Venues laden fout:", error.message);
       showError("Locaties konden niet worden geladen.");
       return;
     }
@@ -180,21 +179,18 @@ export default function AdminVenuesPage() {
       };
 
       if (editingVenueId) {
-        // BIJWERKEN IN DATABASE
         const { error: updateError } = await supabase
           .from("venues")
           .update(payload)
           .eq("id", editingVenueId);
 
         if (updateError) {
-          console.error("Venue update fout:", updateError.message);
           showError(`Opslaan mislukt: ${updateError.message}`);
           return;
         }
 
         setSuccessMessage(`Locatie '${name.toUpperCase()}' is succesvol bijgewerkt!`);
       } else {
-        // NIEUW TOEVOEGEN AAN DATABASE
         const { error: insertError } = await supabase
           .from("venues")
           .insert({
@@ -204,7 +200,6 @@ export default function AdminVenuesPage() {
           });
 
         if (insertError) {
-          console.error("Venue insert fout:", insertError.message);
           showError(`Toevoegen mislukt: ${insertError.message}`);
           return;
         }
@@ -214,8 +209,7 @@ export default function AdminVenuesPage() {
 
       resetForm();
       await loadVenues();
-    } catch (error: any) {
-      console.error("Onverwachte opslaan fout:", error);
+    } catch {
       showError("Opslaan mislukt.");
     } finally {
       setSaving(false);
@@ -249,7 +243,6 @@ export default function AdminVenuesPage() {
     }
   }
 
-  // GEFILTERDE EN GEZOCHTE LOCATIES
   const filteredVenues = useMemo(() => {
     return venues.filter((venue) => {
       if (filterStatus === "active" && !venue.is_active) return false;
@@ -266,7 +259,6 @@ export default function AdminVenuesPage() {
     });
   }, [venues, filterStatus, searchQuery]);
 
-  /* BRANDBOOK BRANDED LOADER */
   if (loading) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
@@ -283,22 +275,11 @@ export default function AdminVenuesPage() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* HEADER */}
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <Link href="/admin" aria-label="Admin hub" className="group inline-flex items-center gap-2">
-            <span className="font-display text-3xl text-[#D6FF3F] sm:text-4xl">GOWTRAIN</span>
-            <span className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform group-hover:translate-x-1" />
-          </Link>
-
-          <Link href="/admin" className="font-display text-sm text-white hover:text-[#D6FF3F]">
-            ← ADMIN HUB
-          </Link>
-        </div>
-      </header>
+      {/* 💡 UNIVERSELE DYNAMISCHE SITE HEADER */}
+      <SiteHeader />
 
       {/* CONTENT */}
-      <section className="relative flex-1 overflow-hidden py-12 sm:py-16">
+      <section className="relative flex-1 overflow-hidden py-10 sm:py-14">
         <div className="relative mx-auto max-w-7xl px-5 sm:px-8">
           
           <div className="flex flex-col justify-between gap-6 border-b-2 border-white/20 pb-8 md:flex-row md:items-end">
@@ -309,13 +290,22 @@ export default function AdminVenuesPage() {
               </h1>
             </div>
 
-            <button
-              type="button"
-              onClick={() => { clearMessages(); resetForm(); setShowForm(!showForm); }}
-              className="bg-[#D6FF3F] px-6 py-4 font-display text-lg !text-[#14171A] transition hover:bg-white shadow-[4px_4px_0_0_#FF4B3E]"
-            >
-              {showForm ? "✕ SLUIT FORMULIER" : "+ NIEUWE LOCATIE TOEVOEGEN"}
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              <Link
+                href="/admin"
+                className="inline-flex border-2 border-white px-4 py-2.5 font-display text-xs text-white hover:border-[#D6FF3F] hover:text-[#D6FF3F] transition"
+              >
+                ← ADMIN HUB
+              </Link>
+
+              <button
+                type="button"
+                onClick={() => { clearMessages(); resetForm(); setShowForm(!showForm); }}
+                className="bg-[#D6FF3F] px-5 py-3 font-display text-base !text-[#14171A] transition hover:bg-white shadow-[4px_4px_0_0_#FF4B3E]"
+              >
+                {showForm ? "✕ SLUIT FORMULIER" : "+ NIEUWE LOCATIE TOEVOEGEN"}
+              </button>
+            </div>
           </div>
 
           {errorMessage && <div role="alert" className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] px-5 py-4 font-semibold text-white">{errorMessage}</div>}

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
@@ -157,7 +158,7 @@ function getIssueTypeLabel(type: IssueType): string {
     other: "ANDER PROBLEEM",
   };
 
-  return labels[type];
+  return labels[type] ?? "PROBLEEM";
 }
 
 function getIssueStatusLabel(status: IssueStatus): string {
@@ -346,7 +347,6 @@ export default function AdminIssuesPage() {
         .order("created_at", { ascending: false });
 
       if (error) {
-        console.error("Admin issues ophalen fout:", error.message);
         showError("De probleemmeldingen konden niet worden geladen.");
         setIssues([]);
         return;
@@ -367,8 +367,7 @@ export default function AdminIssuesPage() {
 
         return firstActive?.id ?? null;
       });
-    } catch (error) {
-      console.error("Onverwachte admin issues-fout:", error);
+    } catch {
       showError("De probleemmeldingen konden niet worden geladen.");
     } finally {
       if (showLoading) setLoading(false);
@@ -488,7 +487,6 @@ export default function AdminIssuesPage() {
       );
 
       if (error) {
-        console.error("Admin refund aanvragen fout:", error.message);
         showError(
           error.message || "De volledige refund kon niet worden aangevraagd."
         );
@@ -525,16 +523,8 @@ export default function AdminIssuesPage() {
         }),
       });
 
-      const refundResult = (await response.json()) as {
-        refundId?: string;
-        error?: string;
-      };
-
       if (!response.ok) {
-        showError(
-          refundResult.error ||
-            "De refund is aangevraagd, maar kon niet direct via Stripe worden gestart."
-        );
+        showError("De refund is aangevraagd, maar kon niet direct via Stripe worden gestart.");
         await loadIssues(false);
         return;
       }
@@ -548,15 +538,13 @@ export default function AdminIssuesPage() {
       );
 
       await loadIssues(false);
-    } catch (error) {
-      console.error("Onverwachte admin refund-fout:", error);
+    } catch {
       showError("De volledige refund kon niet worden gestart.");
     } finally {
       setRefundingIssueId(null);
     }
   }
 
-  /* BRANDBOOK BRANDED LOADER */
   if (loading) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
@@ -580,34 +568,11 @@ export default function AdminIssuesPage() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* HEADER */}
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <Link
-            href="/admin"
-            aria-label="Terug naar admin hub"
-            className="group inline-flex items-center gap-2"
-          >
-            <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-              GOWTRAIN
-            </span>
-            <span className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1" />
-          </Link>
-
-          {/* 💡 GEAANGEPASTE UNIFORME HEADER LINK NAAR ADMIN HUB */}
-          <div className="flex items-center gap-3">
-            <Link
-              href="/admin"
-              className="font-display text-sm text-white transition hover:text-[#D6FF3F]"
-            >
-              ← ADMIN HUB
-            </Link>
-          </div>
-        </div>
-      </header>
+      {/* 💡 UNIVERSELE DYNAMISCHE SITE HEADER */}
+      <SiteHeader />
 
       {/* CONTENT */}
-      <section className="relative flex-1 overflow-hidden py-12 sm:py-16">
+      <section className="relative flex-1 overflow-hidden py-10 sm:py-14">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute -right-10 -top-20 select-none font-display text-[16rem] leading-none text-[#D6FF3F] opacity-[0.04] sm:text-[25rem]"
@@ -616,26 +581,35 @@ export default function AdminIssuesPage() {
         </div>
 
         <div className="relative mx-auto max-w-7xl px-5 sm:px-8">
-          <div className="flex flex-col justify-between gap-6 border-b-2 border-white/20 pb-8 lg:flex-row lg:items-end">
+          <div className="flex flex-col justify-between gap-6 border-b-2 border-white/20 pb-8 sm:flex-row sm:items-end">
             <div>
               <p className="font-display text-lg text-[#FF4B3E]">ADMIN / ISSUES</p>
-              <h1 className="mt-3 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
+              <h1 className="mt-2 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
                 HÉ, {adminName}.<br />
                 PROBLEMEN OPLOSSEN.
               </h1>
-              <p className="mt-6 max-w-2xl text-lg leading-relaxed text-[#D7D9DA]">
+              <p className="mt-4 max-w-2xl text-base leading-relaxed text-[#D7D9DA]">
                 Beoordeel en los gemelde problemen rondom trainingen, weer, locaties en no-shows op.
               </p>
             </div>
 
-            <button
-              type="button"
-              onClick={() => void handleRefresh()}
-              disabled={refreshing}
-              className="w-fit border-2 border-white px-4 py-3 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:text-[#D6FF3F] disabled:opacity-60"
-            >
-              {refreshing ? "VERVERSEN..." : "↻ VERVERS"}
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              <Link
+                href="/admin"
+                className="inline-flex border-2 border-white px-4 py-2.5 font-display text-xs text-white hover:border-[#D6FF3F] hover:text-[#D6FF3F] transition"
+              >
+                ← ADMIN HUB
+              </Link>
+
+              <button
+                type="button"
+                onClick={() => void handleRefresh()}
+                disabled={refreshing}
+                className="border-2 border-white px-4 py-2.5 font-display text-xs text-white transition hover:border-[#D6FF3F] hover:text-[#D6FF3F] disabled:opacity-60"
+              >
+                {refreshing ? "VERVERSEN..." : "↻ VERVERS"}
+              </button>
+            </div>
           </div>
 
           {errorMessage && (

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
@@ -82,8 +83,7 @@ export default function AdminReviewsPage() {
       }
 
       await loadReviews();
-    } catch (error) {
-      console.error("Admin reviews verificatie fout:", error);
+    } catch {
       showError("Toegang kon niet worden geverifieerd.");
     } finally {
       setLoading(false);
@@ -91,14 +91,12 @@ export default function AdminReviewsPage() {
   }
 
   async function loadReviews(): Promise<void> {
-    // 1. Reviews ophalen
     const { data: reviewData, error: reviewError } = await supabase
       .from("trainer_reviews")
       .select("*")
       .order("created_at", { ascending: false });
 
     if (reviewError) {
-      console.error("Reviews laden fout:", reviewError.message);
       showError("Reviews konden niet worden geladen.");
       return;
     }
@@ -108,7 +106,6 @@ export default function AdminReviewsPage() {
       return;
     }
 
-    // 2. Trainer- en spelergegevens ophalen
     const trainerIds = Array.from(new Set(reviewData.map((r) => r.trainer_id)));
     const playerIds = Array.from(new Set(reviewData.map((r) => r.player_id)));
 
@@ -144,7 +141,6 @@ export default function AdminReviewsPage() {
     setReviews(formattedReviews);
   }
 
-  // REVIEW VERWIJDEREN (HERBEREKENT AUTOMATISCH GEMIDDELDE IN DB)
   async function deleteReview(reviewId: string, trainerName: string): Promise<void> {
     setDeletingId(reviewId);
     clearMessages();
@@ -160,7 +156,7 @@ export default function AdminReviewsPage() {
         return;
       }
 
-      setSuccessMessage(`Review voor ${trainerName} is verwijderd. De gemiddelde rating is automatisch bijgewerkt.`);
+      setSuccessMessage(`Review voor ${trainerName} is verwijderd.`);
       await loadReviews();
     } catch {
       showError("Review kon niet worden verwijderd.");
@@ -169,7 +165,6 @@ export default function AdminReviewsPage() {
     }
   }
 
-  // TELLER BEREKENINGEN
   const avgRating = useMemo(() => {
     if (reviews.length === 0) return "0.0";
     const total = reviews.reduce((sum, r) => sum + r.rating, 0);
@@ -181,7 +176,6 @@ export default function AdminReviewsPage() {
     [reviews]
   );
 
-  // FILTERED REVIEWS
   const filteredReviews = useMemo(() => {
     return reviews.filter((r) => {
       if (ratingFilter === "5" && r.rating !== 5) return false;
@@ -200,7 +194,6 @@ export default function AdminReviewsPage() {
     });
   }, [reviews, ratingFilter, searchQuery]);
 
-  /* BRANDBOOK BRANDED LOADER */
   if (loading) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
@@ -217,22 +210,11 @@ export default function AdminReviewsPage() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* HEADER */}
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <Link href="/admin" aria-label="Admin hub" className="group inline-flex items-center gap-2">
-            <span className="font-display text-3xl text-[#D6FF3F] sm:text-4xl">GOWTRAIN</span>
-            <span className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform group-hover:translate-x-1" />
-          </Link>
-
-          <Link href="/admin" className="font-display text-sm text-white hover:text-[#D6FF3F]">
-            ← ADMIN HUB
-          </Link>
-        </div>
-      </header>
+      {/* 💡 UNIVERSELE DYNAMISCHE SITE HEADER */}
+      <SiteHeader />
 
       {/* CONTENT */}
-      <section className="relative flex-1 overflow-hidden py-12 sm:py-16">
+      <section className="relative flex-1 overflow-hidden py-10 sm:py-14">
         <div className="relative mx-auto max-w-7xl px-5 sm:px-8">
           
           <div className="flex flex-col justify-between gap-6 border-b-2 border-white/20 pb-8 md:flex-row md:items-end">
@@ -241,10 +223,17 @@ export default function AdminReviewsPage() {
               <h1 className="mt-3 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
                 SPELER<br />REVIEWS.
               </h1>
-              <p className="mt-6 max-w-2xl text-lg leading-relaxed text-[#D7D9DA]">
+              <p className="mt-4 max-w-2xl text-base leading-relaxed text-[#D7D9DA]">
                 Beheer alle geschreven spelerbeoordelingen op GowTrain en controleer de kwaliteit van de lessen.
               </p>
             </div>
+
+            <Link
+              href="/admin"
+              className="inline-flex shrink-0 border-2 border-white px-4 py-2.5 font-display text-xs text-white hover:border-[#D6FF3F] hover:text-[#D6FF3F] transition"
+            >
+              ← ADMIN HUB
+            </Link>
           </div>
 
           {errorMessage && <div role="alert" className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] px-5 py-4 font-semibold text-white">{errorMessage}</div>}
@@ -307,7 +296,7 @@ export default function AdminReviewsPage() {
             </div>
           </div>
 
-          {/* REVIEWS GRID (VERBETERDE KAARTEN) */}
+          {/* REVIEWS GRID */}
           {filteredReviews.length === 0 ? (
             <div className="mt-8 border-2 border-white/20 p-8 text-center text-[#B9BEC2]">
               Geen reviews gevonden binnen deze selectie.
@@ -322,7 +311,6 @@ export default function AdminReviewsPage() {
                     <div className="bg-[#14171A] p-5 text-white flex flex-col justify-between h-full space-y-4">
                       
                       <div>
-                        {/* TOP: SPELERSNAAM + STERREN BADGE */}
                         <div className="flex justify-between items-start gap-3 border-b border-white/15 pb-3">
                           <div>
                             <span className="bg-[#FF4B3E] px-2 py-0.5 font-display text-[10px] text-white uppercase">
@@ -336,14 +324,12 @@ export default function AdminReviewsPage() {
                           </span>
                         </div>
 
-                        {/* TRAINER INFO */}
                         <div className="mt-3">
                           <p className="text-xs text-[#B9BEC2]">
                             Over trainer: <strong className="text-[#D6FF3F] font-display text-sm">{rev.trainer_name}</strong> ({rev.trainer_sport})
                           </p>
                         </div>
 
-                        {/* QUOTE BOKS */}
                         <div className="mt-4 border-l-2 border-[#D6FF3F] bg-white/5 p-3.5">
                           <p className="text-xs leading-relaxed text-[#D7D9DA] italic">
                             "{rev.comment || "Geen geschreven toelichting gegeven."}"
@@ -351,7 +337,6 @@ export default function AdminReviewsPage() {
                         </div>
                       </div>
 
-                      {/* ONDERKANT: DATUM & VERWIJDERKNOP */}
                       <div className="pt-3 border-t border-white/15 space-y-3">
                         <p className="text-[10px] text-[#8A8F94]">
                           Geschreven op {formatDate(rev.created_at)}

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
@@ -81,21 +82,13 @@ export default function AdminHubPage() {
         .select("id", { count: "exact", head: true });
 
       setTotalReviewsCount(reviewsCount ?? 0);
-    } catch (error) {
-      console.error("Admin Hub laden fout:", error);
+    } catch {
       setErrorMessage("Het admin overzicht kon niet worden geladen.");
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleLogout(): Promise<void> {
-    await supabase.auth.signOut();
-    router.replace("/speler-login");
-    router.refresh();
-  }
-
-  /* BRANDBOOK BRANDED LOADER */
   if (loading) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
@@ -116,38 +109,11 @@ export default function AdminHubPage() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* HEADER */}
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <Link
-            href="/"
-            aria-label="GowTrain home"
-            className="group inline-flex items-center gap-2"
-          >
-            <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-              GOWTRAIN
-            </span>
-            <span className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1 sm:border-b-[11px] sm:border-l-[9px] sm:border-t-[11px]" />
-          </Link>
-
-          <div className="flex items-center gap-3">
-            <span className="bg-[#FF4B3E] px-3 py-1 font-display text-xs text-white">
-              ADMIN CONTROL
-            </span>
-
-            <button
-              type="button"
-              onClick={() => void handleLogout()}
-              className="border-2 border-white px-4 py-2 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:text-[#14171A]"
-            >
-              UITLOGGEN
-            </button>
-          </div>
-        </div>
-      </header>
+      {/* 💡 UNIVERSELE DYNAMISCHE SITE HEADER */}
+      <SiteHeader />
 
       {/* CONTENT */}
-      <section className="relative flex-1 overflow-hidden py-12 sm:py-16">
+      <section className="relative flex-1 overflow-hidden py-10 sm:py-14">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute -right-10 -top-20 select-none font-display text-[16rem] leading-none text-[#D6FF3F] opacity-[0.04] sm:text-[25rem]"
@@ -157,14 +123,20 @@ export default function AdminHubPage() {
 
         <div className="relative mx-auto max-w-7xl px-5 sm:px-8">
           
-          <div className="border-b-2 border-white/20 pb-8">
-            <p className="font-display text-lg text-[#FF4B3E]">BEHEERSCENTRUM</p>
-            <h1 className="mt-3 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
-              WELKOM, {adminName.toUpperCase()}.
-            </h1>
-            <p className="mt-6 max-w-2xl text-lg leading-relaxed text-[#D7D9DA]">
-              Kies een onderdeel om het GowTrain platform en de kwaliteit te beheren.
-            </p>
+          <div className="flex flex-col justify-between gap-4 border-b-2 border-white/20 pb-8 sm:flex-row sm:items-end">
+            <div>
+              <p className="font-display text-lg text-[#FF4B3E]">BEHEERSCENTRUM</p>
+              <h1 className="mt-2 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
+                WELKOM, {adminName.toUpperCase()}.
+              </h1>
+              <p className="mt-4 max-w-2xl text-base leading-relaxed text-[#D7D9DA]">
+                Kies een onderdeel om het GowTrain platform en de kwaliteit te beheren.
+              </p>
+            </div>
+
+            <span className="bg-[#FF4B3E] px-3.5 py-1.5 font-display text-xs text-white shrink-0">
+              ADMIN CONTROL
+            </span>
           </div>
 
           {errorMessage && (
@@ -173,13 +145,13 @@ export default function AdminHubPage() {
             </div>
           )}
 
-          {/* 💡 HOOFD NAVIGATIE KAARTEN (4 ONDERDELEN IN 2x2 GRID) */}
+          {/* HOOFD NAVIGATIE KAARTEN (4 ONDERDELEN IN 2x2 GRID) */}
           <div className="mt-10 grid gap-8 md:grid-cols-2">
             
             {/* 1. TRAINERS GOEDKEUREN */}
             <Link
               href="/admin/trainers"
-              className="group border-2 border-white bg-white p-3 text-[#14171A] transition duration-200 hover:-translate-y-2 hover:shadow-[10px_10px_0_0_#D6FF3F]"
+              className="group border-2 border-white bg-white p-3 text-[#14171A] transition duration-200 hover:-translate-y-1 hover:shadow-[10px_10px_0_0_#D6FF3F]"
             >
               <div className="bg-[#14171A] p-6 text-white sm:p-8 flex flex-col justify-between h-full">
                 <div>
@@ -215,7 +187,7 @@ export default function AdminHubPage() {
             {/* 2. ISSUES & PROBLEMEN */}
             <Link
               href="/admin/issues"
-              className="group border-2 border-white bg-white p-3 text-[#14171A] transition duration-200 hover:-translate-y-2 hover:shadow-[10px_10px_0_0_#FF4B3E]"
+              className="group border-2 border-white bg-white p-3 text-[#14171A] transition duration-200 hover:-translate-y-1 hover:shadow-[10px_10px_0_0_#FF4B3E]"
             >
               <div className="bg-[#14171A] p-6 text-white sm:p-8 flex flex-col justify-between h-full">
                 <div>
@@ -251,7 +223,7 @@ export default function AdminHubPage() {
             {/* 3. CLUBS & LOCATIES */}
             <Link
               href="/admin/venues"
-              className="group border-2 border-white bg-white p-3 text-[#14171A] transition duration-200 hover:-translate-y-2 hover:shadow-[10px_10px_0_0_#D6FF3F]"
+              className="group border-2 border-white bg-white p-3 text-[#14171A] transition duration-200 hover:-translate-y-1 hover:shadow-[10px_10px_0_0_#D6FF3F]"
             >
               <div className="bg-[#14171A] p-6 text-white sm:p-8 flex flex-col justify-between h-full">
                 <div>
@@ -281,7 +253,7 @@ export default function AdminHubPage() {
             {/* 4. REVIEWS & BEOORDELINGEN */}
             <Link
               href="/admin/reviews"
-              className="group border-2 border-white bg-white p-3 text-[#14171A] transition duration-200 hover:-translate-y-2 hover:shadow-[10px_10px_0_0_#FF4B3E]"
+              className="group border-2 border-white bg-white p-3 text-[#14171A] transition duration-200 hover:-translate-y-1 hover:shadow-[10px_10px_0_0_#FF4B3E]"
             >
               <div className="bg-[#14171A] p-6 text-white sm:p-8 flex flex-col justify-between h-full">
                 <div>

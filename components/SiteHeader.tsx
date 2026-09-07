@@ -10,7 +10,7 @@ export default function SiteHeader() {
   const pathname = usePathname();
 
   const [loginMenuOpen, setLoginMenuOpen] = useState(false);
-  const [userRole, setUserRole] = useState<"player" | "trainer" | null>(null);
+  const [userRole, setUserRole] = useState<"player" | "trainer" | "admin" | null>(null);
   const [userName, setUserName] = useState<string | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
 
@@ -59,21 +59,7 @@ export default function SiteHeader() {
         return;
       }
 
-      // 1. Check of gebruiker een trainer is
-      const { data: trainer } = await supabase
-        .from("trainers")
-        .select("name")
-        .eq("user_id", session.user.id)
-        .maybeSingle();
-
-      if (trainer) {
-        setUserRole("trainer");
-        setUserName(trainer.name.trim().split(" ")[0]);
-        setLoadingSession(false);
-        return;
-      }
-
-      // 2. Check profiel voor speler
+      // 1. Check profiel rol (admin, trainer of speler)
       const { data: profile } = await supabase
         .from("profiles")
         .select("full_name, role")
@@ -81,12 +67,31 @@ export default function SiteHeader() {
         .maybeSingle();
 
       if (profile) {
-        setUserRole(profile.role === "trainer" ? "trainer" : "player");
+        if (profile.role === "admin") {
+          setUserRole("admin");
+        } else if (profile.role === "trainer") {
+          setUserRole("trainer");
+        } else {
+          setUserRole("player");
+        }
+
         if (profile.full_name) {
           setUserName(profile.full_name.trim().split(" ")[0]);
         }
       } else {
-        setUserRole("player");
+        // Fallback: Check of gebruiker voorkomt in 'trainers' tabel
+        const { data: trainer } = await supabase
+          .from("trainers")
+          .select("name")
+          .eq("user_id", session.user.id)
+          .maybeSingle();
+
+        if (trainer) {
+          setUserRole("trainer");
+          setUserName(trainer.name.trim().split(" ")[0]);
+        } else {
+          setUserRole("player");
+        }
       }
     } catch {
       setUserRole(null);
@@ -105,7 +110,6 @@ export default function SiteHeader() {
   }
 
   return (
-    /* 💡 MET DE SUBTIELE RAND ONDERIN EXACT ZOALS OP DASHBOARD */
     <header className="relative z-30 bg-[#14171A] border-b border-white/15">
       <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8 lg:py-7">
         
@@ -147,6 +151,25 @@ export default function SiteHeader() {
           <div className="hidden items-center gap-3 lg:flex">
             {!loadingSession && (
               <>
+                {userRole === "admin" && (
+                  <>
+                    <Link
+                      href="/admin"
+                      className="font-display text-sm text-[#FF4B3E] transition hover:text-white"
+                    >
+                      ADMIN HUB
+                    </Link>
+                    <span className="text-[#8A8F94]">|</span>
+                    <button
+                      type="button"
+                      onClick={() => void handleLogout()}
+                      className="font-display text-sm text-[#D7D9DA] transition hover:text-[#FF4B3E]"
+                    >
+                      UITLOGGEN
+                    </button>
+                  </>
+                )}
+
                 {userRole === "player" && (
                   <>
                     <Link
@@ -218,6 +241,25 @@ export default function SiteHeader() {
 
             {loginMenuOpen && (
               <div className="absolute right-0 mt-2 w-48 border-2 border-white bg-[#14171A] p-2 shadow-[6px_6px_0_0_#FF4B3E]">
+                {userRole === "admin" && (
+                  <>
+                    <Link
+                      href="/admin"
+                      onClick={() => setLoginMenuOpen(false)}
+                      className="block px-3 py-2 font-display text-sm text-[#FF4B3E] hover:bg-[#FF4B3E] hover:!text-white"
+                    >
+                      ADMIN HUB
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={() => void handleLogout()}
+                      className="w-full text-left px-3 py-2 font-display text-sm text-white hover:bg-white hover:!text-[#14171A]"
+                    >
+                      UITLOGGEN
+                    </button>
+                  </>
+                )}
+
                 {userRole === "player" && (
                   <>
                     <Link
@@ -278,7 +320,7 @@ export default function SiteHeader() {
             )}
           </div>
 
-          {/* 💡 PRIMAIRE CTA KNOP (ALLEEN OP HOMEPAGE) */}
+          {/* PRIMAIRE CTA KNOP (ALLEEN OP HOMEPAGE) */}
           {pathname === "/" && (
             <Link
               href="/trainers"
