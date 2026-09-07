@@ -1,34 +1,27 @@
-import SiteFooter from "@/components/SiteFooter";
+"use client";
 
-const trainerCards = [
-  {
-    initials: "TP",
-    name: "TOM PEETERS",
-    meta: "Padel · Tactiek & gevorderden",
-    rating: "4.8",
-    distance: "0.8 KM",
-    price: "€42",
-    color: "bg-[#D6FF3F]",
-  },
-  {
-    initials: "SV",
-    name: "SARAH VERMEULEN",
-    meta: "Tennis · Beginners & techniek",
-    rating: "4.9",
-    distance: "2.1 KM",
-    price: "€45",
-    color: "bg-[#FF4B3E]",
-  },
-  {
-    initials: "JD",
-    name: "JESSE DE VRIES",
-    meta: "Padel · Smash & wedstrijdspel",
-    rating: "4.7",
-    distance: "3.4 KM",
-    price: "€38",
-    color: "bg-white",
-  },
-];
+import { useEffect, useRef, useState } from "react";
+import SiteHeader from "@/components/SiteHeader";
+import SiteFooter from "@/components/SiteFooter";
+import { supabase } from "@/lib/supabase-browser";
+
+type ShowcaseItem = {
+  id: string;
+  type: "slot" | "package";
+  trainerId: string;
+  trainerName: string;
+  trainerInitials: string;
+  trainerImage: string | null;
+  trainerRating: number | null;
+  sport: string;
+  titleOrFocus: string;
+  dateLabel: string;
+  timeLabel: string;
+  locationLabel: string;
+  priceLabel: string;
+  subPriceLabel?: string;
+  href: string;
+};
 
 const steps = [
   {
@@ -55,7 +48,153 @@ const trainerBenefits = [
   "Volledige controle over je eigen agenda en uurtarief.",
 ];
 
+function formatDate(value: string): string {
+  return new Intl.DateTimeFormat("nl-NL", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  })
+    .format(new Date(value))
+    .replace(".", "")
+    .toUpperCase();
+}
+
+function formatTime(value: string): string {
+  return new Intl.DateTimeFormat("nl-NL", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatEuro(cents: number): string {
+  return `€${Math.round(cents / 100)}`;
+}
+
 export default function Home() {
+  const [showcaseItems, setShowcaseItems] = useState<ShowcaseItem[]>([]);
+  const [loadingShowcase, setLoadingShowcase] = useState<boolean>(true);
+
+  // CARROUSEL REF & SCROLL FUNCTIE
+  const carouselRef = useRef<HTMLDivElement | null>(null);
+
+  const scrollCarousel = (direction: "left" | "right") => {
+    if (carouselRef.current) {
+      const scrollAmount = direction === "left" ? -380 : 380;
+      carouselRef.current.scrollBy({ left: scrollAmount, behavior: "smooth" });
+    }
+  };
+
+  useEffect(() => {
+    void loadDynamicShowcase();
+  }, []);
+
+  async function loadDynamicShowcase(): Promise<void> {
+    setLoadingShowcase(true);
+    const items: ShowcaseItem[] = [];
+
+    try {
+      // 1. Losse tijdsloten ophalen uit Supabase
+      const { data: slotData } = await supabase
+        .from("availability_slots")
+        .select(
+          `
+            id,
+            starts_at,
+            ends_at,
+            sport,
+            price_cents,
+            trainer:trainers (
+              id, name, initials, rating, image_url, focus
+            ),
+            venue:venues!availability_slots_location_id_fkey (
+              name, city
+            )
+          `
+        )
+        .eq("status", "available")
+        .gte("starts_at", new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString())
+        .order("starts_at", { ascending: true })
+        .limit(10);
+
+      if (slotData && slotData.length > 0) {
+        slotData.forEach((slot: any) => {
+          if (slot.trainer) {
+            items.push({
+              id: slot.id,
+              type: "slot",
+              trainerId: slot.trainer.id,
+              trainerName: slot.trainer.name,
+              trainerInitials: slot.trainer.initials || slot.trainer.name.slice(0, 2).toUpperCase(),
+              trainerImage: slot.trainer.image_url,
+              trainerRating: slot.trainer.rating,
+              sport: slot.sport.toUpperCase(),
+              titleOrFocus: slot.trainer.focus || "Padel & Tennis",
+              dateLabel: `${formatDate(slot.starts_at)} · ${formatTime(slot.starts_at)} - ${formatTime(slot.ends_at)}`,
+              timeLabel: formatTime(slot.starts_at),
+              locationLabel: slot.venue ? `${slot.venue.city} — ${slot.venue.name}` : "Locatie volgt",
+              priceLabel: formatEuro(slot.price_cents),
+              href: `/boeken/${slot.trainer.id}?slot=${slot.id}`,
+            });
+          }
+        });
+      }
+
+      // 2. Lespakketten ophalen uit Supabase
+      const { data: packageData } = await supabase
+        .from("trainer_packages")
+        .select(
+          `
+            id,
+            title,
+            sport,
+            lesson_count,
+            starts_at,
+            price_cents,
+            trainer:trainers (
+              id, name, initials, rating, image_url, focus
+            ),
+            venue:venues!trainer_packages_location_id_fkey (
+              name, city
+            )
+          `
+        )
+        .eq("is_active", true)
+        .gte("starts_at", new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString())
+        .order("starts_at", { ascending: true })
+        .limit(10);
+
+      if (packageData && packageData.length > 0) {
+        packageData.forEach((pkg: any) => {
+          if (pkg.trainer) {
+            items.push({
+              id: pkg.id,
+              type: "package",
+              trainerId: pkg.trainer.id,
+              trainerName: pkg.trainer.name,
+              trainerInitials: pkg.trainer.initials || pkg.trainer.name.slice(0, 2).toUpperCase(),
+              trainerImage: pkg.trainer.image_url,
+              trainerRating: pkg.trainer.rating,
+              sport: pkg.sport.toUpperCase(),
+              titleOrFocus: pkg.title,
+              dateLabel: `${pkg.lesson_count}-WEKEN TRAJECT (Start: ${formatDate(pkg.starts_at)})`,
+              timeLabel: formatTime(pkg.starts_at),
+              locationLabel: pkg.venue ? `${pkg.venue.city} — ${pkg.venue.name}` : "Locatie volgt",
+              priceLabel: formatEuro(pkg.price_cents),
+              subPriceLabel: `${formatEuro(Math.round(pkg.price_cents / pkg.lesson_count))} / les`,
+              href: `/boeken/pakket/${pkg.id}`,
+            });
+          }
+        });
+      }
+
+      setShowcaseItems(items);
+    } catch (error) {
+      console.error("Fout bij laden homepage showcase:", error);
+    } finally {
+      setLoadingShowcase(false);
+    }
+  }
+
   return (
     <main className="overflow-hidden bg-[#14171A] text-white">
       {/* HERO */}
@@ -89,45 +228,7 @@ export default function Home() {
           <div className="absolute right-[25%] top-0 h-full w-[3px] bg-[#D6FF3F]/10" />
         </div>
 
-        {/* HEADER */}
-        <header className="relative z-30">
-          <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8 lg:py-7">
-            {/* GOWTRAIN LOGO */}
-            <a
-              href="#home"
-              aria-label="GowTrain home"
-              className="group inline-flex items-center gap-2"
-            >
-              <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-                GOWTRAIN
-              </span>
-              <span className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1 sm:border-b-[11px] sm:border-l-[9px] sm:border-t-[11px]" />
-            </a>
-
-            {/* Navigatie */}
-            <nav
-              aria-label="Hoofdnavigatie"
-              className="hidden items-center gap-8 font-display text-lg md:flex lg:gap-12"
-            >
-              <a href="#spelers" className="transition hover:text-[#D6FF3F]">
-                SPELERS
-              </a>
-              <a href="#trainers" className="transition hover:text-[#D6FF3F]">
-                TRAINERS
-              </a>
-              <a href="#over-gowtrain" className="transition hover:text-[#D6FF3F]">
-                OVER
-              </a>
-            </nav>
-
-            <a
-              href="/speler-worden"
-              className="bg-[#FF4B3E] px-4 py-3 font-display text-sm text-white transition hover:bg-[#D6FF3F] hover:!text-[#14171A] sm:px-5"
-            >
-              GOW!
-            </a>
-          </div>
-        </header>
+        <SiteHeader />
 
         {/* HERO CONTENT */}
         <div className="relative z-10 mx-auto max-w-7xl px-5 pb-16 pt-12 sm:px-8 sm:pt-16 lg:pb-24 lg:pt-20">
@@ -154,23 +255,46 @@ export default function Home() {
                 </p>
               </div>
 
-              {/* Directe Zoekbalk in Hero */}
-              <form action="/trainers" method="GET" className="mt-8 max-w-xl">
-                <div className="flex flex-col border-2 border-white bg-white p-2 shadow-[8px_8px_0_0_#FF4B3E] sm:flex-row sm:items-center">
-                  <input
-                    type="text"
-                    name="q"
-                    placeholder="Zoek op stad of gemeente..."
-                    className="w-full bg-transparent px-4 py-3 text-[#14171A] outline-none font-sans font-medium placeholder:text-[#8A8F94]"
-                  />
-                  <button
-                    type="submit"
-                    className="mt-2 w-full bg-[#FF4B3E] px-6 py-3 font-display text-lg text-white transition hover:bg-[#D6FF3F] hover:text-[#14171A] sm:mt-0 sm:w-auto"
-                  >
-                    ZOEKEN. GOW!
-                  </button>
+              {/* Directe Zoekbalk + Populaire Steden Snelselectie */}
+              <div className="mt-8 max-w-xl">
+                <form action="/trainers" method="GET">
+                  <div className="flex flex-col border-2 border-white bg-white p-2 shadow-[8px_8px_0_0_#FF4B3E] sm:flex-row sm:items-center">
+                    <input
+                      type="text"
+                      name="q"
+                      placeholder="Zoek op stad of gemeente..."
+                      className="w-full bg-transparent px-4 py-3 text-[#14171A] outline-none font-sans font-medium placeholder:text-[#8A8F94]"
+                    />
+                    <button
+                      type="submit"
+                      className="mt-2 w-full bg-[#FF4B3E] px-6 py-3 font-display text-lg text-white transition hover:bg-[#D6FF3F] hover:text-[#14171A] sm:mt-0 sm:w-auto"
+                    >
+                      ZOEKEN. GOW!
+                    </button>
+                  </div>
+                </form>
+
+                {/* 📍 POPULAIRE STEDEN SNELSELECTIE */}
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <span className="font-display text-xs text-[#D6FF3F]">POPULAIR:</span>
+                  {[
+                    "Roermond",
+                    "Maastricht",
+                    "Venlo",
+                    "Eindhoven",
+                    "Amsterdam",
+                    "Utrecht",
+                  ].map((city) => (
+                    <a
+                      key={city}
+                      href={`/trainers?q=${encodeURIComponent(city)}`}
+                      className="border border-white/30 bg-[#14171A] px-3 py-1.5 font-display text-xs text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:!text-[#14171A]"
+                    >
+                      {city.toUpperCase()}
+                    </a>
+                  ))}
                 </div>
-              </form>
+              </div>
 
               {/* Hero CTA buttons */}
               <div className="mt-8 flex flex-col gap-4 sm:flex-row">
@@ -225,12 +349,12 @@ export default function Home() {
                   <div className="mt-6 flex items-end justify-between border-t border-white/20 pt-4">
                     <div>
                       <p className="text-xs text-[#8A8F94]">PRIJS PER LES</p>
-                      <p className="font-display text-4xl text-[#D6FF3F]">€42</p>
+                      <p className="font-display text-4xl text-[#D6FF3F]">€80</p>
                     </div>
 
                     <a
                       href="/trainers"
-                      className="bg-[#FF4B3E] px-8 py-3 font-display text-xl text-white transition hover:bg-[#D6FF3F] hover:text-[#14171A]"
+                      className="bg-[#FF4B3E] px-8 py-3 font-display text-xl text-white transition hover:bg-[#D6FF3F] hover:!text-[#14171A]"
                     >
                       GOW!
                     </a>
@@ -378,83 +502,164 @@ export default function Home() {
         </div>
       </section>
 
-      {/* TRAINER OVERZICHT */}
+      {/* 🎾 DYNAMISCHE CARROUSEL: LIVE AANBOD (MAX 6 ITEMS) */}
       <section
         id="trainers-overzicht"
         className="bg-[#D6FF3F] py-20 text-[#14171A] sm:py-28"
       >
         <div className="mx-auto max-w-7xl px-5 sm:px-8">
+          
+          {/* KOP & PIJLTJES NAVIGATIE */}
           <div className="flex flex-col justify-between gap-8 md:flex-row md:items-end">
             <div>
               <p className="font-display text-lg text-[#FF4B3E]">
-                VIND JOUW MATCH
+                LIVE AANBOD
               </p>
 
               <h2 className="mt-4 font-display text-6xl leading-[0.83] sm:text-7xl">
-                TRAINERS<br />
-                BIJ JOU.
+                TRAINERS &amp;<br />
+                LESSEN BIJ JOU.
               </h2>
             </div>
 
-            <p className="max-w-md text-lg leading-relaxed text-[#303438]">
-              Bekijk trainers op sport, specialisatie, uurtarief en afstand.
-              Jij kiest. Jij Gowt.
-            </p>
+            <div className="flex items-center justify-between gap-4 md:justify-end">
+              <p className="hidden max-w-xs text-sm font-semibold text-[#303438] lg:block">
+                Swipe of gebruik de pijlen om beschikbare lessen en trajecten te bekijken.
+              </p>
+
+              {/* CARROUSEL PIJLEN */}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => scrollCarousel("left")}
+                  aria-label="Vorige opties"
+                  className="flex h-12 w-12 items-center justify-center border-2 border-[#14171A] bg-white font-display text-2xl text-[#14171A] transition hover:bg-[#14171A] hover:text-white"
+                >
+                  ←
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollCarousel("right")}
+                  aria-label="Volgende opties"
+                  className="flex h-12 w-12 items-center justify-center border-2 border-[#14171A] bg-[#FF4B3E] font-display text-2xl text-white transition hover:bg-[#14171A]"
+                >
+                  →
+                </button>
+              </div>
+            </div>
           </div>
 
-          <div className="mt-12 grid gap-5 md:grid-cols-3">
-            {trainerCards.map((trainer) => (
-              <article
-                key={trainer.name}
-                className="group border-2 border-[#14171A] bg-white p-4 transition duration-200 hover:-translate-y-2 hover:shadow-[8px_8px_0_0_#14171A]"
-              >
-                <div className="bg-[#14171A] p-5 text-white">
-                  <div className="flex items-start justify-between gap-4">
-                    <div
-                      className={`flex h-12 w-12 items-center justify-center rounded-full font-display text-lg text-[#14171A] ${trainer.color}`}
-                    >
-                      {trainer.initials}
-                    </div>
-
-                    {/* Brandbook Badge Layout */}
-                    <div className="flex gap-1.5">
-                      <span className="bg-[#D6FF3F] px-2.5 py-1 font-display text-xs text-[#14171A]">
-                        {trainer.rating} ★
-                      </span>
-                      <span className="bg-[#303438] px-2 py-1 font-display text-xs text-white">
-                        {trainer.distance}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="pt-6">
-                    <h3 className="font-display text-3xl">
-                      {trainer.name}
-                    </h3>
-
-                    <p className="mt-2 min-h-10 text-sm leading-relaxed text-[#B9BEC2]">
-                      {trainer.meta}
-                    </p>
-                  </div>
-
-                  <div className="mt-6 flex items-end justify-between border-t border-white/20 pt-4">
+          {/* CARROUSEL CONTAINER */}
+          <div
+            ref={carouselRef}
+            className="mt-12 flex snap-x snap-mandatory gap-6 overflow-x-auto pb-6 scrollbar-none [scroll-behavior:smooth]"
+          >
+            {showcaseItems.length > 0 ? (
+              showcaseItems.slice(0, 9).map((item) => (
+                <article
+                  key={item.id}
+                  className="group w-[300px] shrink-0 snap-start border-2 border-[#14171A] bg-white p-4 transition duration-200 hover:-translate-y-2 hover:shadow-[8px_8px_0_0_#14171A] sm:w-[360px]"
+                >
+                  <div className="flex h-full flex-col justify-between bg-[#14171A] p-5 text-white">
                     <div>
-                      <span className="block text-xs text-[#8A8F94]">PRIJS PER LES</span>
-                      <span className="font-display text-3xl text-[#D6FF3F]">
-                        {trainer.price}
-                      </span>
+                      {/* TYPE BADGE: LES OF PAKKET */}
+                      <div className="flex items-start justify-between gap-4">
+                        <span
+                          className={`px-3 py-1 font-display text-xs ${
+                            item.type === "package"
+                              ? "bg-[#D6FF3F] text-[#14171A]"
+                              : "bg-[#FF4B3E] text-white"
+                          }`}
+                        >
+                          {item.type === "package" ? "LESPAKKET" : "LOSSE LES"}
+                        </span>
+
+                        {item.trainerRating ? (
+                          <span className="font-display text-sm text-[#D6FF3F]">
+                            {item.trainerRating.toFixed(1)} ★
+                          </span>
+                        ) : (
+                          <span className="font-display text-xs text-[#8A8F94]">NEW</span>
+                        )}
+                      </div>
+
+                      {/* TRAINER & TITEL */}
+                      <div className="pt-5">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-[#D6FF3F] bg-[#14171A] font-display text-sm text-[#D6FF3F]">
+                            {item.trainerInitials}
+                          </div>
+                          <div>
+                            <p className="font-display text-lg leading-none text-white">
+                              {item.trainerName}
+                            </p>
+                            <p className="mt-1 text-[11px] text-[#B9BEC2]">
+                              {item.sport}
+                            </p>
+                          </div>
+                        </div>
+
+                        <h3 className="mt-4 min-h-[3.5rem] font-display text-2xl text-[#D6FF3F] line-clamp-2">
+                          {item.titleOrFocus}
+                        </h3>
+
+                        <p className="mt-2 text-xs text-white">
+                          🗓️ {item.dateLabel}
+                        </p>
+
+                        <p className="mt-1 text-xs text-[#B9BEC2] truncate">
+                          📍 {item.locationLabel}
+                        </p>
+                      </div>
                     </div>
 
-                    <a
-                      href="/trainers"
-                      className="bg-[#FF4B3E] px-6 py-2.5 font-display text-lg text-white transition group-hover:bg-[#D6FF3F] group-hover:text-[#14171A]"
-                    >
-                      GOW!
-                    </a>
+                    {/* PRIJS & CTA */}
+                    <div className="mt-6 border-t border-white/20 pt-4">
+                      <div className="flex items-end justify-between">
+                        <div>
+                          <span className="block text-[10px] text-[#8A8F94]">PRIJS</span>
+                          <span className="font-display text-3xl text-[#D6FF3F]">
+                            {item.priceLabel}
+                          </span>
+                          {item.subPriceLabel && (
+                            <span className="block text-[10px] text-[#B9BEC2]">
+                              {item.subPriceLabel}
+                            </span>
+                          )}
+                        </div>
+
+                        <a
+                          href={item.href}
+                          className="bg-[#FF4B3E] px-6 py-3 font-display text-base text-white transition group-hover:bg-[#D6FF3F] group-hover:!text-[#14171A]"
+                        >
+                          GOW! →
+                        </a>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </article>
-            ))}
+                </article>
+              ))
+            ) : (
+              /* FALLBACK KAARTEN */
+              <>
+                <article className="w-[320px] shrink-0 border-2 border-[#14171A] bg-white p-4">
+                  <div className="bg-[#14171A] p-5 text-white">
+                    <span className="bg-[#D6FF3F] px-3 py-1 font-display text-xs text-[#14171A]">TOM PEETERS</span>
+                    <h3 className="font-display text-3xl mt-4">TOM PEETERS</h3>
+                    <p className="text-sm text-[#B9BEC2]">Padel · Tactiek &amp; Gevorderden</p>
+                    <a href="/trainers" className="mt-6 block bg-[#FF4B3E] py-3 text-center font-display text-lg text-white">BEKIJK TRAINER →</a>
+                  </div>
+                </article>
+                <article className="w-[320px] shrink-0 border-2 border-[#14171A] bg-white p-4">
+                  <div className="bg-[#14171A] p-5 text-white">
+                    <span className="bg-[#FF4B3E] px-3 py-1 font-display text-xs text-white">SARAH VERMEULEN</span>
+                    <h3 className="font-display text-3xl mt-4">SARAH VERMEULEN</h3>
+                    <p className="text-sm text-[#B9BEC2]">Tennis · Beginners &amp; Techniek</p>
+                    <a href="/trainers" className="mt-6 block bg-[#FF4B3E] py-3 text-center font-display text-lg text-white">BEKIJK TRAINER →</a>
+                  </div>
+                </article>
+              </>
+            )}
           </div>
 
           <div className="mt-10 text-center">
@@ -462,7 +667,7 @@ export default function Home() {
               href="/trainers"
               className="inline-flex items-center gap-3 border-2 border-[#14171A] px-7 py-4 font-display text-lg text-[#14171A] transition hover:bg-[#14171A] hover:!text-white"
             >
-              BEKIJK ALLE TRAINERS
+              BEKIJK ALLE TRAINERS &amp; AANBOD
               <span aria-hidden="true" className="text-inherit">→</span>
             </a>
           </div>

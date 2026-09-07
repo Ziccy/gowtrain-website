@@ -1,13 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import BookingIssueModal from "@/components/BookingIssueModal";
+import BookingChatModal from "@/components/BookingChatModal";
 import { supabase } from "@/lib/supabase-browser";
+import {
+  getWhatsAppShareUrl,
+  getGoogleCalendarUrl,
+} from "@/lib/calendar-share";
 
 type PlayerProfile = {
+  id?: string;
   full_name: string | null;
   role: string;
 };
@@ -19,6 +26,8 @@ type BookingStatus =
   | "cancelled"
   | "refunded"
   | "completed";
+
+type BookingFilter = "all" | "upcoming" | "completed" | "cancelled";
 
 type VenueSummary = {
   name: string;
@@ -43,6 +52,12 @@ type BookingTrainer = {
   initials: string;
 } | null;
 
+type MessageState = {
+  has_messages: boolean;
+  has_unread_trainer_message: boolean;
+  last_sender_role: "player" | "trainer" | null;
+};
+
 type PlayerBooking = {
   id: string;
   status: BookingStatus;
@@ -56,6 +71,8 @@ type PlayerBooking = {
   currency: string;
   availability_slots: BookingSlot;
   trainers: BookingTrainer;
+  has_review?: boolean;
+  chat_state?: MessageState;
 };
 
 type BookingSection = {
@@ -117,7 +134,7 @@ function getStatusLabel(status: BookingStatus): string {
 }
 
 function getStatusClass(status: BookingStatus): string {
-  if (status === "confirmed") {
+  if (status === "confirmed" || status === "completed") {
     return "bg-[#D6FF3F] text-[#14171A]";
   }
   if (status === "payment_pending" || status === "refund_pending") {
@@ -166,21 +183,6 @@ function getVenueLabel(venue: VenueSummary | null): string {
   return `${venue.city.toUpperCase()} — ${venue.name}`;
 }
 
-function getBookingTime(booking: PlayerBooking): number {
-  const startsAt = booking.availability_slots?.starts_at;
-  if (!startsAt) return Number.MAX_SAFE_INTEGER;
-  return new Date(startsAt).getTime();
-}
-
-function isUpcomingConfirmedBooking(booking: PlayerBooking): boolean {
-  const startsAt = booking.availability_slots?.starts_at;
-  return (
-    booking.status === "confirmed" &&
-    Boolean(startsAt) &&
-    new Date(startsAt as string).getTime() >= Date.now()
-  );
-}
-
 function canPlayerCancel(booking: PlayerBooking): boolean {
   if (booking.status !== "confirmed") return false;
   const startsAt = booking.availability_slots?.starts_at;
@@ -193,21 +195,36 @@ function isTimelyCancellation(booking: PlayerBooking): boolean {
   return new Date(startsAt).getTime() > Date.now() + 24 * 60 * 60 * 1000;
 }
 
-function canReportBookingIssue(booking: PlayerBooking): boolean {
-  return booking.status === "confirmed" || booking.status === "completed";
-}
-
-export default function MijnBoekingenPage() {
+function MijnBoekingenContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const issueReportRef = useRef<HTMLDivElement | null>(null);
 
+  const isPackageSuccess = searchParams.get("success") === "package";
+  const packageIdParam = searchParams.get("package_id");
+
   const [playerProfile, setPlayerProfile] = useState<PlayerProfile | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string>("");
   const [bookings, setBookings] = useState<PlayerBooking[]>([]);
+
+  // FILTER & PAGINATIE STATE
+  const [statusFilter, setStatusFilter] = useState<BookingFilter>("all");
+  const [selectedMonth, setSelectedMonth] = useState<string>("all");
+  const [visibleLimit, setVisibleLimit] = useState<number>(6);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [cancellingBookingId, setCancellingBookingId] = useState<string | null>();
   const [payingBookingId, setPayingBookingId] = useState<string | null>();
+
+  // CHAT MODAL STATE
+  const [chatBooking, setChatBooking] = useState<PlayerBooking | null>(null);
+
+  // Review state
+  const [reviewBookingId, setReviewBookingId] = useState<string | null>(null);
+  const [reviewRating, setReviewRating] = useState<number>(5);
+  const [reviewComment, setReviewComment] = useState<string>("");
+  const [submittingReview, setSubmittingReview] = useState<boolean>(false);
 
   const [pendingCancellation, setPendingCancellation] = useState<PlayerBooking | null>();
   const [pendingIssueBooking, setPendingIssueBooking] = useState<PlayerBooking | null>();
@@ -219,67 +236,95 @@ export default function MijnBoekingenPage() {
     void loadPlayerBookings();
   }, []);
 
-  const bookingSections = useMemo((): BookingSection[] => {
-    const pendingPayments = bookings
-      .filter((booking) => booking.status === "payment_pending")
-      .sort((a, b) => getBookingTime(a) - getBookingTime(b));
+  const unreadBookings = useMemo(() => {
+    return bookings.filter(
+      (b) => b.chat_state?.has_unread_trainer_message && b.status === "confirmed"
+    );
+  }, [bookings]);
 
-    const pendingRefunds = bookings
-      .filter((booking) => booking.status === "refund_pending")
-      .sort((a, b) => getBookingTime(a) - getBookingTime(b));
+  const monthOptions = useMemo(() => {
+    const months = new Set<string>();
+    bookings.forEach((b) => {
+      const startsAt = b.availability_slots?.starts_at;
+      if (startsAt) {
+        const date = new Date(startsAt);
+        const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+        months.add(key);
+      }
+    });
+    return Array.from(months).sort().reverse();
+  }, [bookings]);
 
-    const upcoming = bookings
-      .filter(isUpcomingConfirmedBooking)
-      .sort((a, b) => getBookingTime(a) - getBookingTime(b));
+  const filteredBookings = useMemo(() => {
+    return bookings.filter((b) => {
+      if (statusFilter === "upcoming" && b.status !== "confirmed" && b.status !== "payment_pending") {
+        return false;
+      }
+      if (statusFilter === "completed" && b.status !== "completed") {
+        return false;
+      }
+      if (
+        statusFilter === "cancelled" &&
+        b.status !== "cancelled" &&
+        b.status !== "refunded" &&
+        b.status !== "refund_pending"
+      ) {
+        return false;
+      }
 
-    const previous = bookings
-      .filter(
-        (booking) =>
-          booking.status !== "payment_pending" &&
-          booking.status !== "refund_pending" &&
-          !isUpcomingConfirmedBooking(booking)
-      )
-      .sort((a, b) => getBookingTime(b) - getBookingTime(a));
+      if (selectedMonth !== "all") {
+        const startsAt = b.availability_slots?.starts_at;
+        if (!startsAt) return false;
+        const date = new Date(startsAt);
+        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+        if (monthKey !== selectedMonth) return false;
+      }
+
+      return true;
+    });
+  }, [bookings, statusFilter, selectedMonth]);
+
+  const { bookingSections, totalFilteredCount } = useMemo(() => {
+    const sortedList = [...filteredBookings].sort((a, b) => {
+      const timeA = a.availability_slots?.starts_at
+        ? new Date(a.availability_slots.starts_at).getTime()
+        : 0;
+      const timeB = b.availability_slots?.starts_at
+        ? new Date(b.availability_slots.starts_at).getTime()
+        : 0;
+
+      if (a.status === "confirmed" || a.status === "payment_pending") {
+        return timeA - timeB;
+      }
+      return timeB - timeA;
+    });
+
+    const limitedList = sortedList.slice(0, visibleLimit);
+
+    const pendingPayments = limitedList.filter((b) => b.status === "payment_pending");
+    const upcoming = limitedList.filter((b) => b.status === "confirmed");
+    const completed = limitedList.filter((b) => b.status === "completed");
+    const cancelled = limitedList.filter(
+      (b) => b.status === "cancelled" || b.status === "refunded" || b.status === "refund_pending"
+    );
 
     const sections: BookingSection[] = [];
 
     if (pendingPayments.length > 0) {
-      sections.push({
-        title: "BETALING NOG AFRONDEN",
-        bookings: pendingPayments,
-      });
+      sections.push({ title: "BETALING NOG AFRONDEN", bookings: pendingPayments });
     }
-
-    if (pendingRefunds.length > 0) {
-      sections.push({
-        title: "TERUGBETALING WORDT VERWERKT",
-        bookings: pendingRefunds,
-      });
-    }
-
     if (upcoming.length > 0) {
-      sections.push({
-        title: "VOLGENDE TRAINING",
-        bookings: [upcoming[0]],
-      });
-
-      if (upcoming.length > 1) {
-        sections.push({
-          title: "AANKOMENDE TRAININGEN",
-          bookings: upcoming.slice(1),
-        });
-      }
+      sections.push({ title: "AANKOMENDE TRAININGEN", bookings: upcoming });
+    }
+    if (completed.length > 0) {
+      sections.push({ title: "AFGERONDE TRAININGEN (REVIEW PLAATSEN)", bookings: completed });
+    }
+    if (cancelled.length > 0) {
+      sections.push({ title: "GEANNULEERDE BOEKINGEN", bookings: cancelled });
     }
 
-    if (previous.length > 0) {
-      sections.push({
-        title: "EERDERE BOEKINGEN",
-        bookings: previous,
-      });
-    }
-
-    return sections;
-  }, [bookings]);
+    return { bookingSections: sections, totalFilteredCount: filteredBookings.length };
+  }, [filteredBookings, visibleLimit]);
 
   function clearMessages(): void {
     setErrorMessage("");
@@ -296,55 +341,38 @@ export default function MijnBoekingenPage() {
     setErrorMessage("");
 
     try {
-      const { error: cleanupError } = await supabase.rpc(
-        "release_expired_booking_holds"
-      );
+      await supabase.rpc("mark_past_bookings_completed");
 
-      if (cleanupError) {
-        console.error("Verlopen reserveringen opruimen fout:", cleanupError.message);
-      }
-
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
+      const { data: { session } } = await supabase.auth.getSession();
       if (!session?.user) {
         router.replace("/speler-login");
         return;
       }
 
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
+      setCurrentUserId(session.user.id);
 
-      if (userError || !user) {
-        await supabase.auth.signOut();
-        router.replace("/speler-login");
-        return;
-      }
-
-      const { data: profileData, error: profileError } = await supabase
+      const { data: profileData } = await supabase
         .from("profiles")
         .select("full_name, role")
-        .eq("id", user.id)
+        .eq("id", session.user.id)
         .maybeSingle();
 
-      if (profileError || !profileData) {
-        await supabase.auth.signOut();
-        router.replace("/speler-login");
-        return;
-      }
-
       const profile = profileData as PlayerProfile;
-
-      if (profile.role !== "player") {
+      if (profile?.role !== "player") {
         await supabase.auth.signOut();
         router.replace("/speler-login");
         return;
       }
 
       setPlayerProfile(profile);
+
+      if (isPackageSuccess && packageIdParam) {
+        await supabase.rpc("confirm_package_purchase", {
+          p_package_id: packageIdParam,
+          p_player_id: session.user.id,
+        });
+        router.replace("/mijn-boekingen");
+      }
 
       const { data: bookingData, error: bookingError } = await supabase
         .from("bookings")
@@ -360,55 +388,129 @@ export default function MijnBoekingenPage() {
             participant_count,
             total_price_cents,
             currency,
-
             availability_slots (
               starts_at,
               ends_at,
               sport,
-
               venue:venues!availability_slots_location_id_fkey (
-                name,
-                city,
-                address_line,
-                postal_code
+                name, city, address_line, postal_code
               )
             ),
-
-            trainers (
-              id,
-              name,
-              sport,
-              focus,
-              image_url,
-              initials
-            )
+            trainers ( id, name, sport, focus, image_url, initials )
           `
         )
-        .eq("player_id", user.id)
+        .eq("player_id", session.user.id)
         .order("created_at", { ascending: false });
 
       if (bookingError) {
-        console.error("Spelerboekingen ophalen fout:", bookingError.message);
-        setBookings([]);
-        showError("Je boekingen konden niet worden geladen. Probeer het opnieuw.");
+        showError("Je boekingen konden niet worden geladen.");
         return;
       }
 
-      setBookings((bookingData ?? []) as unknown as PlayerBooking[]);
-    } catch (error) {
-      console.error("Mijn boekingen laden fout:", error);
-      setBookings([]);
+      const loadedBookings = (bookingData ?? []) as unknown as PlayerBooking[];
+      const bookingIds = loadedBookings.map((b) => b.id);
+
+      const { data: existingReviews } = await supabase
+        .from("trainer_reviews")
+        .select("booking_id")
+        .eq("player_id", session.user.id);
+
+      const reviewedBookingIds = new Set(existingReviews?.map((r) => r.booking_id));
+
+      let messagesData: Array<{ booking_id: string; sender_role: string; created_at: string }> = [];
+
+      if (bookingIds.length > 0) {
+        const { data: fetchedMsgs } = await supabase
+          .from("booking_messages")
+          .select("booking_id, sender_role, created_at")
+          .in("booking_id", bookingIds)
+          .order("created_at", { ascending: true });
+
+        messagesData = fetchedMsgs ?? [];
+      }
+
+      const messagesByBooking = new Map<string, Array<{ sender_role: string; created_at: string }>>();
+      messagesData.forEach((m) => {
+        const list = messagesByBooking.get(m.booking_id) || [];
+        list.push(m);
+        messagesByBooking.set(m.booking_id, list);
+      });
+
+      const bookingsWithState = loadedBookings.map((b) => {
+        const bMessages = messagesByBooking.get(b.id) || [];
+        const hasMessages = bMessages.length > 0;
+        const lastMsg = bMessages[bMessages.length - 1];
+
+        let lastReadTimeStr: string | null = null;
+        try {
+          lastReadTimeStr = localStorage.getItem(`gowtrain_read_player_${b.id}`);
+        } catch {
+          lastReadTimeStr = null;
+        }
+
+        const lastReadTime = lastReadTimeStr ? new Date(lastReadTimeStr).getTime() : 0;
+
+        const hasUnreadTrainer = bMessages.some((m) => {
+          if (m.sender_role !== "trainer") return false;
+          const msgTime = new Date(m.created_at).getTime();
+          return msgTime > lastReadTime;
+        });
+
+        return {
+          ...b,
+          has_review: reviewedBookingIds.has(b.id),
+          chat_state: {
+            has_messages: hasMessages,
+            has_unread_trainer_message: hasUnreadTrainer,
+            last_sender_role: lastMsg ? (lastMsg.sender_role as "player" | "trainer") : null,
+          },
+        };
+      });
+
+      setBookings(bookingsWithState);
+    } catch {
       showError("Je boekingen konden niet worden geladen.");
     } finally {
       if (showLoading) setLoading(false);
     }
   }
 
-  async function handleRefresh(): Promise<void> {
-    setRefreshing(true);
+  async function submitReview(booking: PlayerBooking): Promise<void> {
+    if (!booking.trainers?.id || !playerProfile) return;
+
+    setSubmittingReview(true);
     clearMessages();
-    await loadPlayerBookings(false);
-    setRefreshing(false);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) return;
+
+      const { error: reviewError } = await supabase
+        .from("trainer_reviews")
+        .insert({
+          booking_id: booking.id,
+          trainer_id: booking.trainers.id,
+          player_id: session.user.id,
+          rating: reviewRating,
+          comment: reviewComment.trim() || null,
+        });
+
+      if (reviewError) {
+        showError("Je review kon niet worden opgeslagen.");
+        return;
+      }
+
+      setSuccessMessage(`Bedankt! Je beoordeling voor ${booking.trainers.name} is geplaatst.`);
+      setReviewBookingId(null);
+      setReviewComment("");
+      setReviewRating(5);
+
+      await loadPlayerBookings(false);
+    } catch {
+      showError("Je review kon niet worden opgeslagen.");
+    } finally {
+      setSubmittingReview(false);
+    }
   }
 
   async function handleCheckout(bookingId: string): Promise<void> {
@@ -416,43 +518,9 @@ export default function MijnBoekingenPage() {
     clearMessages();
 
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      if (!session?.access_token) {
-        router.replace("/speler-login");
-        return;
-      }
-
-      const response = await fetch("/api/stripe/checkout/create", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({ bookingId }),
-      });
-
-      const result = (await response.json()) as {
-        checkoutUrl?: string;
-        error?: string;
-      };
-
-      if (!response.ok || !result.checkoutUrl) {
-        console.error("Stripe Checkout fout:", result.error);
-        showError(
-          result.error ||
-            "De betaalpagina kon niet worden geopend. Probeer het opnieuw."
-        );
-        return;
-      }
-
-      window.location.href = result.checkoutUrl;
-    } catch (error) {
-      console.error("Onverwachte Checkout-fout:", error);
-      showError("De betaalpagina kon niet worden geopend. Probeer het opnieuw.");
-    } finally {
+      window.location.href = `/boeken/checkout?bookingId=${bookingId}`;
+    } catch {
+      showError("De betaalpagina kon niet worden geopend.");
       setPayingBookingId(null);
     }
   }
@@ -471,14 +539,6 @@ export default function MijnBoekingenPage() {
     clearMessages();
     setPendingCancellation(null);
     setPendingIssueBooking(booking);
-
-    window.setTimeout(() => {
-      issueReportRef.current?.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
-      issueReportRef.current?.focus();
-    }, 50);
   }
 
   function closeIssueReport(): void {
@@ -487,9 +547,7 @@ export default function MijnBoekingenPage() {
 
   function handleIssueSubmitted(): void {
     setPendingIssueBooking(null);
-    setSuccessMessage(
-      "Je melding is verstuurd naar GowTrain. We nemen zo snel mogelijk contact met je op."
-    );
+    setSuccessMessage("Je melding is verstuurd naar GowTrain.");
   }
 
   async function handleCancellation(booking: PlayerBooking): Promise<void> {
@@ -509,25 +567,18 @@ export default function MijnBoekingenPage() {
       );
 
       if (error) {
-        console.error("Spelerannulering fout:", error.message);
         showError(error.message || "Je training kon niet worden geannuleerd.");
         return;
       }
 
-      const result = (
-        Array.isArray(data) ? data[0] : data
-      ) as CancellationResult | null;
-
+      const result = (Array.isArray(data) ? data[0] : data) as CancellationResult | null;
       if (!result) {
         showError("Je training kon niet worden geannuleerd.");
         return;
       }
 
       if (result.refund_required) {
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-
+        const { data: { session } } = await supabase.auth.getSession();
         if (!session?.access_token) {
           router.replace("/speler-login");
           return;
@@ -543,126 +594,62 @@ export default function MijnBoekingenPage() {
         });
 
         const refundResult = (await response.json()) as { error?: string };
-
         if (!response.ok) {
-          showError(
-            refundResult.error ||
-              "Je annulering is verwerkt, maar de terugbetaling kon niet direct worden gestart."
-          );
+          showError(refundResult.error || "Terugbetaling kon niet gestart worden.");
           await loadPlayerBookings(false);
           return;
         }
 
-        setSuccessMessage(
-          `Je training is geannuleerd. ${formatEuro(
-            result.refund_amount_cents,
-            result.currency
-          )} wordt terugbetaald via je oorspronkelijke betaalmethode.`
-        );
+        setSuccessMessage(`Je training is geannuleerd. ${formatEuro(result.refund_amount_cents, result.currency)} wordt teruggestort.`);
       } else {
         setSuccessMessage(result.message);
       }
 
       setPendingCancellation(null);
       await loadPlayerBookings(false);
-    } catch (error) {
-      console.error("Onverwachte spelerannulering fout:", error);
+    } catch {
       showError("Je training kon niet worden geannuleerd.");
     } finally {
       setCancellingBookingId(null);
     }
   }
 
-  async function handleLogout(): Promise<void> {
-    const { error } = await supabase.auth.signOut();
-    if (error) {
-      showError("Uitloggen lukt nu niet.");
-      return;
-    }
-    router.replace("/speler-login");
-    router.refresh();
+  async function handleRefresh(): Promise<void> {
+    setRefreshing(true);
+    clearMessages();
+    await loadPlayerBookings(false);
+    setRefreshing(false);
   }
 
-  /* BRANDBOOK BRANDED LOADER */
   if (loading) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
         <div className="flex flex-col items-center">
           <div className="flex items-center gap-2">
-            <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">
-              GOWTRAIN
-            </span>
+            <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">GOWTRAIN</span>
             <span className="h-0 w-0 animate-pulse border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
           </div>
-          <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">
-            BOEKINGEN LADEN...
-          </p>
+          <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">BOEKINGEN LADEN...</p>
         </div>
       </main>
     );
   }
 
-  const firstName =
-    playerProfile?.full_name?.trim().split(" ")[0]?.toUpperCase() ?? "SPELER";
+  const firstName = playerProfile?.full_name?.trim().split(" ")[0]?.toUpperCase() ?? "SPELER";
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* HEADER */}
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <Link
-            href="/"
-            aria-label="Terug naar GowTrain home"
-            className="group inline-flex items-center gap-2"
-          >
-            <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-              GOWTRAIN
-            </span>
-            <span
-              aria-hidden="true"
-              className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform group-hover:translate-x-1"
-            />
-          </Link>
+      <SiteHeader />
 
-          <div className="flex items-center gap-3">
-            <Link
-              href="/trainers"
-              className="hidden font-display text-sm text-white transition hover:text-[#D6FF3F] sm:block"
-            >
-              VIND TRAINER →
-            </Link>
-
-            <button
-              type="button"
-              onClick={() => void handleLogout()}
-              className="border-2 border-white px-4 py-2 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:text-[#14171A]"
-            >
-              UITLOGGEN
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* CONTENT */}
-      <section className="relative flex-1 overflow-hidden py-12 sm:py-16">
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -right-10 -top-20 select-none font-display text-[16rem] leading-none text-[#D6FF3F] opacity-[0.04] sm:text-[25rem]"
-        >
-          GOW
-        </div>
-
-        <div className="relative mx-auto max-w-6xl px-5 sm:px-8">
+      <section className="relative flex-1 overflow-hidden py-10 sm:py-14">
+        <div className="relative mx-auto max-w-7xl px-5 sm:px-8">
+          
           <div className="flex flex-col justify-between gap-6 border-b-2 border-white/20 pb-8 md:flex-row md:items-end">
             <div>
               <p className="font-display text-lg text-[#FF4B3E]">SPELER PORTAL</p>
               <h1 className="mt-3 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
-                HÉ, {firstName}.<br />
-                JOUW BOEKINGEN.
+                HÉ, {firstName}.<br />JOUW BOEKINGEN.
               </h1>
-              <p className="mt-6 max-w-2xl text-lg leading-relaxed text-[#D7D9DA]">
-                Overzicht van je geplande trainingen, betaalstatus en historie op de baan.
-              </p>
             </div>
 
             <div className="flex flex-wrap gap-3">
@@ -670,137 +657,151 @@ export default function MijnBoekingenPage() {
                 type="button"
                 onClick={() => void handleRefresh()}
                 disabled={refreshing}
-                className="border-2 border-white px-4 py-3 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:text-[#D6FF3F] disabled:opacity-60"
+                className="border-2 border-white px-4 py-3 font-display text-sm text-white hover:border-[#D6FF3F] hover:text-[#D6FF3F] disabled:opacity-60"
               >
                 {refreshing ? "VERVERSEN..." : "↻ VERVERS"}
               </button>
 
-              <Link
-                href="/trainers"
-                className="inline-flex items-center justify-center bg-[#FF4B3E] px-5 py-3 font-display text-sm text-white transition hover:bg-[#D6FF3F] hover:!text-[#14171A]"
-              >
+              <Link href="/trainers" className="inline-flex bg-[#FF4B3E] px-5 py-3 font-display text-sm text-white hover:bg-[#D6FF3F] hover:!text-[#14171A]">
                 BOEK TRAINING →
               </Link>
             </div>
           </div>
 
-          {errorMessage && (
-            <div
-              role="alert"
-              className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] px-5 py-4 font-semibold leading-relaxed text-white"
-            >
-              {errorMessage}
+          {unreadBookings.length > 0 && (
+            <div role="alert" className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white shadow-[8px_8px_0_0_#D6FF3F] flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+              <div>
+                <p className="font-display text-2xl text-white">
+                  {unreadBookings.length === 1 ? "1 NIEUW BERICHT VAN JE TRAINER!" : `${unreadBookings.length} NIEUWE BERICHTEN VAN JE TRAINERS!`}
+                </p>
+                <p className="mt-1 text-sm text-white/90">
+                  {unreadBookings.length === 1
+                    ? `${unreadBookings[0].trainers?.name || "Je trainer"} heeft een bericht gestuurd voor je les op ${formatDate(unreadBookings[0].availability_slots?.starts_at)}.`
+                    : `Je hebt ongelezen berichten van trainers voor ${unreadBookings.length} van je geplande trainingen.`}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setChatBooking(unreadBookings[0])}
+                className="inline-flex shrink-0 items-center justify-center bg-[#14171A] px-6 py-3.5 font-display text-lg !text-[#D6FF3F] hover:bg-white hover:!text-[#14171A] transition shadow-[4px_4px_0_0_#14171A]"
+              >
+                OPEN BERICHT. GOW! →
+              </button>
             </div>
           )}
 
-          {successMessage && (
-            <div
-              role="status"
-              className="mt-8 border-2 border-[#D6FF3F] bg-[#D6FF3F] px-5 py-5 font-semibold leading-relaxed text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E]"
-            >
-              {successMessage}
+          {isPackageSuccess && (
+            <div role="status" className="mt-8 border-2 border-[#D6FF3F] bg-[#D6FF3F] p-6 text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E]">
+              <p className="font-display text-3xl">LESPAKKET GEBOEKT &amp; BEVESTIGD!</p>
+              <p className="mt-2 text-base font-semibold leading-relaxed">
+                Je hebt je lespakket succesvol afgerekend. Alle wekelijkse lessen uit jouw traject staan hieronder in je overzicht. Gow!
+              </p>
             </div>
           )}
 
-          {/* CONFIRMATION DIALOG VOOR ANNULEREN */}
+          {errorMessage && <div role="alert" className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] px-5 py-4 font-semibold text-white">{errorMessage}</div>}
+          {successMessage && <div role="status" className="mt-8 border-2 border-[#D6FF3F] bg-[#D6FF3F] px-5 py-5 font-semibold text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E]">{successMessage}</div>}
+
           {pendingCancellation && (
             <section className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white sm:p-6 shadow-[8px_8px_0_0_#14171A]">
               <p className="font-display text-3xl">TRAINING ANNULEREN?</p>
-              <p className="mt-3 max-w-2xl leading-relaxed text-white/90">
-                {formatDate(pendingCancellation.availability_slots?.starts_at)} om{" "}
-                {formatTime(pendingCancellation.availability_slots?.starts_at)} bij{" "}
-                {pendingCancellation.trainers?.name || "je trainer"}.
+              <p className="mt-3 max-w-2xl text-white/90">
+                {formatDate(pendingCancellation.availability_slots?.starts_at)} om {formatTime(pendingCancellation.availability_slots?.starts_at)} bij {pendingCancellation.trainers?.name || "je trainer"}.
               </p>
-
               {isTimelyCancellation(pendingCancellation) ? (
                 <div className="mt-5 border-l-2 border-white pl-4">
                   <p className="font-display text-lg">JE ONTVANGT 100% TERUG</p>
-                  <p className="mt-1 text-sm leading-relaxed text-white/90">
-                    Je annuleert ruim 24 uur van tevoren.{" "}
-                    {formatEuro(
-                      pendingCancellation.total_price_cents,
-                      pendingCancellation.currency
-                    )}{" "}
-                    wordt direct teruggestort.
-                  </p>
+                  <p className="mt-1 text-sm text-white/90">Je annuleert ruim 24 uur van tevoren. {formatEuro(pendingCancellation.total_price_cents)} wordt teruggestort.</p>
                 </div>
               ) : (
                 <div className="mt-5 border-l-2 border-white pl-4">
                   <p className="font-display text-lg">GEEN TERUGBETALING MOGELIJK</p>
-                  <p className="mt-1 text-sm leading-relaxed text-white/90">
-                    Je annuleert binnen 24 uur voor de training. Omdat de baan en trainer gereserveerd staan, vervalt het recht op restitutie.
-                  </p>
+                  <p className="mt-1 text-sm text-white/90">Je annuleert binnen 24 uur voor de training.</p>
                 </div>
               )}
-
               <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-                <button
-                  type="button"
-                  onClick={closeCancellationConfirmation}
-                  disabled={cancellingBookingId === pendingCancellation.id}
-                  className="border-2 border-white px-5 py-3 font-display text-base text-white transition hover:bg-white hover:text-[#14171A] disabled:opacity-60"
-                >
-                  TERUG
-                </button>
-
-                <button
-                  type="button"
-                  disabled={cancellingBookingId === pendingCancellation.id}
-                  onClick={() => void handleCancellation(pendingCancellation)}
-                  className="bg-[#14171A] px-5 py-3 font-display text-base text-white transition hover:bg-white hover:text-[#14171A] disabled:opacity-60"
-                >
-                  {cancellingBookingId === pendingCancellation.id
-                    ? "ANNULERING VERWERKEN..."
-                    : "JA, ANNULEER TRAINING"}
-                </button>
+                <button type="button" onClick={closeCancellationConfirmation} className="border-2 border-white px-5 py-3 font-display text-base text-white hover:bg-white hover:text-[#14171A]">TERUG</button>
+                <button type="button" onClick={() => void handleCancellation(pendingCancellation)} className="bg-[#14171A] px-5 py-3 font-display text-base text-white hover:bg-white hover:text-[#14171A]">JA, ANNULEER TRAINING</button>
               </div>
             </section>
           )}
 
-          {/* ISSUE REPORT MODAL */}
           {pendingIssueBooking && (
-            <div
-              ref={issueReportRef}
-              id="booking-issue-report"
-              tabIndex={-1}
-              className="outline-none"
-            >
-              <BookingIssueModal
-                bookingId={pendingIssueBooking.id}
-                trainerName={pendingIssueBooking.trainers?.name || "je trainer"}
-                trainingLabel={`${formatDate(
-                  pendingIssueBooking.availability_slots?.starts_at
-                )} · ${formatTime(
-                  pendingIssueBooking.availability_slots?.starts_at
-                )} – ${formatTime(
-                  pendingIssueBooking.availability_slots?.ends_at
-                )}`}
-                onClose={closeIssueReport}
-                onSubmitted={handleIssueSubmitted}
-              />
-            </div>
+            <BookingIssueModal
+              bookingId={pendingIssueBooking.id}
+              trainerName={pendingIssueBooking.trainers?.name || "je trainer"}
+              trainingLabel={`${formatDate(pendingIssueBooking.availability_slots?.starts_at)} · ${formatTime(pendingIssueBooking.availability_slots?.starts_at)}`}
+              onClose={closeIssueReport}
+              onSubmitted={handleIssueSubmitted}
+            />
           )}
 
-          {/* GEEN BOEKINGEN */}
-          {!errorMessage && bookingSections.length === 0 && (
-            <section className="mt-8 border-2 border-white bg-white p-3 text-[#14171A] shadow-[8px_8px_0_0_#D6FF3F]">
-              <div className="bg-[#14171A] p-6 text-white sm:p-8">
-                <p className="font-display text-4xl text-[#D6FF3F]">NOG GEEN BOEKINGEN.</p>
-                <p className="mt-4 max-w-xl text-lg leading-relaxed text-[#B9BEC2]">
-                  Vind een trainer bij jou in de buurt, kies je tijdslot en sta vandaag nog op de baan.
-                </p>
-                <Link
-                  href="/trainers"
-                  className="mt-7 inline-flex bg-[#FF4B3E] px-6 py-4 font-display text-lg text-white transition hover:bg-[#D6FF3F] hover:text-[#14171A]"
+          {chatBooking && (
+            <BookingChatModal
+              bookingId={chatBooking.id}
+              recipientName={chatBooking.trainers?.name || "je trainer"}
+              trainingLabel={`${chatBooking.availability_slots?.sport?.toUpperCase() || "LES"} · ${formatDate(chatBooking.availability_slots?.starts_at)} (${formatTime(chatBooking.availability_slots?.starts_at)} - ${formatTime(chatBooking.availability_slots?.ends_at)})`}
+              venueLabel={chatBooking.availability_slots?.venue ? getVenueLabel(chatBooking.availability_slots.venue) : ""}
+              currentUserRole="player"
+              currentUserId={currentUserId}
+              currentUserName={playerProfile?.full_name || "Speler"}
+              onClose={() => setChatBooking(null)}
+              onMessagesRead={() => void loadPlayerBookings(false)}
+            />
+          )}
+
+          <div className="mt-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b-2 border-white/20 pb-6">
+            <div className="flex flex-wrap gap-2">
+              {(
+                [
+                  ["ALLES", "all"],
+                  ["AANKOMEND", "upcoming"],
+                  ["AFGEROND", "completed"],
+                  ["GEANNULEERD", "cancelled"],
+                ] as [string, BookingFilter][]
+              ).map(([label, value]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => { setStatusFilter(value); setVisibleLimit(6); }}
+                  className={`border-2 px-4 py-2 font-display text-xs transition ${
+                    statusFilter === value
+                      ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A] shadow-[3px_3px_0_0_#FF4B3E]"
+                      : "border-white/30 text-white hover:border-white"
+                  }`}
                 >
-                  VIND TRAINER. GOW! →
-                </Link>
-              </div>
-            </section>
-          )}
+                  {label}
+                </button>
+              ))}
+            </div>
 
-          {/* LIJST MET BOEKINGEN PER SECTIE */}
-          {!errorMessage && bookingSections.length > 0 && (
+            {monthOptions.length > 0 && (
+              <div className="flex items-center gap-2">
+                <span className="font-display text-xs text-[#D6FF3F]">PER MAAND:</span>
+                <select
+                  value={selectedMonth}
+                  onChange={(e) => { setSelectedMonth(e.target.value); setVisibleLimit(6); }}
+                  className="border-2 border-white/30 bg-[#14171A] px-3 py-2 font-display text-xs text-white outline-none focus:border-[#D6FF3F]"
+                >
+                  <option value="all">ALLE MAANDEN</option>
+                  {monthOptions.map((mKey) => {
+                    const [year, month] = mKey.split("-");
+                    const date = new Date(Number(year), Number(month) - 1, 1);
+                    const label = new Intl.DateTimeFormat("nl-NL", { month: "long", year: "numeric" }).format(date).toUpperCase();
+                    return <option key={mKey} value={mKey}>{label}</option>;
+                  })}
+                </select>
+              </div>
+            )}
+          </div>
+
+          {bookingSections.length === 0 ? (
+            <div className="mt-8 border-2 border-white/20 p-8 text-center text-[#B9BEC2]">
+              <p className="font-display text-2xl text-[#D6FF3F]">GEEN BOEKINGEN GEVONDEN BINNEN DIT FILTER.</p>
+              <p className="mt-2 text-sm">Kies een ander filter of boek een nieuwe training.</p>
+            </div>
+          ) : (
             <div className="mt-10 space-y-12">
               {bookingSections.map((section) => (
                 <section key={section.title}>
@@ -811,163 +812,219 @@ export default function MijnBoekingenPage() {
                       const trainer = booking.trainers;
                       const slot = booking.availability_slots;
                       const canCancel = canPlayerCancel(booking);
-                      const canReportIssue = canReportBookingIssue(booking);
-
-                      const isNextUp = section.title === "VOLGENDE TRAINING";
+                      const isCompleted = booking.status === "completed";
+                      const chat = booking.chat_state;
 
                       return (
-                        <article
-                          key={booking.id}
-                          className={`border-2 border-white bg-white p-3 text-[#14171A] transition ${
-                            isNextUp
-                              ? "shadow-[10px_10px_0_0_#D6FF3F]"
-                              : "shadow-[6px_6px_0_0_#FF4B3E]"
-                          }`}
-                        >
+                        <article key={booking.id} className="border-2 border-white bg-white p-3 text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E]">
                           <div className="bg-[#14171A] p-5 text-white">
                             
-                            {/* TOP BAR BOEKING */}
                             <div className="flex items-start justify-between gap-4">
-                              <div className="flex min-w-0 items-center gap-4">
-                                <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-[#D6FF3F] bg-[#14171A]">
+                              <div className="flex items-center gap-3">
+                                <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-[#D6FF3F] bg-[#14171A]">
                                   {trainer?.image_url ? (
-                                    <img
-                                      src={trainer.image_url}
-                                      alt={`Profielfoto van ${trainer.name}`}
-                                      className="h-full w-full object-cover"
-                                    />
+                                    <img src={trainer.image_url} alt={trainer.name} className="h-full w-full object-cover" />
                                   ) : (
-                                    <span className="font-display text-xl text-[#D6FF3F]">
-                                      {getTrainerInitials(booking)}
-                                    </span>
+                                    <span className="font-display text-lg text-[#D6FF3F]">{getTrainerInitials(booking)}</span>
                                   )}
                                 </div>
 
-                                <div className="min-w-0">
-                                  <p className="font-display text-2xl leading-[0.9]">
-                                    {trainer?.name || "TRAINER"}
-                                  </p>
-                                  {trainer && (
-                                    <p className="mt-1 truncate text-xs text-[#B9BEC2]">
-                                      {trainer.sport} · {trainer.focus}
-                                    </p>
-                                  )}
+                                <div>
+                                  <p className="font-display text-2xl leading-none">{trainer?.name || "TRAINER"}</p>
+                                  <p className="text-xs text-[#B9BEC2] mt-1">{trainer?.sport} · {trainer?.focus}</p>
                                 </div>
                               </div>
 
-                              <span
-                                className={`shrink-0 px-3 py-1.5 font-display text-xs ${getStatusClass(
-                                  booking.status
-                                )}`}
-                              >
+                              <span className={`px-3 py-1.5 font-display text-xs ${getStatusClass(booking.status)}`}>
                                 {getStatusLabel(booking.status)}
                               </span>
                             </div>
 
-                            {/* TIJD & PRIJS */}
-                            <div className="mt-6 border-y border-white/20 py-4">
-                              <div className="flex items-end justify-between gap-4">
+                            <div className="mt-5 border-y border-white/20 py-4">
+                              <div className="flex items-end justify-between">
                                 <div>
-                                  <p className="font-display text-lg text-[#D6FF3F]">
-                                    {formatDate(slot?.starts_at)}
-                                  </p>
-                                  <p className="mt-1 font-display text-3xl">
-                                    {formatTime(slot?.starts_at)} – {formatTime(slot?.ends_at)}
-                                  </p>
-                                  {slot && (
-                                    <p className="mt-1 font-display text-xs text-[#B9BEC2]">
-                                      {slot.sport.toUpperCase()} · {booking.participant_count}{" "}
-                                      {booking.participant_count === 1 ? "SPELER" : "SPELERS"}
-                                    </p>
-                                  )}
+                                  <p className="font-display text-lg text-[#D6FF3F]">{formatDate(slot?.starts_at)}</p>
+                                  <p className="font-display text-3xl mt-1">{formatTime(slot?.starts_at)} – {formatTime(slot?.ends_at)}</p>
                                 </div>
-
                                 <div className="text-right">
-                                  <p className="font-display text-[10px] text-[#8A8F94]">PRIJS</p>
-                                  <p className="mt-1 font-display text-3xl text-[#D6FF3F]">
-                                    {formatEuro(booking.total_price_cents, booking.currency)}
-                                  </p>
-                                  <p className="mt-0.5 font-display text-[10px] text-[#B9BEC2]">
-                                    INCL. BAANHUUR
-                                  </p>
+                                  <p className="font-display text-3xl text-[#D6FF3F]">{formatEuro(booking.total_price_cents)}</p>
+                                  <p className="text-[10px] text-[#8A8F94]">INCL. BAANHUUR</p>
                                 </div>
                               </div>
                             </div>
 
-                            {/* LOCATIE */}
                             {slot?.venue && (
-                              <div className="mt-4">
-                                <p className="font-display text-xs text-[#FF4B3E]">LOCATIE</p>
-                                <p className="mt-1 font-display text-base leading-tight text-white">
-                                  {getVenueLabel(slot.venue)}
-                                </p>
-                                <p className="mt-1 text-xs text-[#B9BEC2]">
-                                  {slot.venue.address_line}, {slot.venue.city}
-                                </p>
+                              <p className="text-xs text-[#B9BEC2] mt-3"><b>Locatie:</b> {getVenueLabel(slot.venue)}</p>
+                            )}
+
+                            <div className="mt-4 border-l-2 border-[#D6FF3F] pl-3">
+                              <p className="text-xs text-[#D7D9DA]">{getStatusExplanation(booking)}</p>
+                            </div>
+
+                            {booking.status === "confirmed" && slot && (
+                              <div className="mt-5 space-y-2 pt-2 border-t border-white/10">
+                                
+                                <div className="grid grid-cols-2 gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      window.open(
+                                        getGoogleCalendarUrl(
+                                          `GowTrain ${slot.sport.toUpperCase()} les bij ${trainer?.name || "trainer"}`,
+                                          slot.starts_at,
+                                          slot.ends_at,
+                                          getVenueLabel(slot.venue),
+                                          `GowTrain les bij ${trainer?.name || "trainer"}.`
+                                        ),
+                                        "_blank"
+                                      )
+                                    }
+                                    className="inline-flex h-9 items-center justify-center border border-white/30 bg-[#14171A] px-2 font-display text-[11px] text-[#B9BEC2] hover:border-white hover:text-white transition select-none text-center"
+                                  >
+                                    IN AGENDA ZETTEN
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      window.open(
+                                        getWhatsAppShareUrl(
+                                          trainer?.name || "trainer",
+                                          slot.sport,
+                                          formatDate(slot.starts_at),
+                                          formatTime(slot.starts_at),
+                                          getVenueLabel(slot.venue)
+                                        ),
+                                        "_blank"
+                                      )
+                                    }
+                                    className="inline-flex h-9 items-center justify-center border border-white/30 bg-[#14171A] px-2 font-display text-[11px] text-[#B9BEC2] hover:border-white hover:text-white transition select-none text-center"
+                                  >
+                                    DELEN VIA WHATSAPP
+                                  </button>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => setChatBooking(booking)}
+                                  className={`w-full h-11 inline-flex items-center justify-center px-4 font-display text-xs font-bold leading-none tracking-tight transition select-none ${
+                                    chat?.has_unread_trainer_message
+                                      ? "bg-[#FF4B3E] !text-white animate-pulse shadow-[0_0_12px_#FF4B3E]"
+                                      : "bg-[#D6FF3F] !text-[#14171A] hover:bg-white"
+                                  }`}
+                                >
+                                  {chat?.has_unread_trainer_message
+                                    ? "NIEUW BERICHT VAN TRAINER!"
+                                    : chat?.has_messages
+                                    ? "CHAT OPENEN"
+                                    : "CHAT MET TRAINER"}
+                                </button>
+
                               </div>
                             )}
 
-                            {/* EXPLANATION */}
-                            <div className="mt-5 border-l-2 border-[#D6FF3F] pl-4">
-                              <p className="text-xs leading-relaxed text-[#D7D9DA]">
-                                {getStatusExplanation(booking)}
-                              </p>
-                              {booking.status === "payment_pending" && booking.hold_expires_at && (
-                                <p className="mt-1 text-xs font-bold text-[#FF4B3E]">
-                                  ⏱️ Tijdelijke reservering tot {formatTime(booking.hold_expires_at)}.
-                                </p>
-                              )}
-                            </div>
+                            {isCompleted && !booking.has_review && (
+                              <div className="mt-5 border-2 border-[#D6FF3F] bg-[#14171A] p-4">
+                                <p className="font-display text-base text-[#D6FF3F]">BEOORDEEL JE LES BIJ {trainer?.name?.toUpperCase()}</p>
+                                <p className="mt-1 text-xs text-[#B9BEC2]">Hoe ging je training? Je beoordeling helpt andere spelers.</p>
 
-                            {/* DIRECTE BETAALKNOP MET STRIPE CHECKOUT INTEGRATIE */}
+                                {reviewBookingId === booking.id ? (
+                                  <div className="mt-4 space-y-3">
+                                    <div className="flex gap-2">
+                                      {[1, 2, 3, 4, 5].map((star) => (
+                                        <button
+                                          key={star}
+                                          type="button"
+                                          onClick={() => setReviewRating(star)}
+                                          className={`h-10 w-10 border-2 font-display text-lg transition ${
+                                            reviewRating >= star
+                                              ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A]"
+                                              : "border-white/30 text-white"
+                                          }`}
+                                        >
+                                          {star}★
+                                        </button>
+                                      ))}
+                                    </div>
+
+                                    <textarea
+                                      value={reviewComment}
+                                      onChange={(e) => setReviewComment(e.target.value)}
+                                      placeholder="Vertel kort wat je van de training vond (optioneel)..."
+                                      rows={3}
+                                      className="w-full border-2 border-white/25 bg-transparent p-3 text-xs text-white outline-none focus:border-[#D6FF3F]"
+                                    />
+
+                                    <div className="flex gap-2">
+                                      <button
+                                        type="button"
+                                        disabled={submittingReview}
+                                        onClick={() => void submitReview(booking)}
+                                        className="flex-1 bg-[#FF4B3E] py-3 font-display text-sm text-white hover:bg-[#D6FF3F] hover:text-[#14171A]"
+                                      >
+                                        {submittingReview ? "PLAATSEN..." : "PLAATS REVIEW. GOW! →"}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setReviewBookingId(null)}
+                                        className="border border-white/30 px-3 py-3 font-display text-xs text-white"
+                                      >
+                                        ANNULEREN
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setReviewBookingId(booking.id)}
+                                    className="mt-3 w-full bg-[#D6FF3F] py-3 font-display text-sm text-[#14171A] hover:bg-white"
+                                  >
+                                    SCHRIJF EEN REVIEW. GOW! →
+                                  </button>
+                                )}
+                              </div>
+                            )}
+
+                            {isCompleted && (
+                              <div className="mt-4 pt-3 border-t border-white/10 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs">
+                                {booking.has_review ? (
+                                  <span className="font-display text-xs text-[#D6FF3F]">✓ JE HEBT DEZE LES AL BEOORDEELD</span>
+                                ) : (
+                                  <span className="text-xs text-[#B9BEC2]">Les afgerond</span>
+                                )}
+
+                                {slot?.ends_at && new Date().getTime() - new Date(slot.ends_at).getTime() <= 24 * 60 * 60 * 1000 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openIssueReport(booking)}
+                                    className="text-[#B9BEC2] hover:text-[#FF4B3E] transition text-left sm:text-right text-[11px] font-semibold"
+                                  >
+                                    Iets misgegaan met deze les? Meld binnen 24u →
+                                  </button>
+                                )}
+                              </div>
+                            )}
+
                             {booking.status === "payment_pending" && (
                               <button
                                 type="button"
                                 disabled={payingBookingId === booking.id}
                                 onClick={() => void handleCheckout(booking.id)}
-                                className="mt-6 flex w-full items-center justify-center gap-2 bg-[#D6FF3F] px-4 py-3.5 font-display text-lg !text-[#14171A] font-bold transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+                                className="mt-6 flex w-full items-center justify-center gap-2 bg-[#D6FF3F] px-4 py-3.5 font-display text-lg !text-[#14171A] font-bold transition hover:bg-white disabled:opacity-60"
                               >
-                                {payingBookingId === booking.id
-                                  ? "BETAALPAGINA OPENEN..."
-                                  : "ROND BETALING AF. GOW! →"}
+                                {payingBookingId === booking.id ? "BETAALSCHERM OPENEN..." : "ROND BETALING AF. GOW! →"}
                               </button>
                             )}
 
-                            {/* ANNULEERKNOP */}
                             {canCancel && (
                               <button
                                 type="button"
-                                disabled={
-                                  cancellingBookingId === booking.id ||
-                                  pendingCancellation?.id === booking.id
-                                }
+                                disabled={cancellingBookingId === booking.id}
                                 onClick={() => openCancellationConfirmation(booking)}
-                                className="mt-5 w-full bg-[#FF4B3E] px-4 py-3.5 font-display text-sm text-white transition hover:bg-white hover:text-[#14171A] disabled:opacity-60"
+                                className="mt-3 w-full bg-[#FF4B3E] px-4 py-3 font-display text-sm text-white hover:bg-white hover:text-[#14171A]"
                               >
                                 LES ANNULEREN
                               </button>
-                            )}
-
-                            {/* PROBLEEM MELDEN */}
-                            {canReportIssue && (
-                              <button
-                                type="button"
-                                onClick={() => openIssueReport(booking)}
-                                className="mt-3 w-full border-2 border-white/20 px-4 py-2.5 font-display text-xs text-[#B9BEC2] transition hover:border-[#FF4B3E] hover:text-[#FF4B3E]"
-                              >
-                                PROBLEEM MELDEN
-                              </button>
-                            )}
-
-                            {trainer && (
-                              <div className="mt-5 pt-2 border-t border-white/10 flex justify-between items-center">
-                                <Link
-                                  href={`/trainers/${trainer.id}`}
-                                  className="font-display text-xs text-[#D6FF3F] transition hover:text-[#FF4B3E]"
-                                >
-                                  PROFIEL TRAINER →
-                                </Link>
-                              </div>
                             )}
 
                           </div>
@@ -978,15 +1035,17 @@ export default function MijnBoekingenPage() {
                 </section>
               ))}
 
-              <div className="border-t-2 border-white/20 pt-8 text-center">
-                <Link
-                  href="/trainers"
-                  className="inline-flex items-center gap-3 bg-[#FF4B3E] px-7 py-5 font-display text-xl text-white transition hover:-translate-y-1 hover:bg-[#D6FF3F] hover:!text-[#14171A]"
-                >
-                  VIND EEN NIEUW MOMENT
-                  <span aria-hidden="true">→</span>
-                </Link>
-              </div>
+              {visibleLimit < totalFilteredCount && (
+                <div className="pt-6 text-center">
+                  <button
+                    type="button"
+                    onClick={() => setVisibleLimit((prev) => prev + 6)}
+                    className="bg-[#D6FF3F] px-8 py-4 font-display text-xl text-[#14171A] transition hover:bg-white shadow-[6px_6px_0_0_#FF4B3E]"
+                  >
+                    MEER BOEKINGEN LADEN (+6). GOW! →
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -995,5 +1054,27 @@ export default function MijnBoekingenPage() {
 
       <SiteFooter />
     </main>
+  );
+}
+
+function MijnBoekingenFallback() {
+  return (
+    <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
+      <div className="flex flex-col items-center">
+        <div className="flex items-center gap-2">
+          <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">GOWTRAIN</span>
+          <span className="h-0 w-0 animate-pulse border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
+        </div>
+        <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">BOEKINGEN LADEN...</p>
+      </div>
+    </main>
+  );
+}
+
+export default function MijnBoekingenPage() {
+  return (
+    <Suspense fallback={<MijnBoekingenFallback />}>
+      <MijnBoekingenContent />
+    </Suspense>
   );
 }

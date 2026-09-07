@@ -602,7 +602,7 @@ function SpelerLoginContent() {
 
                   <a
                     href={registerHref}
-                    className="mt-3 inline-flex font-display text-lg text-[#D6FF3F] transition hover:text-white"
+                    className="mt-3 inline-flex font-display text-lg !text-[#D6FF3F] transition hover:text-white"
                   >
                     WORD SPELER. GOW! →
                   </a>

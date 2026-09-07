@@ -18,9 +18,7 @@ const stripeSecretKey = getRequiredEnv("STRIPE_SECRET_KEY");
 const stripeWebhookSecret = getRequiredEnv("STRIPE_WEBHOOK_SECRET");
 
 const supabaseUrl = getRequiredEnv("NEXT_PUBLIC_SUPABASE_URL");
-const supabaseServiceRoleKey = getRequiredEnv(
-  "SUPABASE_SERVICE_ROLE_KEY"
-);
+const supabaseServiceRoleKey = getRequiredEnv("SUPABASE_SERVICE_ROLE_KEY");
 
 const stripe = new Stripe(stripeSecretKey);
 
@@ -80,21 +78,15 @@ async function syncTrainerStripeStatus(account: Stripe.Account): Promise<void> {
     trainerId = data?.id ?? null;
   }
 
-  /*
-    Kan een los Stripe-testaccount zijn dat niet bij Gowtrain hoort.
-    Dan antwoorden we gewoon succesvol, zodat Stripe niet blijft retrien.
-  */
   if (!trainerId) {
     console.warn(
       `Geen Gowtrain-trainer gevonden voor Stripe-account ${account.id}.`
     );
-
     return;
   }
 
   const onboardingComplete =
-    account.details_submitted === true &&
-    account.payouts_enabled === true;
+    account.details_submitted === true && account.payouts_enabled === true;
 
   const { error: updateError } = await supabaseAdmin
     .from("trainers")
@@ -121,31 +113,53 @@ async function syncTrainerStripeStatus(account: Stripe.Account): Promise<void> {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Betalingen                                                                  */
+/* Betalingen (Losse lessen & Lespakketten)                                    */
 /* -------------------------------------------------------------------------- */
 
 async function confirmPaidCheckoutSession(
   session: Stripe.Checkout.Session
 ): Promise<void> {
-  /*
-    Alleen daadwerkelijk betaalde Checkout Sessions mogen een booking
-    bevestigen.
-  */
   if (session.payment_status !== "paid") {
     console.log(
       `Checkout Session ${session.id} is nog niet betaald: ${session.payment_status}`
     );
-
     return;
   }
 
+  const packageId = session.metadata?.package_id?.trim() || null;
+  const playerId = session.metadata?.player_id?.trim() || null;
+
+/* 🎁 1. ALS HET OM EEN LESPAKKET GAAT */
+  if (packageId && playerId) {
+    console.log(`🎁 Stripe Webhook: Lespakket ${packageId} betaald door speler ${playerId}`);
+
+    const paymentIntentId =
+      typeof session.payment_intent === "string"
+        ? session.payment_intent
+        : session.payment_intent?.id ?? null;
+
+    const { error: rpcError } = await supabaseAdmin.rpc("confirm_package_purchase", {
+      p_package_id: packageId,
+      p_player_id: playerId,
+      p_checkout_session_id: session.id,          // 💡 Doorsturen naar Supabase
+      p_payment_intent_id: paymentIntentId,        // 💡 Doorsturen naar Supabase
+    });
+
+    if (rpcError) {
+      throw new Error(`confirm_package_purchase uitvoeren mislukt: ${rpcError.message}`);
+    }
+
+    console.log(`✅ Alle lessen voor lespakket ${packageId} succesvol aangemaakt in database inclusief Stripe IDs!`);
+    return;
+  }
+
+  /* 🎾 2. ALS HET OM EEN LOSSE LES GAAT */
   const bookingId = session.metadata?.gowtrain_booking_id?.trim() || null;
 
   if (!bookingId) {
     console.warn(
-      `Geen gowtrain_booking_id gevonden in Checkout Session ${session.id}.`
+      `Geen gowtrain_booking_id of package_id gevonden in Checkout Session ${session.id}.`
     );
-
     return;
   }
 
@@ -209,9 +223,7 @@ async function resolveAdminIssueAfterRefund(
 ): Promise<void> {
   const issueId = refund.metadata?.gowtrain_issue_id?.trim() || null;
 
-  if (!issueId) {
-    return;
-  }
+  if (!issueId) return;
 
   const { error } = await supabaseAdmin
     .from("booking_issues")
@@ -235,42 +247,17 @@ async function resolveAdminIssueAfterRefund(
 }
 
 async function finalizeRefund(refund: Stripe.Refund): Promise<void> {
-  /*
-    Alleen bij een volledig geslaagde Stripe-refund werken we Gowtrain bij.
-  */
-  if (refund.status !== "succeeded") {
-    console.log(
-      `Stripe refund ${refund.id} is nog niet geslaagd: ${refund.status}`
-    );
-
-    return;
-  }
+  if (refund.status !== "succeeded") return;
 
   const booking = await findBookingForRefund(refund);
+  if (!booking) return;
 
-  /*
-    Kan een handmatige Stripe-testrefund zijn zonder Gowtrain-booking.
-  */
-  if (!booking) {
-    console.warn(
-      `Geen Gowtrain-booking gevonden voor Stripe-refund ${refund.id}.`
-    );
-
-    return;
-  }
-
-  /*
-    Stripe-events kunnen meerdere keren worden ontvangen.
-  */
-  if (booking.status === "refunded") {
-    return;
-  }
+  if (booking.status === "refunded") return;
 
   if (booking.status !== "refund_pending") {
     console.warn(
       `Booking ${booking.id} heeft status ${booking.status}; refund ${refund.id} wordt niet opnieuw verwerkt.`
     );
-
     return;
   }
 
@@ -294,12 +281,8 @@ async function finalizeRefund(refund: Stripe.Refund): Promise<void> {
   }
 
   if (booking.slot_id) {
-    /*
-      Speler annuleert meer dan 24 uur vooraf:
-      slot komt opnieuw beschikbaar voor andere spelers.
-    */
     if (booking.cancellation_policy === "player_timely_refund") {
-      const { error: slotUpdateError } = await supabaseAdmin
+      await supabaseAdmin
         .from("availability_slots")
         .update({
           status: "available",
@@ -307,23 +290,13 @@ async function finalizeRefund(refund: Stripe.Refund): Promise<void> {
         })
         .eq("id", booking.slot_id)
         .eq("status", "booked");
-
-      if (slotUpdateError) {
-        throw new Error(
-          `Slot van booking ${booking.id} weer beschikbaar maken mislukt: ${slotUpdateError.message}`
-        );
-      }
     }
 
-    /*
-      Trainer annuleert of admin beslist tot volledige refund:
-      slot wordt niet opnieuw boekbaar, omdat de training niet doorgaat.
-    */
     if (
       booking.cancellation_policy === "trainer_cancelled_refund" ||
       booking.cancellation_policy === "admin_refund"
     ) {
-      const { error: slotUpdateError } = await supabaseAdmin
+      await supabaseAdmin
         .from("availability_slots")
         .update({
           status: "cancelled",
@@ -331,58 +304,34 @@ async function finalizeRefund(refund: Stripe.Refund): Promise<void> {
         })
         .eq("id", booking.slot_id)
         .eq("status", "booked");
-
-      if (slotUpdateError) {
-        throw new Error(
-          `Slot van booking ${booking.id} annuleren mislukt: ${slotUpdateError.message}`
-        );
-      }
     }
   }
 
-  /*
-    Bij een admin-refund markeren we de bijbehorende issue automatisch
-    als opgelost.
-  */
   if (booking.cancellation_policy === "admin_refund") {
     await resolveAdminIssueAfterRefund(refund);
   }
 
-  console.log(
-    `Stripe refund ${refund.id} verwerkt voor booking ${booking.id}.`
-  );
+  console.log(`Stripe refund ${refund.id} verwerkt voor booking ${booking.id}.`);
 }
 
 async function handleRefundFailure(refund: Stripe.Refund): Promise<void> {
   const booking = await findBookingForRefund(refund);
-
-  if (!booking) {
-    return;
-  }
+  if (!booking) return;
 
   const failureReason =
     refund.failure_reason ||
     refund.status ||
     "Stripe-refund kon niet worden verwerkt.";
 
-  const { error } = await supabaseAdmin
+  await supabaseAdmin
     .from("bookings")
-    .update({
-      refund_last_error: failureReason,
-    })
+    .update({ refund_last_error: failureReason })
     .eq("id", booking.id)
     .eq("status", "refund_pending");
-
-  if (error) {
-    console.error(
-      `Refundfout opslaan voor booking ${booking.id}:`,
-      error.message
-    );
-  }
 }
 
 /* -------------------------------------------------------------------------- */
-/* Webhook                                                                     */
+/* Webhook Entry point                                                        */
 /* -------------------------------------------------------------------------- */
 
 export async function POST(request: NextRequest) {
@@ -398,12 +347,7 @@ export async function POST(request: NextRequest) {
   let event: Stripe.Event;
 
   try {
-    /*
-      Stripe gebruikt de originele body om de handtekening te controleren.
-      Gebruik hier dus nooit request.json().
-    */
     const rawBody = await request.text();
-
     event = stripe.webhooks.constructEvent(
       rawBody,
       signature,
@@ -411,7 +355,6 @@ export async function POST(request: NextRequest) {
     );
   } catch (error) {
     console.error("Stripe webhook signature fout:", error);
-
     return NextResponse.json(
       { error: "Webhook-signature is ongeldig." },
       { status: 400 }
@@ -420,96 +363,50 @@ export async function POST(request: NextRequest) {
 
   try {
     switch (event.type) {
-      /*
-        Stripe Connect onboarding / accountstatus.
-      */
       case "account.updated": {
         const account = event.data.object as Stripe.Account;
-
         await syncTrainerStripeStatus(account);
         break;
       }
 
-      /*
-        Direct geslaagde Checkout-betaling, bijvoorbeeld kaart.
-      */
-      case "checkout.session.completed": {
-        const session = event.data.object as Stripe.Checkout.Session;
-
-        await confirmPaidCheckoutSession(session);
-        break;
-      }
-
-      /*
-        Asynchrone betaalmethoden kunnen later definitief slagen.
-      */
+      case "checkout.session.completed":
       case "checkout.session.async_payment_succeeded": {
         const session = event.data.object as Stripe.Checkout.Session;
-
         await confirmPaidCheckoutSession(session);
         break;
       }
 
-      case "checkout.session.async_payment_failed": {
-        const session = event.data.object as Stripe.Checkout.Session;
-
-        console.warn(
-          `Asynchrone Stripe-betaling mislukt voor Checkout Session ${session.id}.`
-        );
-
-        break;
-      }
-
-      /*
-        Refund-status gewijzigd.
-      */
       case "refund.updated": {
         const refund = event.data.object as Stripe.Refund;
-
         if (refund.status === "succeeded") {
           await finalizeRefund(refund);
-        } else if (
-          refund.status === "failed" ||
-          refund.status === "canceled"
-        ) {
+        } else if (refund.status === "failed" || refund.status === "canceled") {
           await handleRefundFailure(refund);
         }
-
         break;
       }
 
-      /*
-        Extra fallback voor refunds op de gekoppelde Stripe Charge.
-      */
       case "charge.refunded": {
         const charge = event.data.object as Stripe.Charge;
-
-        if (!charge.refunds?.data) {
-          break;
-        }
-
-        for (const refund of charge.refunds.data) {
-          if (refund.status === "succeeded") {
-            await finalizeRefund(refund);
-          } else if (
-            refund.status === "failed" ||
-            refund.status === "canceled"
-          ) {
-            await handleRefundFailure(refund);
+        if (charge.refunds?.data) {
+          for (const refund of charge.refunds.data) {
+            if (refund.status === "succeeded") {
+              await finalizeRefund(refund);
+            } else if (refund.status === "failed" || refund.status === "canceled") {
+              await handleRefundFailure(refund);
+            }
           }
         }
-
         break;
       }
 
       default:
-        console.log(`Onverwerkt Stripe-event ontvangen: ${event.type}`);
+        console.log(`Onverwerkt Stripe-event: ${event.type}`);
     }
 
     return NextResponse.json({ received: true });
   } catch (error) {
     console.error("Stripe webhook verwerking fout:", error);
-
     return NextResponse.json(
       { error: "Webhook kon niet worden verwerkt." },
       { status: 500 }

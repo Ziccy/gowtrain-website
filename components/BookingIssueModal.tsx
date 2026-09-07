@@ -1,14 +1,7 @@
 "use client";
 
-import type { FormEvent } from "react";
 import { useState } from "react";
 import { supabase } from "@/lib/supabase-browser";
-
-type PlayerIssueType =
-  | "weather"
-  | "court_unavailable"
-  | "trainer_no_show"
-  | "other";
 
 type BookingIssueModalProps = {
   bookingId: string;
@@ -18,35 +11,11 @@ type BookingIssueModalProps = {
   onSubmitted: () => void;
 };
 
-const issueOptions: Array<{
-  value: PlayerIssueType;
-  label: string;
-  description: string;
-}> = [
-  {
-    value: "weather",
-    label: "SLECHT WEER",
-    description:
-      "De training kon niet doorgaan door regen, wind of andere weersomstandigheden.",
-  },
-  {
-    value: "court_unavailable",
-    label: "BAAN NIET BESCHIKBAAR",
-    description:
-      "De baan was niet beschikbaar, gesloten of onbespeelbaar.",
-  },
-  {
-    value: "trainer_no_show",
-    label: "TRAINER NIET VERSCHENEN",
-    description:
-      "Je trainer was niet aanwezig op het afgesproken moment.",
-  },
-  {
-    value: "other",
-    label: "ANDER PROBLEEM",
-    description:
-      "Er is iets anders misgegaan met deze training.",
-  },
+const ISSUE_REASONS = [
+  { id: "no_show", label: "De trainer was niet aanwezig (No-show)" },
+  { id: "late_or_short", label: "De trainer was te laat of de les was korter" },
+  { id: "venue_issue", label: "Geen baan beschikbaar of verkeerde locatie" },
+  { id: "other", label: "Overige klacht of probleem" },
 ];
 
 export default function BookingIssueModal({
@@ -56,178 +25,142 @@ export default function BookingIssueModal({
   onClose,
   onSubmitted,
 }: BookingIssueModalProps) {
-  const [selectedIssueType, setSelectedIssueType] =
-    useState<PlayerIssueType>("weather");
+  const [selectedReason, setSelectedReason] = useState<string>("no_show");
+  const [details, setDetails] = useState<string>("");
+  const [submitting, setSubmitting] = useState<boolean>(false);
+  const [errorMessage, setErrorMessage] = useState<string>("");
 
-  const [description, setDescription] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [errorMessage, setErrorMessage] = useState("");
-
-  function clearError(): void {
-    setErrorMessage("");
-  }
-
-  async function handleSubmit(
-    event: FormEvent<HTMLFormElement>
-  ): Promise<void> {
-    event.preventDefault();
-    clearError();
-
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
     setSubmitting(true);
+    setErrorMessage("");
 
     try {
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) return;
 
-      if (userError || !user) {
-        setErrorMessage("Je sessie is verlopen. Log opnieuw in.");
-        return;
-      }
+      const reasonObj = ISSUE_REASONS.find((r) => r.id === selectedReason);
+      const fullMessage = `[${reasonObj?.label || selectedReason}] ${details.trim()}`;
 
       const { error } = await supabase.from("booking_issues").insert({
         booking_id: bookingId,
-        reporter_user_id: user.id,
+        reported_by_id: session.user.id,
         reporter_role: "player",
-        issue_type: selectedIssueType,
-        description: description.trim() || null,
+        issue_type: selectedReason,
+        description: fullMessage,
         status: "open",
       });
 
       if (error) {
-        console.error("Trainingsprobleem melden fout:", error.message);
-
-        setErrorMessage(
-          "Je melding kon niet worden verstuurd. Probeer het opnieuw."
-        );
-
+        setErrorMessage("Melding kon niet worden opgeslagen. Probeer het opnieuw.");
         return;
       }
 
       onSubmitted();
-    } catch (error) {
-      console.error("Onverwachte issue-melding fout:", error);
-
-      setErrorMessage(
-        "Je melding kon niet worden verstuurd. Probeer het opnieuw."
-      );
+    } catch {
+      setErrorMessage("Er ging iets mis met het versturen van je melding.");
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <section className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white sm:p-6">
-      <p className="font-display text-3xl">PROBLEEM MELDEN?</p>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-lg border-2 border-[#FF4B3E] bg-[#14171A] text-white shadow-[10px_10px_0_0_#D6FF3F]">
+        
+        {/* HEADER */}
+        <div className="border-b-2 border-white/20 p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <span className="bg-[#FF4B3E] px-2.5 py-0.5 font-display text-[10px] text-white uppercase">
+                GOWTRAIN GARANTIE
+              </span>
+              <h3 className="font-display text-2xl text-white mt-1">
+                PROBLEEM MELDEN
+              </h3>
+              <p className="text-xs text-[#B9BEC2] mt-1">
+                Les bij {trainerName} · {trainingLabel}
+              </p>
+            </div>
 
-      <p className="mt-3 max-w-2xl leading-relaxed text-white/90">
-        Meld wat er is misgegaan bij je training met{" "}
-        <strong>{trainerName}</strong>.
-      </p>
-
-      <div className="mt-5 border-l-2 border-white pl-4">
-        <p className="font-display text-lg">{trainingLabel}</p>
-
-        <p className="mt-2 text-sm leading-relaxed text-white/90">
-          Bij slecht weer of een onbespeelbare baan kijken we eerst naar gratis
-          verplaatsen. Lukt dat niet, dan kijken we naar Gowtrain-tegoed.
-        </p>
-      </div>
-
-      {errorMessage ? (
-        <div
-          role="alert"
-          className="mt-6 border-2 border-white bg-[#14171A] px-4 py-3 font-semibold text-white"
-        >
-          {errorMessage}
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex h-9 w-9 shrink-0 items-center justify-center border-2 border-white font-display text-lg text-white hover:bg-[#FF4B3E] transition"
+            >
+              ✕
+            </button>
+          </div>
         </div>
-      ) : null}
 
-      <form onSubmit={handleSubmit} className="mt-6">
-        <fieldset>
-          <legend className="font-display text-base">
-            WAT IS ER GEBEURD?
-          </legend>
-
-          <div className="mt-3 grid gap-3">
-            {issueOptions.map((option) => {
-              const isSelected = selectedIssueType === option.value;
-
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  disabled={submitting}
-                  onClick={() => {
-                    clearError();
-                    setSelectedIssueType(option.value);
-                  }}
-                  className={`border-2 p-4 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                    isSelected
-                      ? "border-[#14171A] bg-[#14171A] text-white"
-                      : "border-white text-white hover:bg-white hover:text-[#14171A]"
-                  }`}
-                >
-                  <span className="block font-display text-lg">
-                    {option.label}
-                  </span>
-
-                  <span
-                    className={`mt-2 block text-sm leading-relaxed ${
-                      isSelected ? "text-[#D7D9DA]" : "text-white/90"
+        {/* FORM */}
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          <div>
+            <label className="block font-display text-xs text-[#D6FF3F] mb-2 uppercase">
+              Wat is er gebeurd?
+            </label>
+            
+            <div className="space-y-2">
+              {ISSUE_REASONS.map((reason) => {
+                const isSelected = selectedReason === reason.id;
+                return (
+                  <button
+                    key={reason.id}
+                    type="button"
+                    onClick={() => setSelectedReason(reason.id)}
+                    className={`w-full border-2 p-3 text-left font-display text-xs transition select-none flex items-center justify-between ${
+                      isSelected
+                        ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A] font-bold"
+                        : "border-white/25 bg-[#14171A] text-white hover:bg-white hover:text-[#14171A]"
                     }`}
                   >
-                    {option.description}
-                  </span>
-                </button>
-              );
-            })}
+                    <span>{reason.label}</span>
+                    {isSelected && <span>✓</span>}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </fieldset>
 
-        <div className="mt-6">
-          <label
-            htmlFor="booking-issue-description"
-            className="mb-2 block font-display text-base"
-          >
-            EXTRA UITLEG <span className="text-white/70">(OPTIONEEL)</span>
-          </label>
+          <div>
+            <label className="block font-display text-xs text-[#D6FF3F] mb-1 uppercase">
+              Licht toe wat er precies misging (optioneel)
+            </label>
+            <textarea
+              value={details}
+              onChange={(e) => setDetails(e.target.value)}
+              placeholder="Bijv: Trainer was niet aanwezig op de club..."
+              rows={3}
+              className="w-full border-2 border-white/25 bg-transparent p-3 text-xs text-white outline-none focus:border-[#D6FF3F]"
+            />
+          </div>
 
-          <textarea
-            id="booking-issue-description"
-            rows={4}
-            maxLength={1000}
-            disabled={submitting}
-            value={description}
-            onChange={(event) => {
-              clearError();
-              setDescription(event.target.value);
-            }}
-            placeholder="Vertel kort wat er gebeurde."
-            className="w-full resize-y border-2 border-white bg-transparent px-4 py-4 text-white outline-none placeholder:text-white/60 focus:border-[#14171A] disabled:cursor-not-allowed disabled:opacity-60"
-          />
-        </div>
+          {errorMessage && (
+            <p className="text-xs text-[#FF4B3E] font-semibold bg-[#FF4B3E]/10 p-2.5 border border-[#FF4B3E]">
+              {errorMessage}
+            </p>
+          )}
 
-        <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-          <button
-            type="button"
-            disabled={submitting}
-            onClick={onClose}
-            className="border-2 border-white px-5 py-3 font-display text-base text-white transition hover:bg-white hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            TERUG
-          </button>
+          <div className="pt-2 flex gap-2">
+            <button
+              type="submit"
+              disabled={submitting}
+              className="flex-1 bg-[#FF4B3E] py-3.5 font-display text-sm text-white hover:bg-[#D6FF3F] hover:text-[#14171A] transition disabled:opacity-50"
+            >
+              {submitting ? "VERSTUREN..." : "VERSTUUR MELDING. GOW! →"}
+            </button>
+            
+            <button
+              type="button"
+              onClick={onClose}
+              className="border-2 border-white/30 px-4 py-3.5 font-display text-xs text-white hover:border-white"
+            >
+              ANNULEREN
+            </button>
+          </div>
+        </form>
 
-          <button
-            type="submit"
-            disabled={submitting}
-            className="bg-[#14171A] px-5 py-3 font-display text-base text-white transition hover:bg-white hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {submitting ? "MELDING VERSTUREN..." : "MELD PROBLEEM"}
-          </button>
-        </div>
-      </form>
-    </section>
+      </div>
+    </div>
   );
 }

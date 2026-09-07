@@ -3,6 +3,8 @@
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
@@ -36,18 +38,14 @@ type Venue = {
 
 const durationOptions: number[] = [30, 60, 90, 120];
 const participantOptions: number[] = [1, 2, 3, 4];
+const hoursOptions: string[] = Array.from({ length: 17 }, (_, i) => String(i + 7).padStart(2, "0")); // 07:00 t/m 23:00
+const minuteOptions: string[] = ["00", "15", "30", "45"];
 
 function toDateInputValue(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
-}
-
-function toTimeInputValue(date: Date): string {
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  return `${hours}:${minutes}`;
 }
 
 function createDateFromInputs(
@@ -82,12 +80,6 @@ function createDateFromInputs(
   return result;
 }
 
-function isQuarterHour(timeValue: string): boolean {
-  const [, minutesString] = timeValue.split(":");
-  const minutes = Number(minutesString);
-  return [0, 15, 30, 45].includes(minutes);
-}
-
 function formatDate(value: Date): string {
   return new Intl.DateTimeFormat("nl-NL", {
     weekday: "long",
@@ -99,17 +91,6 @@ function formatDate(value: Date): string {
     .toUpperCase();
 }
 
-function formatPreviewDate(value: Date): string {
-  return new Intl.DateTimeFormat("nl-NL", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-  })
-    .format(value)
-    .replace(".", "")
-    .toUpperCase();
-}
-
 function formatTime(value: Date): string {
   return new Intl.DateTimeFormat("nl-NL", {
     hour: "2-digit",
@@ -117,34 +98,8 @@ function formatTime(value: Date): string {
   }).format(value);
 }
 
-function formatEuroFromInput(value: string): string {
-  const parsedValue = Number(value.replace(",", "."));
-  if (
-    !value.trim() ||
-    Number.isNaN(parsedValue) ||
-    !Number.isFinite(parsedValue) ||
-    parsedValue <= 0
-  ) {
-    return "–";
-  }
-
-  return new Intl.NumberFormat("nl-NL", {
-    style: "currency",
-    currency: "EUR",
-  }).format(parsedValue);
-}
-
-function formatCourtEnvironment(
-  environment: Venue["court_environment"]
-): string | null {
-  if (environment === "indoor") return "BINNEN";
-  if (environment === "outdoor") return "BUITEN";
-  if (environment === "indoor_outdoor") return "BINNEN & BUITEN";
-  return null;
-}
-
 function getVenueLabel(venue: Venue): string {
-  return `${venue.city} — ${venue.name}`;
+  return `${venue.city.toUpperCase()} — ${venue.name}`;
 }
 
 function calculateDistanceKm(
@@ -182,9 +137,12 @@ export default function TrainerSlotToevoegenPage() {
   const [dateValue, setDateValue] = useState<string>(
     toDateInputValue(initialDate)
   );
-  const [timeValue, setTimeValue] = useState<string>(
-    toTimeInputValue(initialDate)
-  );
+
+  // 💡 CUSTOM TIJDPRIKER STATE (UUR & KWARTIER)
+  const [selectedHour, setSelectedHour] = useState<string>("18");
+  const [selectedMinute, setSelectedMinute] = useState<string>("00");
+
+  const timeValue = useMemo(() => `${selectedHour}:${selectedMinute}`, [selectedHour, selectedMinute]);
 
   const [selectedDuration, setSelectedDuration] = useState<number>(60);
   const [selectedSport, setSelectedSport] = useState<Sport>("padel");
@@ -219,11 +177,10 @@ export default function TrainerSlotToevoegenPage() {
     return venues.find((venue) => venue.id === selectedVenueId) ?? null;
   }, [selectedVenueId, venues]);
 
-  /* 💡 SLIMME DUBBELE FILTERING: 1. JOUW STAD (ROERMOND) | 2. REGIO (LIMBURG) | 3. REST */
+  /* SLIMME DUBBELE FILTERING: STAD | REGIO | REST */
   const { cityVenues, nearbyVenues, otherVenues, searchVenues } = useMemo(() => {
     const normalizedSearch = venueSearch.trim().toLocaleLowerCase("nl-NL");
 
-    // Als er handmatig gezocht wordt:
     if (normalizedSearch) {
       const searchMatches = venues.filter((venue) => {
         const searchableText = [
@@ -253,13 +210,11 @@ export default function TrainerSlotToevoegenPage() {
       const venueCity = venue.city.trim().toLowerCase();
       const venueProvince = venue.province?.trim().toLowerCase() ?? "";
 
-      // PRIORITEIT 1: EXTREEM EXACTE STAD MATCH (bijv. Roermond)
       if (trainerCity && (venueCity === trainerCity || venueCity.includes(trainerCity))) {
         inCity.push(venue);
         return;
       }
 
-      // PRIORITEIT 2: NABIJE REGIO (GPS Afstand of Provincie)
       let isNearby = false;
       if (
         trainerAccount?.latitude &&
@@ -292,10 +247,6 @@ export default function TrainerSlotToevoegenPage() {
 
     return { cityVenues: inCity, nearbyVenues: nearby, otherVenues: others, searchVenues: [] };
   }, [venueSearch, venues, trainerAccount]);
-
-  const formattedPrice = useMemo(() => {
-    return formatEuroFromInput(price);
-  }, [price]);
 
   const trainerIsActive =
     trainerAccount?.approval_status === "approved" &&
@@ -336,19 +287,14 @@ export default function TrainerSlotToevoegenPage() {
     clearMessages();
 
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      const { data: { session } } = await supabase.auth.getSession();
 
       if (!session?.user) {
         router.replace("/trainer-login");
         return;
       }
 
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
 
       if (userError || !user) {
         await supabase.auth.signOut();
@@ -363,14 +309,12 @@ export default function TrainerSlotToevoegenPage() {
         .single();
 
       if (trainerError || !trainerData) {
-        console.error("Trainer ophalen fout:", trainerError?.message);
         showError("Je trainerprofiel kon niet worden geladen.");
         return;
       }
 
       setTrainerAccount(trainerData as TrainerAccount);
-    } catch (error) {
-      console.error("Onverwachte trainerprofiel-fout:", error);
+    } catch {
       showError("Je trainerprofiel kon niet worden geladen.");
     } finally {
       setLoading(false);
@@ -392,7 +336,6 @@ export default function TrainerSlotToevoegenPage() {
         .order("name", { ascending: true });
 
       if (error) {
-        console.error("Locaties ophalen fout:", error.message);
         showError("De trainingslocaties konden niet worden geladen.");
         return;
       }
@@ -401,8 +344,7 @@ export default function TrainerSlotToevoegenPage() {
       setSelectedVenueId("");
       setVenueSearch("");
       setVenuePickerOpen(false);
-    } catch (error) {
-      console.error("Onverwachte locaties-fout:", error);
+    } catch {
       showError("De trainingslocaties konden niet worden geladen.");
     } finally {
       setVenuesLoading(false);
@@ -470,11 +412,6 @@ export default function TrainerSlotToevoegenPage() {
       return;
     }
 
-    if (!isQuarterHour(timeValue)) {
-      showError("Kies een starttijd per kwartier: :00, :15, :30 of :45.");
-      return;
-    }
-
     if (startDateTime <= new Date()) {
       showError("Kies een tijdslot in de toekomst.");
       return;
@@ -505,7 +442,6 @@ export default function TrainerSlotToevoegenPage() {
       );
 
       if (overlapError) {
-        console.error("Overlapcontrole fout:", overlapError.message);
         showError("De overlapcontrole lukt nu niet.");
         return;
       }
@@ -530,7 +466,6 @@ export default function TrainerSlotToevoegenPage() {
         });
 
       if (insertError) {
-        console.error("Slot toevoegen fout:", insertError.message);
         showError("Je tijdslot kon niet worden opgeslagen.");
         return;
       }
@@ -542,8 +477,7 @@ export default function TrainerSlotToevoegenPage() {
           endDateTime
         )} · ${getVenueLabel(selectedVenue)}`
       );
-    } catch (error) {
-      console.error("Onverwachte slot-fout:", error);
+    } catch {
       showError("Je tijdslot kon niet worden opgeslagen.");
     } finally {
       setSaving(false);
@@ -557,23 +491,14 @@ export default function TrainerSlotToevoegenPage() {
     tomorrow.setHours(18, 0, 0, 0);
 
     setDateValue(toDateInputValue(tomorrow));
-    setTimeValue(toTimeInputValue(tomorrow));
+    setSelectedHour("18");
+    setSelectedMinute("00");
     setSelectedDuration(60);
     setSelectedVenueId("");
     setVenueSearch("");
     setVenuePickerOpen(false);
     setMaxParticipants(1);
     setPrice("");
-  }
-
-  async function handleLogout(): Promise<void> {
-    const { error } = await supabase.auth.signOut();
-    if (error) {
-      showError("Uitloggen lukt nu niet.");
-      return;
-    }
-    router.replace("/trainer-login");
-    router.refresh();
   }
 
   if (loading) {
@@ -597,40 +522,10 @@ export default function TrainerSlotToevoegenPage() {
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
       {/* HEADER */}
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <a
-            href="/trainer-slots"
-            aria-label="Terug naar mijn slots"
-            className="group inline-flex items-center gap-2"
-          >
-            <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-              GOWTRAIN
-            </span>
-            <span className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1 sm:border-b-[11px] sm:border-l-[9px] sm:border-t-[11px]" />
-          </a>
-
-          <div className="flex items-center gap-3">
-            <a
-              href="/trainer-slots"
-              className="hidden font-display text-sm text-white transition hover:text-[#D6FF3F] sm:block"
-            >
-              ← MIJN SLOTS
-            </a>
-
-            <button
-              type="button"
-              onClick={() => void handleLogout()}
-              className="border-2 border-white px-4 py-2 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:text-[#14171A]"
-            >
-              UITLOGGEN
-            </button>
-          </div>
-        </div>
-      </header>
+      <SiteHeader />
 
       {/* CONTENT */}
-      <section className="relative flex-1 overflow-hidden py-12 sm:py-16">
+      <section className="relative flex-1 overflow-hidden py-10 sm:py-14">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute -right-10 -top-20 select-none font-display text-[16rem] leading-none text-[#D6FF3F] opacity-[0.04] sm:text-[25rem]"
@@ -639,14 +534,25 @@ export default function TrainerSlotToevoegenPage() {
         </div>
 
         <div className="relative mx-auto max-w-4xl px-5 sm:px-8">
-          <div className="border-b-2 border-white/20 pb-8">
-            <p className="font-display text-lg text-[#FF4B3E]">BESCHIKBAARHEID</p>
-            <h1 className="mt-3 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
-              NIEUW<br />TIJDSLOT.
-            </h1>
-            <p className="mt-6 max-w-2xl text-lg leading-relaxed text-[#D7D9DA]">
-              Kies wanneer en waar je les wilt geven. Spelers kunnen dit moment straks direct vinden en boeken.
-            </p>
+          
+          {/* BANNER MET TERUG-LINK */}
+          <div className="flex flex-col justify-between gap-4 border-b-2 border-white/20 pb-8 sm:flex-row sm:items-end">
+            <div>
+              <p className="font-display text-lg text-[#FF4B3E]">BESCHIKBAARHEID</p>
+              <h1 className="mt-2 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
+                NIEUW<br />TIJDSLOT.
+              </h1>
+              <p className="mt-4 max-w-2xl text-base leading-relaxed text-[#D7D9DA]">
+                Kies wanneer en waar je les wilt geven. Spelers kunnen dit moment straks direct vinden en boeken.
+              </p>
+            </div>
+
+            <Link
+              href="/trainer-slots"
+              className="inline-flex shrink-0 border-2 border-white px-4 py-2.5 font-display text-xs text-white hover:border-[#D6FF3F] hover:text-[#D6FF3F] transition"
+            >
+              ← MIJN SLOTS
+            </Link>
           </div>
 
           {errorMessage && (
@@ -656,40 +562,39 @@ export default function TrainerSlotToevoegenPage() {
           )}
 
           {/* SUCCESS FEEDBACK */}
-{successMessage && (
-  <div
-    ref={successMessageRef}
-    role="status"
-    tabIndex={-1}
-    className="mt-8 border-2 border-[#D6FF3F] bg-[#D6FF3F] px-5 py-6 text-[#14171A] outline-none shadow-[8px_8px_0_0_#FF4B3E]"
-  >
-    <p className="font-display text-3xl">SLOT GEPUBLICEERD!</p>
-    <p className="mt-3 font-semibold leading-relaxed">
-      {successMessage}
-    </p>
-    <p className="mt-2 text-sm font-semibold">
-      Spelers kunnen dit moment nu direct in de app boeken.
-    </p>
+          {successMessage && (
+            <div
+              ref={successMessageRef}
+              role="status"
+              tabIndex={-1}
+              className="mt-8 border-2 border-[#D6FF3F] bg-[#D6FF3F] px-5 py-6 text-[#14171A] outline-none shadow-[8px_8px_0_0_#FF4B3E]"
+            >
+              <p className="font-display text-3xl">SLOT GEPUBLICEERD!</p>
+              <p className="mt-3 font-semibold leading-relaxed">
+                {successMessage}
+              </p>
+              <p className="mt-2 text-sm font-semibold">
+                Spelers kunnen dit moment nu direct in de app boeken.
+              </p>
 
-    <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-      {/* Toegevoegd: !text-white en hover:!text-[#14171A] */}
-      <a
-        href="/trainer-slots"
-        className="inline-flex items-center justify-center bg-[#14171A] px-5 py-3 font-display text-base !text-white transition hover:bg-white hover:!text-[#14171A]"
-      >
-        BEKIJK MIJN SLOTS →
-      </a>
+              <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+                <Link
+                  href="/trainer-slots"
+                  className="inline-flex items-center justify-center bg-[#14171A] px-5 py-3 font-display text-base !text-white transition hover:bg-white hover:!text-[#14171A]"
+                >
+                  BEKIJK MIJN SLOTS →
+                </Link>
 
-      <button
-        type="button"
-        onClick={resetFormForNewSlot}
-        className="inline-flex items-center justify-center border-2 border-[#14171A] px-5 py-3 font-display text-base text-[#14171A] transition hover:bg-[#14171A] hover:!text-white"
-      >
-        NOG EEN SLOT TOEVOEGEN
-      </button>
-    </div>
-  </div>
-)}
+                <button
+                  type="button"
+                  onClick={resetFormForNewSlot}
+                  className="inline-flex items-center justify-center border-2 border-[#14171A] px-5 py-3 font-display text-base text-[#14171A] transition hover:bg-[#14171A] hover:!text-white"
+                >
+                  NOG EEN SLOT TOEVOEGEN
+                </button>
+              </div>
+            </div>
+          )}
 
           <form onSubmit={handleSave} className="mt-8">
             <div className="border-2 border-white bg-white p-3 text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E]">
@@ -737,26 +642,66 @@ export default function TrainerSlotToevoegenPage() {
                   />
                 </div>
 
-                {/* Starttijd */}
-                <div className="mt-6">
-                  <label htmlFor="time" className="mb-2 block font-display text-base text-[#FF4B3E]">
+                {/* 💡 CUSTOM KWARTIER TIJDPRIKER (ONMOGELIJK OM VERKEERDE MINUTEN TE KIEZEN) */}
+                <div className="mt-8">
+                  <label className="mb-2 block font-display text-base text-[#FF4B3E]">
                     STARTTIJD (PER KWARTIER)
                   </label>
-                  <input
-                    id="time"
-                    type="time"
-                    value={timeValue}
-                    step={900}
-                    disabled={saving}
-                    onChange={(e) => {
-                      clearMessages();
-                      const nextTime = e.target.value;
-                      const [hours, minutes] = nextTime.split(":");
-                      if (!["00", "15", "30", "45"].includes(minutes)) return;
-                      setTimeValue(`${hours}:${minutes}`);
-                    }}
-                    className="w-full border-2 border-white/25 bg-transparent px-4 py-4 text-lg text-white outline-none transition [color-scheme:dark] focus:border-[#D6FF3F]"
-                  />
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {/* UUR SELECTIE */}
+                    <div>
+                      <span className="block font-display text-xs text-[#D6FF3F] mb-1.5 uppercase">
+                        KIES UUR
+                      </span>
+                      <select
+                        value={selectedHour}
+                        disabled={saving}
+                        onChange={(e) => {
+                          clearMessages();
+                          setSelectedHour(e.target.value);
+                        }}
+                        className="w-full border-2 border-white/25 bg-[#14171A] px-4 py-3.5 font-display text-lg text-white outline-none focus:border-[#D6FF3F]"
+                      >
+                        {hoursOptions.map((h) => (
+                          <option key={h} value={h}>
+                            {h}:00 UUR
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* KWARTIER KNOPPEN */}
+                    <div>
+                      <span className="block font-display text-xs text-[#D6FF3F] mb-1.5 uppercase">
+                        KIES KWARTIER
+                      </span>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {minuteOptions.map((m) => (
+                          <button
+                            key={m}
+                            type="button"
+                            disabled={saving}
+                            onClick={() => {
+                              clearMessages();
+                              setSelectedMinute(m);
+                            }}
+                            className={`border-2 py-3 font-display text-base transition ${
+                              selectedMinute === m
+                                ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A] font-bold"
+                                : "border-white/30 text-white hover:border-white"
+                            }`}
+                          >
+                            :{m}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="mt-3 text-xs text-[#B9BEC2]">
+                    Gekozen starttijd: <span className="font-display text-sm text-[#D6FF3F]">{selectedHour}:{selectedMinute} UUR</span>
+                  </p>
                 </div>
 
                 {/* Lesduur */}
@@ -846,7 +791,7 @@ export default function TrainerSlotToevoegenPage() {
                         {/* ALS DE GEBRUIKER NIET TYPT (STANDAARD OPENING) */}
                         {!venueSearch.trim() && (
                           <>
-                            {/* PRIO 1: EXACT IN JOUW STAD (bijv. Roermond) */}
+                            {/* PRIO 1: EXACT IN JOUW STAD */}
                             {cityVenues.length > 0 && (
                               <div>
                                 <div className="sticky top-0 bg-[#D6FF3F] px-4 py-2 font-display text-xs text-[#14171A]">
@@ -867,7 +812,7 @@ export default function TrainerSlotToevoegenPage() {
                               </div>
                             )}
 
-                            {/* PRIO 2: REGIO (bijv. Limburg / binnen km straal) */}
+                            {/* PRIO 2: REGIO */}
                             {nearbyVenues.length > 0 && (
                               <div>
                                 <div className="sticky top-0 bg-[#303438] px-4 py-2 font-display text-xs text-[#D6FF3F]">

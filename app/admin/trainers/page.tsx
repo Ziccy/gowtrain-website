@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
@@ -116,14 +116,11 @@ export default function AdminTrainersPage() {
   const router = useRouter();
 
   const [trainers, setTrainers] = useState<Trainer[]>([]);
-  const [selectedFilter, setSelectedFilter] =
-    useState<TrainerFilter>("pending");
+  const [selectedFilter, setSelectedFilter] = useState<TrainerFilter>("pending");
 
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
-  const [updatingTrainerId, setUpdatingTrainerId] = useState<string | null>(
-    null
-  );
+  const [updatingTrainerId, setUpdatingTrainerId] = useState<string | null>(null);
 
   const [pendingAction, setPendingAction] = useState<PendingAction>();
   const [errorMessage, setErrorMessage] = useState<string>("");
@@ -144,7 +141,7 @@ export default function AdminTrainersPage() {
     } = await supabase.auth.getSession();
 
     if (!session?.user) {
-      router.replace("/trainer-login");
+      router.replace("/speler-login");
       return false;
     }
 
@@ -155,7 +152,7 @@ export default function AdminTrainersPage() {
 
     if (userError || !user) {
       await supabase.auth.signOut();
-      router.replace("/trainer-login");
+      router.replace("/speler-login");
       return false;
     }
 
@@ -167,14 +164,9 @@ export default function AdminTrainersPage() {
 
     if (profileError || profile?.role !== "admin") {
       console.error("Admincontrole fout:", profileError?.message);
-
       await supabase.auth.signOut();
-
-      setErrorMessage(
-        "Geen toegang. Je hebt geen beheerrechten voor deze pagina."
-      );
-
-      router.replace("/trainer-login");
+      setErrorMessage("Geen toegang. Je hebt geen beheerrechten voor deze pagina.");
+      router.replace("/speler-login");
       return false;
     }
 
@@ -222,11 +214,7 @@ export default function AdminTrainersPage() {
 
       if (error) {
         console.error("Admin trainers ophalen fout:", error.message);
-
-        setErrorMessage(
-          "De trainers konden niet worden geladen. Probeer het opnieuw."
-        );
-
+        setErrorMessage("De trainers konden niet worden geladen.");
         setTrainers([]);
         return;
       }
@@ -234,11 +222,7 @@ export default function AdminTrainersPage() {
       setTrainers((data ?? []) as Trainer[]);
     } catch (error) {
       console.error("Onverwachte admin-fout:", error);
-
-      setErrorMessage(
-        "De trainers konden niet worden geladen. Vernieuw de pagina en probeer het opnieuw."
-      );
-
+      setErrorMessage("De trainers konden niet worden geladen.");
       setTrainers([]);
     } finally {
       if (showLoading) {
@@ -250,9 +234,7 @@ export default function AdminTrainersPage() {
   async function handleRefresh(): Promise<void> {
     setRefreshing(true);
     clearMessages();
-
     await loadTrainers(false);
-
     setRefreshing(false);
   }
 
@@ -261,11 +243,7 @@ export default function AdminTrainersPage() {
     trainer: Trainer
   ): void {
     clearMessages();
-
-    setPendingAction({
-      type,
-      trainer,
-    });
+    setPendingAction({ type, trainer });
   }
 
   function closeConfirmation(): void {
@@ -289,46 +267,31 @@ export default function AdminTrainersPage() {
 
       if (error || !data) {
         console.error("Trainer bijwerken fout:", error?.message);
-
-        setErrorMessage(
-          error
-            ? "De trainer kon niet worden bijgewerkt. Probeer het opnieuw."
-            : "De trainer kon niet worden gevonden."
-        );
-
+        setErrorMessage("De trainer kon niet worden bijgewerkt.");
         return;
       }
 
       setPendingAction(null);
 
       if (updates.approval_status === "approved" && updates.is_active) {
-        setSuccessMessage(
-          `${trainer.name} is goedgekeurd en zichtbaar voor spelers.`
-        );
+        setSuccessMessage(`${trainer.name} is goedgekeurd en staat live op GowTrain.`);
       } else if (updates.approval_status === "rejected") {
         setSuccessMessage(`${trainer.name} is afgekeurd.`);
       } else if (updates.is_active === false) {
-        setSuccessMessage(
-          `${trainer.name} is gedeactiveerd en niet meer zichtbaar voor spelers.`
-        );
+        setSuccessMessage(`${trainer.name} is gedeactiveerd.`);
       }
 
       await loadTrainers(false);
     } catch (error) {
       console.error("Onverwachte trainer-update fout:", error);
-
-      setErrorMessage(
-        "De trainer kon niet worden bijgewerkt. Probeer het opnieuw."
-      );
+      setErrorMessage("De trainer kon niet worden bijgewerkt.");
     } finally {
       setUpdatingTrainerId(null);
     }
   }
 
   async function confirmAction(): Promise<void> {
-    if (!pendingAction) {
-      return;
-    }
+    if (!pendingAction) return;
 
     const { type, trainer } = pendingAction;
 
@@ -353,90 +316,48 @@ export default function AdminTrainersPage() {
     });
   }
 
-  async function handleLogout(): Promise<void> {
-    const { error } = await supabase.auth.signOut();
-
-    if (error) {
-      console.error("Uitloggen fout:", error.message);
-      setErrorMessage("Uitloggen lukt nu niet. Probeer het opnieuw.");
-      return;
-    }
-
-    router.replace("/trainer-login");
-    router.refresh();
-  }
-
   function getConfirmationTitle(): string {
-    if (!pendingAction) {
-      return "";
-    }
-
-    if (pendingAction.type === "approve") {
-      return "TRAINER GOEDKEUREN?";
-    }
-
-    if (pendingAction.type === "reject") {
-      return "TRAINER AFKEUREN?";
-    }
-
-    if (pendingAction.type === "activate") {
-      return "TRAINER ACTIVEREN?";
-    }
-
+    if (!pendingAction) return "";
+    if (pendingAction.type === "approve") return "TRAINER GOEDKEUREN?";
+    if (pendingAction.type === "reject") return "TRAINER AFKEUREN?";
+    if (pendingAction.type === "activate") return "TRAINER ACTIVEREN?";
     return "TRAINER DEACTIVEREN?";
   }
 
   function getConfirmationText(): string {
-    if (!pendingAction) {
-      return "";
-    }
-
+    if (!pendingAction) return "";
     const trainerName = pendingAction.trainer.name;
 
     if (pendingAction.type === "approve") {
       return `${trainerName} wordt zichtbaar voor spelers en kan slots toevoegen en boekingen ontvangen.`;
     }
-
     if (pendingAction.type === "reject") {
       return `${trainerName} wordt afgekeurd en blijft verborgen voor spelers.`;
     }
-
     if (pendingAction.type === "activate") {
       return `${trainerName} wordt opnieuw zichtbaar voor spelers.`;
     }
-
     return `${trainerName} wordt tijdelijk verborgen voor spelers. Bestaande boekingen blijven behouden.`;
   }
 
   function getConfirmationButtonLabel(): string {
-    if (!pendingAction) {
-      return "";
-    }
-
-    if (pendingAction.type === "approve") {
-      return "GOEDKEUREN";
-    }
-
-    if (pendingAction.type === "reject") {
-      return "AFKEUREN";
-    }
-
-    if (pendingAction.type === "activate") {
-      return "ACTIVEREN";
-    }
-
+    if (!pendingAction) return "";
+    if (pendingAction.type === "approve") return "GOEDKEUREN";
+    if (pendingAction.type === "reject") return "AFKEUREN";
+    if (pendingAction.type === "activate") return "ACTIVEREN";
     return "DEACTIVEREN";
   }
 
+  /* BRANDBOOK BRANDED LOADER */
   if (loading) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[#14171A] px-5 text-white">
-        <div className="text-center">
-          <p className="font-display text-5xl text-[#D6FF3F]">GOW!</p>
-
-          <p className="mt-4 font-display text-lg text-[#FF4B3E]">
-            TRAINERS LADEN...
-          </p>
+      <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
+        <div className="flex flex-col items-center">
+          <div className="flex items-center gap-2">
+            <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">GOWTRAIN</span>
+            <span className="h-0 w-0 animate-pulse border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
+          </div>
+          <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">TRAINERS LADEN...</p>
         </div>
       </main>
     );
@@ -448,27 +369,28 @@ export default function AdminTrainersPage() {
       <header className="border-b border-white/15">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
           <Link
-            href="/"
-            aria-label="Terug naar GowTrain home"
+            href="/admin"
+            aria-label="Terug naar admin hub"
             className="group inline-flex items-center gap-2"
           >
             <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
               GOWTRAIN
             </span>
-
             <span
               aria-hidden="true"
               className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1 sm:border-b-[11px] sm:border-l-[9px] sm:border-t-[11px]"
             />
           </Link>
 
-          <button
-            type="button"
-            onClick={() => void handleLogout()}
-            className="border-2 border-white px-4 py-2 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:text-[#14171A]"
-          >
-            UITLOGGEN
-          </button>
+          {/* 💡 GEAANGEPASTE NAVIGATIE LINK NAAR ADMIN HUB */}
+          <div className="flex items-center gap-3">
+            <Link
+              href="/admin"
+              className="font-display text-sm text-white transition hover:text-[#D6FF3F]"
+            >
+              ← ADMIN HUB
+            </Link>
+          </div>
         </div>
       </header>
 
@@ -489,14 +411,11 @@ export default function AdminTrainersPage() {
               </p>
 
               <h1 className="mt-3 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
-                BEHEER
-                <br />
-                TRAINERS.
+                BEHEER<br />TRAINERS.
               </h1>
 
               <p className="mt-6 max-w-2xl text-lg leading-relaxed text-[#D7D9DA]">
-                Beoordeel nieuwe traineraanmeldingen en beheer actieve
-                trainerprofielen.
+                Beoordeel nieuwe traineraanmeldingen en beheer actieve trainerprofielen.
               </p>
             </div>
 
@@ -532,30 +451,23 @@ export default function AdminTrainersPage() {
             ))}
           </div>
 
-          {errorMessage ? (
-            <div
-              role="alert"
-              className="mt-6 border-2 border-[#FF4B3E] bg-[#FF4B3E] px-5 py-4 font-semibold leading-relaxed text-white"
-            >
+          {errorMessage && (
+            <div role="alert" className="mt-6 border-2 border-[#FF4B3E] bg-[#FF4B3E] px-5 py-4 font-semibold text-white">
               {errorMessage}
             </div>
-          ) : null}
+          )}
 
-          {successMessage ? (
-            <div
-              role="status"
-              className="mt-6 border-2 border-[#D6FF3F] bg-[#D6FF3F] px-5 py-4 font-semibold leading-relaxed text-[#14171A]"
-            >
+          {successMessage && (
+            <div role="status" className="mt-6 border-2 border-[#D6FF3F] bg-[#D6FF3F] px-5 py-4 font-semibold text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E]">
               {successMessage}
             </div>
-          ) : null}
+          )}
 
           {/* Confirmation */}
-          {pendingAction ? (
+          {pendingAction && (
             <section
-              className={`mt-6 border-2 p-5 sm:p-6 ${
-                pendingAction.type === "reject" ||
-                pendingAction.type === "deactivate"
+              className={`mt-6 border-2 p-5 sm:p-6 shadow-[6px_6px_0_0_#14171A] ${
+                pendingAction.type === "reject" || pendingAction.type === "deactivate"
                   ? "border-[#FF4B3E] bg-[#FF4B3E] text-white"
                   : "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A]"
               }`}
@@ -573,8 +485,7 @@ export default function AdminTrainersPage() {
                   type="button"
                   onClick={closeConfirmation}
                   className={`px-5 py-3 font-display text-base transition ${
-                    pendingAction.type === "reject" ||
-                    pendingAction.type === "deactivate"
+                    pendingAction.type === "reject" || pendingAction.type === "deactivate"
                       ? "border-2 border-white text-white hover:bg-white hover:text-[#14171A]"
                       : "border-2 border-[#14171A] text-[#14171A] hover:bg-[#14171A] hover:text-white"
                   }`}
@@ -586,7 +497,7 @@ export default function AdminTrainersPage() {
                   type="button"
                   disabled={updatingTrainerId === pendingAction.trainer.id}
                   onClick={() => void confirmAction()}
-                  className="bg-[#14171A] px-5 py-3 font-display text-base text-white transition hover:bg-white hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60"
+                  className="bg-[#14171A] px-5 py-3 font-display text-base text-white transition hover:bg-white hover:text-[#14171A] disabled:opacity-60"
                 >
                   {updatingTrainerId === pendingAction.trainer.id
                     ? "BEZIG..."
@@ -594,34 +505,26 @@ export default function AdminTrainersPage() {
                 </button>
               </div>
             </section>
-          ) : null}
+          )}
 
           <div className="mt-10 flex items-end justify-between border-b-2 border-white/20 pb-5">
             <div>
-              <p className="font-display text-lg text-[#FF4B3E]">
-                OVERZICHT
-              </p>
+              <p className="font-display text-lg text-[#FF4B3E]">OVERZICHT</p>
 
               <h2 className="mt-2 font-display text-4xl sm:text-5xl">
-                {filters.find((filter) => filter.value === selectedFilter)
-                  ?.label ?? "TRAINERS"}
-                .
+                {filters.find((filter) => filter.value === selectedFilter)?.label ?? "TRAINERS"}.
               </h2>
             </div>
 
             <p className="font-display text-lg text-[#D6FF3F]">
-              {trainers.length}{" "}
-              {trainers.length === 1 ? "TRAINER" : "TRAINERS"}
+              {trainers.length} {trainers.length === 1 ? "TRAINER" : "TRAINERS"}
             </p>
           </div>
 
           {trainers.length === 0 ? (
             <section className="mt-8 border-2 border-white bg-white p-3 text-[#14171A] shadow-[8px_8px_0_0_#D6FF3F]">
               <div className="bg-[#14171A] p-6 text-white sm:p-8">
-                <p className="font-display text-4xl text-[#D6FF3F]">
-                  GEEN TRAINERS.
-                </p>
-
+                <p className="font-display text-4xl text-[#D6FF3F]">GEEN TRAINERS.</p>
                 <p className="mt-4 max-w-xl text-lg leading-relaxed text-[#B9BEC2]">
                   {selectedFilter === "pending"
                     ? "Nieuwe traineraanmeldingen verschijnen hier zodra ze binnenkomen."
@@ -630,180 +533,151 @@ export default function AdminTrainersPage() {
               </div>
             </section>
           ) : (
-            <div className="mt-8 grid gap-5 lg:grid-cols-2">
+            <div className="mt-8 grid gap-6 lg:grid-cols-2">
               {trainers.map((trainer) => {
                 const isUpdating = updatingTrainerId === trainer.id;
 
                 return (
                   <article
                     key={trainer.id}
-                    className="border-2 border-white bg-white p-3 text-[#14171A]"
+                    className="border-2 border-white bg-white p-3 text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E]"
                   >
-                    <div className="bg-[#14171A] p-5 text-white">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="flex min-w-0 items-center gap-4">
-                          <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#D6FF3F]">
-                            {trainer.image_url ? (
-                              <img
-                                src={trainer.image_url}
-                                alt={`Profielfoto van ${trainer.name}`}
-                                className="h-full w-full object-cover"
-                              />
-                            ) : (
-                              <span className="font-display text-xl text-[#14171A]">
-                                {getTrainerInitials(trainer)}
-                              </span>
-                            )}
+                    <div className="bg-[#14171A] p-5 text-white flex flex-col justify-between h-full">
+                      <div>
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex min-w-0 items-center gap-4">
+                            <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-[#D6FF3F] bg-[#14171A]">
+                              {trainer.image_url ? (
+                                <img
+                                  src={trainer.image_url}
+                                  alt={`Profielfoto van ${trainer.name}`}
+                                  className="h-full w-full object-cover"
+                                />
+                              ) : (
+                                <span className="font-display text-xl text-[#D6FF3F]">
+                                  {getTrainerInitials(trainer)}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="min-w-0">
+                              <p className="font-display text-3xl leading-[0.9]">
+                                {trainer.name}
+                              </p>
+                              <p className="mt-2 text-xs text-[#B9BEC2]">
+                                {trainer.sport} · {trainer.focus}
+                              </p>
+                            </div>
                           </div>
 
-                          <div className="min-w-0">
-                            <p className="font-display text-3xl leading-[0.9]">
-                              {trainer.name}
-                            </p>
-
-                            <p className="mt-2 text-sm text-[#B9BEC2]">
-                              {trainer.sport} · {trainer.focus}
-                            </p>
-                          </div>
-                        </div>
-
-                        <span
-                          className={`shrink-0 px-3 py-2 font-display text-xs ${getStatusClass(
-                            trainer
-                          )}`}
-                        >
-                          {getStatusLabel(trainer)}
-                        </span>
-                      </div>
-
-                      <div className="mt-6 grid grid-cols-2 gap-4 border-y border-white/20 py-4">
-                        <div>
-                          <p className="font-display text-xs text-[#B9BEC2]">
-                            LOCATIE
-                          </p>
-
-                          <p className="mt-2 text-sm text-white">
-                            {trainer.city ?? "Geen stad"}
-                            {trainer.province
-                              ? ` · ${trainer.province}`
-                              : ""}
-                          </p>
-                        </div>
-
-                        <div className="border-l border-white/20 pl-4">
-                          <p className="font-display text-xs text-[#B9BEC2]">
-                            TARIEF
-                          </p>
-
-                          <p className="mt-2 font-display text-2xl">
-                            €{Number(trainer.price_per_hour).toFixed(0)}
-                          </p>
-                        </div>
-
-                        <div>
-                          <p className="font-display text-xs text-[#B9BEC2]">
-                            WERKGEBIED
-                          </p>
-
-                          <p className="mt-2 text-sm text-white">
-                            {trainer.radius_km
-                              ? `${trainer.radius_km} KM`
-                              : "Niet ingevuld"}
-                          </p>
-                        </div>
-
-                        <div className="border-l border-white/20 pl-4">
-                          <p className="font-display text-xs text-[#B9BEC2]">
-                            AANGEMELD
-                          </p>
-
-                          <p className="mt-2 text-sm text-white">
-                            {formatDate(trainer.created_at)}
-                          </p>
-                        </div>
-                      </div>
-
-                      {trainer.bio ? (
-                        <div className="mt-5">
-                          <p className="font-display text-xs text-[#FF4B3E]">
-                            BIO
-                          </p>
-
-                          <p className="mt-2 text-sm leading-relaxed text-[#D7D9DA]">
-                            {trainer.bio}
-                          </p>
-                        </div>
-                      ) : (
-                        <p className="mt-5 text-sm text-[#8A8F94]">
-                          Geen bio toegevoegd.
-                        </p>
-                      )}
-
-                      {/* Acties voor wachtende trainer */}
-                      {trainer.approval_status === "pending" ? (
-                        <div className="mt-6 grid grid-cols-2 gap-3">
-                          <button
-                            type="button"
-                            disabled={isUpdating}
-                            onClick={() =>
-                              openConfirmation("approve", trainer)
-                            }
-                            className="bg-[#D6FF3F] px-4 py-4 font-display text-sm text-[#14171A] transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {isUpdating ? "..." : "GOEDKEUREN"}
-                          </button>
-
-                          <button
-                            type="button"
-                            disabled={isUpdating}
-                            onClick={() =>
-                              openConfirmation("reject", trainer)
-                            }
-                            className="bg-[#FF4B3E] px-4 py-4 font-display text-sm text-white transition hover:bg-white hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            AFKEUREN
-                          </button>
-                        </div>
-                      ) : null}
-
-                      {/* Actie voor afgekeurde trainer */}
-                      {trainer.approval_status === "rejected" ? (
-                        <button
-                          type="button"
-                          disabled={isUpdating}
-                          onClick={() =>
-                            openConfirmation("approve", trainer)
-                          }
-                          className="mt-6 w-full bg-[#D6FF3F] px-4 py-4 font-display text-sm text-[#14171A] transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {isUpdating ? "..." : "ALSNOG GOEDKEUREN"}
-                        </button>
-                      ) : null}
-
-                      {/* Actie voor goedgekeurde trainer */}
-                      {trainer.approval_status === "approved" ? (
-                        <button
-                          type="button"
-                          disabled={isUpdating}
-                          onClick={() =>
-                            openConfirmation(
-                              trainer.is_active ? "deactivate" : "activate",
+                          <span
+                            className={`shrink-0 px-3 py-1.5 font-display text-xs ${getStatusClass(
                               trainer
-                            )
-                          }
-                          className={`mt-6 w-full px-4 py-4 font-display text-sm transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                            trainer.is_active
-                              ? "border-2 border-[#FF4B3E] text-[#FF4B3E] hover:bg-[#FF4B3E] hover:text-white"
-                              : "bg-[#D6FF3F] text-[#14171A] hover:bg-white"
-                          }`}
-                        >
-                          {isUpdating
-                            ? "..."
-                            : trainer.is_active
+                            )}`}
+                          >
+                            {getStatusLabel(trainer)}
+                          </span>
+                        </div>
+
+                        <div className="mt-6 grid grid-cols-2 gap-4 border-y border-white/20 py-4 text-xs">
+                          <div>
+                            <p className="font-display text-[10px] text-[#8A8F94]">LOCATIE</p>
+                            <p className="mt-1 text-white font-semibold">
+                              {trainer.city ?? "Geen stad"}{trainer.province ? ` · ${trainer.province}` : ""}
+                            </p>
+                          </div>
+
+                          <div className="border-l border-white/20 pl-4">
+                            <p className="font-display text-[10px] text-[#8A8F94]">TARIEF</p>
+                            <p className="mt-1 font-display text-xl text-[#D6FF3F]">
+                              €{Number(trainer.price_per_hour).toFixed(0)} / u
+                            </p>
+                          </div>
+
+                          <div>
+                            <p className="font-display text-[10px] text-[#8A8F94]">WERKGEBIED</p>
+                            <p className="mt-1 text-white font-semibold">
+                              {trainer.radius_km ? `${trainer.radius_km} KM` : "Niet ingevuld"}
+                            </p>
+                          </div>
+
+                          <div className="border-l border-white/20 pl-4">
+                            <p className="font-display text-[10px] text-[#8A8F94]">AANGEMELD</p>
+                            <p className="mt-1 text-white font-semibold">
+                              {formatDate(trainer.created_at)}
+                            </p>
+                          </div>
+                        </div>
+
+                        {trainer.bio ? (
+                          <div className="mt-4 border-l-2 border-[#D6FF3F] pl-3">
+                            <p className="text-xs italic text-[#D7D9DA] line-clamp-3">
+                              "{trainer.bio}"
+                            </p>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      {/* ACTIES */}
+                      <div className="mt-6 pt-2">
+                        {trainer.approval_status === "pending" && (
+                          <div className="grid grid-cols-2 gap-3">
+                            <button
+                              type="button"
+                              disabled={isUpdating}
+                              onClick={() => openConfirmation("approve", trainer)}
+                              className="bg-[#D6FF3F] px-4 py-3 font-display text-sm text-[#14171A] hover:bg-white disabled:opacity-60"
+                            >
+                              {isUpdating ? "..." : "GOEDKEUREN. GOW!"}
+                            </button>
+
+                            <button
+                              type="button"
+                              disabled={isUpdating}
+                              onClick={() => openConfirmation("reject", trainer)}
+                              className="border-2 border-[#FF4B3E] px-4 py-3 font-display text-sm text-[#FF4B3E] hover:bg-[#FF4B3E] hover:text-white disabled:opacity-60"
+                            >
+                              AFKEUREN
+                            </button>
+                          </div>
+                        )}
+
+                        {trainer.approval_status === "rejected" && (
+                          <button
+                            type="button"
+                            disabled={isUpdating}
+                            onClick={() => openConfirmation("approve", trainer)}
+                            className="w-full bg-[#D6FF3F] px-4 py-3.5 font-display text-sm text-[#14171A] hover:bg-white disabled:opacity-60"
+                          >
+                            {isUpdating ? "..." : "ALSNOG GOEDKEUREN"}
+                          </button>
+                        )}
+
+                        {trainer.approval_status === "approved" && (
+                          <button
+                            type="button"
+                            disabled={isUpdating}
+                            onClick={() =>
+                              openConfirmation(
+                                trainer.is_active ? "deactivate" : "activate",
+                                trainer
+                              )
+                            }
+                            className={`w-full px-4 py-3.5 font-display text-sm transition disabled:opacity-60 ${
+                              trainer.is_active
+                                ? "border-2 border-[#FF4B3E] text-[#FF4B3E] hover:bg-[#FF4B3E] hover:text-white"
+                                : "bg-[#D6FF3F] text-[#14171A] hover:bg-white"
+                            }`}
+                          >
+                            {isUpdating
+                              ? "..."
+                              : trainer.is_active
                               ? "DEACTIVEER TRAINER"
                               : "ACTIVEER TRAINER"}
-                        </button>
-                      ) : null}
+                          </button>
+                        )}
+                      </div>
+
                     </div>
                   </article>
                 );

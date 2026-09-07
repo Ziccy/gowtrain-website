@@ -2,10 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
 type SlotStatus = "available" | "held" | "booked" | "cancelled" | "completed";
+type ViewTab = "slots" | "packages";
 
 type TrainerAccount = {
   id: string;
@@ -33,7 +36,19 @@ type Slot = {
   venue: VenueSummary | null;
 };
 
-type PendingCancel = Slot | null;
+type TrainerPackageItem = {
+  id: string;
+  title: string;
+  sport: "padel" | "tennis";
+  lesson_count: number;
+  duration_minutes: number;
+  starts_at: string;
+  price_cents: number;
+  currency: string;
+  max_participants: number;
+  is_active: boolean;
+  venue: VenueSummary | null;
+};
 
 function formatDate(value: string): string {
   return new Intl.DateTimeFormat("nl-NL", {
@@ -71,11 +86,6 @@ function formatEuro(cents: number, currency = "eur"): string {
   }).format(cents / 100);
 }
 
-function getVenueLabel(venue: VenueSummary | null): string {
-  if (!venue) return "LOCATIE ONBEKEND";
-  return `${venue.city.toUpperCase()} — ${venue.name}`;
-}
-
 function getStatusLabel(status: SlotStatus): string {
   switch (status) {
     case "available":
@@ -92,63 +102,93 @@ function getStatusLabel(status: SlotStatus): string {
 }
 
 function getStatusClass(status: SlotStatus): string {
-  if (status === "available") {
-    return "bg-[#D6FF3F] text-[#14171A]";
-  }
-  if (status === "held") {
-    return "bg-white text-[#14171A]";
-  }
-  if (status === "booked") {
-    return "bg-[#FF4B3E] text-white";
-  }
+  if (status === "available") return "bg-[#D6FF3F] text-[#14171A]";
+  if (status === "held") return "bg-white text-[#14171A]";
+  if (status === "booked") return "bg-[#FF4B3E] text-white";
   return "bg-[#303438] text-white";
-}
-
-function getStatusExplanation(status: SlotStatus): string {
-  switch (status) {
-    case "held":
-      return "Een speler is bezig met betalen. Dit slot is tijdelijk gereserveerd.";
-    case "booked":
-      return "Dit slot is definitief geboekt en betaald.";
-    case "completed":
-      return "Deze training is afgerond.";
-    case "cancelled":
-      return "Dit slot is geannuleerd.";
-    default:
-      return "";
-  }
 }
 
 export default function TrainerSlotsPage() {
   const router = useRouter();
   const cancelConfirmationRef = useRef<HTMLElement | null>(null);
 
+  const [activeTab, setActiveTab] = useState<ViewTab>("slots");
+
+  // FILTERS STATE
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [selectedMonth, setSelectedMonth] = useState<string>("all");
+
   const [trainerAccount, setTrainerAccount] = useState<TrainerAccount | null>();
   const [slots, setSlots] = useState<Slot[]>([]);
+  const [packages, setPackages] = useState<TrainerPackageItem[]>([]);
+
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
 
-  const [pendingCancel, setPendingCancel] = useState<PendingCancel>();
-  const [updatingSlotId, setUpdatingSlotId] = useState<string | null>();
+  const [pendingCancelSlot, setPendingCancelSlot] = useState<Slot | null>();
+  const [pendingCancelPackage, setPendingCancelPackage] = useState<TrainerPackageItem | null>();
+  const [updatingId, setUpdatingId] = useState<string | null>();
 
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [successMessage, setSuccessMessage] = useState<string>("");
 
   useEffect(() => {
-    void loadSlots();
+    void loadData();
   }, []);
 
-  const availableSlotsCount = useMemo(() => {
-    return slots.filter((slot) => slot.status === "available").length;
-  }, [slots]);
+  const availableSlotsCount = useMemo(
+    () => slots.filter((slot) => slot.status === "available").length,
+    [slots]
+  );
+  const heldSlotsCount = useMemo(
+    () => slots.filter((slot) => slot.status === "held").length,
+    [slots]
+  );
+  const bookedSlotsCount = useMemo(
+    () => slots.filter((slot) => slot.status === "booked").length,
+    [slots]
+  );
 
-  const heldSlotsCount = useMemo(() => {
-    return slots.filter((slot) => slot.status === "held").length;
-  }, [slots]);
+  const monthOptions = useMemo(() => {
+    const months = new Set<string>();
+    const currentList = activeTab === "slots" ? slots : packages;
+    currentList.forEach((item) => {
+      if (item.starts_at) {
+        const date = new Date(item.starts_at);
+        const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+        months.add(key);
+      }
+    });
+    return Array.from(months).sort();
+  }, [slots, packages, activeTab]);
 
-  const bookedSlotsCount = useMemo(() => {
-    return slots.filter((slot) => slot.status === "booked").length;
-  }, [slots]);
+  const filteredSlots = useMemo(() => {
+    return slots.filter((s) => {
+      if (statusFilter !== "all" && s.status !== statusFilter) {
+        return false;
+      }
+      if (selectedMonth !== "all") {
+        const date = new Date(s.starts_at);
+        const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+        if (key !== selectedMonth) return false;
+      }
+      return true;
+    });
+  }, [slots, statusFilter, selectedMonth]);
+
+  const filteredPackages = useMemo(() => {
+    return packages.filter((p) => {
+      if (statusFilter === "available" && !p.is_active) return false;
+      if (statusFilter === "booked" && p.is_active) return false;
+
+      if (selectedMonth !== "all") {
+        const date = new Date(p.starts_at);
+        const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+        if (key !== selectedMonth) return false;
+      }
+      return true;
+    });
+  }, [packages, statusFilter, selectedMonth]);
 
   function clearMessages(): void {
     setErrorMessage("");
@@ -161,22 +201,9 @@ export default function TrainerSlotsPage() {
   }
 
   async function getCurrentTrainer(): Promise<TrainerAccount | null> {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
+    const { data: { session } } = await supabase.auth.getSession();
 
     if (!session?.user) {
-      router.replace("/trainer-login");
-      return null;
-    }
-
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      await supabase.auth.signOut();
       router.replace("/trainer-login");
       return null;
     }
@@ -184,11 +211,10 @@ export default function TrainerSlotsPage() {
     const { data: trainerData, error: trainerError } = await supabase
       .from("trainers")
       .select("id, is_active, approval_status")
-      .eq("user_id", user.id)
+      .eq("user_id", session.user.id)
       .single();
 
     if (trainerError || !trainerData) {
-      console.error("Trainer ophalen fout:", trainerError?.message);
       showError("Je trainerprofiel kon niet worden geladen.");
       return null;
     }
@@ -196,20 +222,18 @@ export default function TrainerSlotsPage() {
     return trainerData as TrainerAccount;
   }
 
-  async function loadSlots(showLoading = true): Promise<void> {
+  async function loadData(showLoading = true): Promise<void> {
     if (showLoading) setLoading(true);
     setErrorMessage("");
 
     try {
       const trainer = await getCurrentTrainer();
-      if (!trainer) {
-        setSlots([]);
-        return;
-      }
+      if (!trainer) return;
 
       setTrainerAccount(trainer);
 
-      const { data, error } = await supabase
+      // 1. Losse slots ophalen
+      const { data: slotData } = await supabase
         .from("availability_slots")
         .select(
           `
@@ -222,31 +246,43 @@ export default function TrainerSlotsPage() {
             currency,
             status,
             venue:venues!availability_slots_location_id_fkey (
-              id,
-              name,
-              city,
-              address_line,
-              postal_code
+              id, name, city, address_line, postal_code
             )
           `
         )
         .eq("trainer_id", trainer.id)
         .in("status", ["available", "held", "booked"])
-        .gte("starts_at", new Date().toISOString())
+        .gte("starts_at", new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString())
         .order("starts_at", { ascending: true });
 
-      if (error) {
-        console.error("Slots ophalen fout:", error.message);
-        showError("Je slots konden niet worden geladen.");
-        setSlots([]);
-        return;
-      }
+      setSlots((slotData ?? []) as unknown as Slot[]);
 
-      setSlots((data ?? []) as unknown as Slot[]);
-    } catch (error) {
-      console.error("Onverwachte slots-fout:", error);
-      showError("Je slots konden niet worden geladen.");
-      setSlots([]);
+      // 2. Lespakketten ophalen
+      const { data: packageData } = await supabase
+        .from("trainer_packages")
+        .select(
+          `
+            id,
+            title,
+            sport,
+            lesson_count,
+            duration_minutes,
+            starts_at,
+            price_cents,
+            currency,
+            max_participants,
+            is_active,
+            venue:venues!trainer_packages_location_id_fkey (
+              id, name, city, address_line, postal_code
+            )
+          `
+        )
+        .eq("trainer_id", trainer.id)
+        .order("created_at", { ascending: false });
+
+      setPackages((packageData ?? []) as unknown as TrainerPackageItem[]);
+    } catch {
+      showError("De gegevens konden niet worden geladen.");
     } finally {
       if (showLoading) setLoading(false);
     }
@@ -255,36 +291,45 @@ export default function TrainerSlotsPage() {
   async function handleRefresh(): Promise<void> {
     setRefreshing(true);
     clearMessages();
-    await loadSlots(false);
+    await loadData(false);
     setRefreshing(false);
   }
 
-  /* 💡 MET AUTOMATISCHE SMOOTH SCROLL NAAR DE MELDING */
-  function openCancelConfirmation(slot: Slot): void {
+  function openSlotCancelConfirmation(slot: Slot): void {
     clearMessages();
-    setPendingCancel(slot);
+    setPendingCancelPackage(null);
+    setPendingCancelSlot(slot);
 
     window.setTimeout(() => {
-      cancelConfirmationRef.current?.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
+      cancelConfirmationRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      cancelConfirmationRef.current?.focus();
+    }, 50);
+  }
+
+  function openPackageCancelConfirmation(pkg: TrainerPackageItem): void {
+    clearMessages();
+    setPendingCancelSlot(null);
+    setPendingCancelPackage(pkg);
+
+    window.setTimeout(() => {
+      cancelConfirmationRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
       cancelConfirmationRef.current?.focus();
     }, 50);
   }
 
   function closeCancelConfirmation(): void {
-    setPendingCancel(null);
+    setPendingCancelSlot(null);
+    setPendingCancelPackage(null);
   }
 
   async function cancelSlot(slot: Slot): Promise<void> {
     if (slot.status !== "available") {
       showError("Alleen beschikbare slots kunnen worden geannuleerd.");
-      setPendingCancel(null);
+      setPendingCancelSlot(null);
       return;
     }
 
-    setUpdatingSlotId(slot.id);
+    setUpdatingId(slot.id);
     clearMessages();
 
     try {
@@ -293,119 +338,77 @@ export default function TrainerSlotsPage() {
         { p_slot_id: slot.id }
       );
 
-      if (error) {
-        console.error("Slot annuleren fout:", error.message);
+      if (error || !cancelledSlotId) {
         showError("Dit slot kon niet worden geannuleerd.");
         return;
       }
 
-      if (!cancelledSlotId) {
-        showError("Dit slot is ondertussen gewijzigd of geboekt.");
-        await loadSlots(false);
+      setPendingCancelSlot(null);
+      setSuccessMessage(`${formatDate(slot.starts_at)} om ${formatTime(slot.starts_at)} uur is geannuleerd.`);
+      await loadData(false);
+    } catch {
+      showError("Dit slot kon niet worden geannuleerd.");
+    } finally {
+      setUpdatingId(null);
+    }
+  }
+
+  async function cancelPackage(pkg: TrainerPackageItem): Promise<void> {
+    setUpdatingId(pkg.id);
+    clearMessages();
+
+    try {
+      const { error } = await supabase
+        .from("trainer_packages")
+        .delete()
+        .eq("id", pkg.id);
+
+      if (error) {
+        showError("Het lespakket kon niet worden geannuleerd.");
         return;
       }
 
-      setPendingCancel(null);
-      setSuccessMessage(
-        `${formatDate(slot.starts_at)} · ${formatTime(slot.starts_at)} – ${formatTime(slot.ends_at)} is geannuleerd.`
-      );
-
-      await loadSlots(false);
-    } catch (error) {
-      console.error("Onverwachte annuleerfout:", error);
-      showError("Dit slot kon niet worden geannuleerd.");
+      setPendingCancelPackage(null);
+      setSuccessMessage(`Lespakket '${pkg.title}' is geannuleerd en verwijderd van je profiel.`);
+      await loadData(false);
+    } catch {
+      showError("Het lespakket kon niet worden geannuleerd.");
     } finally {
-      setUpdatingSlotId(null);
+      setUpdatingId(null);
     }
   }
 
-  async function handleLogout(): Promise<void> {
-    const { error } = await supabase.auth.signOut();
-    if (error) {
-      showError("Uitloggen lukt nu niet.");
-      return;
-    }
-    router.replace("/trainer-login");
-    router.refresh();
-  }
-
-  /* BRANDBOOK BRANDED LOADER */
   if (loading) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
         <div className="flex flex-col items-center">
           <div className="flex items-center gap-2">
-            <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">
-              GOWTRAIN
-            </span>
+            <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">GOWTRAIN</span>
             <span className="h-0 w-0 animate-pulse border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
           </div>
-          <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">
-            SLOTS LADEN...
-          </p>
+          <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">SLOTS LADEN...</p>
         </div>
       </main>
     );
   }
 
-  const trainerIsActive =
-    trainerAccount?.approval_status === "approved" &&
-    trainerAccount.is_active === true;
+  const trainerIsActive = trainerAccount?.approval_status === "approved" && trainerAccount.is_active === true;
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* HEADER */}
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <a
-            href="/trainer-dashboard"
-            aria-label="Terug naar trainerdashboard"
-            className="group inline-flex items-center gap-2"
-          >
-            <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-              GOWTRAIN
-            </span>
-            <span className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1 sm:border-b-[11px] sm:border-l-[9px] sm:border-t-[11px]" />
-          </a>
-
-          <div className="flex items-center gap-3">
-            <a
-              href="/trainer-dashboard"
-              className="hidden font-display text-sm text-white transition hover:text-[#D6FF3F] sm:block"
-            >
-              ← DASHBOARD
-            </a>
-
-            <button
-              type="button"
-              onClick={() => void handleLogout()}
-              className="border-2 border-white px-4 py-2 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:text-[#14171A]"
-            >
-              UITLOGGEN
-            </button>
-          </div>
-        </div>
-      </header>
+      {/* 💡 UNIVERSELE DYNAMISCHE SITE HEADER */}
+      <SiteHeader />
 
       {/* CONTENT */}
-      <section className="relative flex-1 overflow-hidden py-12 sm:py-16">
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -right-10 -top-20 select-none font-display text-[16rem] leading-none text-[#D6FF3F] opacity-[0.04] sm:text-[25rem]"
-        >
-          SLOT
-        </div>
-
-        <div className="relative mx-auto max-w-6xl px-5 sm:px-8">
+      <section className="relative flex-1 overflow-hidden py-10 sm:py-14">
+        <div className="relative mx-auto max-w-7xl px-5 sm:px-8">
+          
           <div className="flex flex-col justify-between gap-6 border-b-2 border-white/20 pb-8 md:flex-row md:items-end">
             <div>
-              <p className="font-display text-lg text-[#FF4B3E]">BESCHIKBAARHEID</p>
+              <p className="font-display text-lg text-[#FF4B3E]">BESCHIKBAARHEID &amp; AANBOD</p>
               <h1 className="mt-3 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
-                MIJN SLOTS.
+                MIJN SLOTS &amp; PAKKETEN.
               </h1>
-              <p className="mt-6 max-w-2xl text-lg leading-relaxed text-[#D7D9DA]">
-                Bekijk alle actieve en geplande tijdsloten. Spelers kunnen deze rechtstreeks boeken.
-              </p>
             </div>
 
             <div className="flex flex-wrap gap-3">
@@ -413,32 +416,23 @@ export default function TrainerSlotsPage() {
                 type="button"
                 onClick={() => void handleRefresh()}
                 disabled={refreshing}
-                className="border-2 border-white px-4 py-3 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:text-[#D6FF3F] disabled:opacity-60"
+                className="border-2 border-white px-4 py-3 font-display text-sm text-white hover:border-[#D6FF3F] hover:text-[#D6FF3F]"
               >
                 {refreshing ? "VERVERSEN..." : "↻ VERVERS"}
               </button>
 
-              <a
-                href="/trainer-slot-toevoegen"
+              <Link
+                href={activeTab === "slots" ? "/trainer-slot-toevoegen" : "/trainer-pakket-toevoegen"}
                 className={`inline-flex items-center justify-center px-5 py-3 font-display text-sm transition ${
                   trainerIsActive
                     ? "bg-[#FF4B3E] text-white hover:bg-[#D6FF3F] hover:!text-[#14171A]"
                     : "pointer-events-none bg-[#53595E] text-white/60"
                 }`}
               >
-                + NIEUW SLOT
-              </a>
+                {activeTab === "slots" ? "+ NIEUW SLOT" : "+ NIEUW PAKKET"}
+              </Link>
             </div>
           </div>
-
-          {!trainerIsActive && (
-            <div className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] px-5 py-4 text-white">
-              <p className="font-display text-lg">JE PROFIEL IS NOG NIET ACTIEF</p>
-              <p className="mt-2 leading-relaxed text-white/90">
-                Je kunt slots toevoegen zodra je trainerprofiel is goedgekeurd.
-              </p>
-            </div>
-          )}
 
           {errorMessage && (
             <div role="alert" className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] px-5 py-4 font-semibold text-white">
@@ -452,183 +446,278 @@ export default function TrainerSlotsPage() {
             </div>
           )}
 
-          {/* COUNTERS */}
-          <div className="mt-8 grid gap-4 sm:grid-cols-3">
-            <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] p-5 text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E]">
-              <p className="font-display text-5xl">{availableSlotsCount}</p>
-              <p className="mt-2 font-display text-base">BESCHIKBAAR</p>
-            </div>
-
-            <div className="border-2 border-white bg-white p-5 text-[#14171A]">
-              <p className="font-display text-5xl">{heldSlotsCount}</p>
-              <p className="mt-2 font-display text-base">IN BETALING</p>
-            </div>
-
-            <div className="border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white shadow-[6px_6px_0_0_#D6FF3F]">
-              <p className="font-display text-5xl">{bookedSlotsCount}</p>
-              <p className="mt-2 font-display text-base">GEBOEKT</p>
-            </div>
-          </div>
-
-          {/* CONFIRMATION BANNER MET AUTOMATISCHE SCROLL */}
-          {pendingCancel && (
-            <section
-              ref={cancelConfirmationRef}
-              tabIndex={-1}
-              className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white outline-none sm:p-6 shadow-[8px_8px_0_0_#14171A]"
-            >
+          {/* CONFIRMATION BANNER VOOR SLOT ANNULEREN */}
+          {pendingCancelSlot && (
+            <section ref={cancelConfirmationRef} tabIndex={-1} className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white outline-none shadow-[8px_8px_0_0_#14171A]">
               <p className="font-display text-3xl">SLOT ANNULEREN?</p>
-              <p className="mt-3 max-w-2xl leading-relaxed text-white/90">
-                {formatDate(pendingCancel.starts_at)} · {formatTime(pendingCancel.starts_at)} – {formatTime(pendingCancel.ends_at)} bij {getVenueLabel(pendingCancel.venue)} wordt geannuleerd.
-              </p>
-
-              <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-                <button
-                  type="button"
-                  onClick={closeCancelConfirmation}
-                  className="border-2 border-white px-5 py-3 font-display text-base text-white transition hover:bg-white hover:text-[#14171A]"
-                >
-                  TERUG
-                </button>
-
-                <button
-                  type="button"
-                  disabled={updatingSlotId === pendingCancel.id}
-                  onClick={() => void cancelSlot(pendingCancel)}
-                  className="bg-[#14171A] px-5 py-3 font-display text-base text-white transition hover:bg-white hover:text-[#14171A] disabled:opacity-60"
-                >
-                  {updatingSlotId === pendingCancel.id ? "ANNULEREN..." : "JA, ANNULEER SLOT"}
-                </button>
+              <p className="mt-2 text-sm">{formatDate(pendingCancelSlot.starts_at)} om {formatTime(pendingCancelSlot.starts_at)} uur wordt verwijderd uit je agenda.</p>
+              <div className="mt-5 flex gap-3">
+                <button type="button" onClick={closeCancelConfirmation} className="border-2 border-white px-5 py-3 font-display text-sm text-white hover:bg-white hover:text-[#14171A]">TERUG</button>
+                <button type="button" onClick={() => void cancelSlot(pendingCancelSlot)} className="bg-[#14171A] px-5 py-3 font-display text-sm text-white hover:bg-white hover:text-[#14171A]">JA, ANNULEER SLOT</button>
               </div>
             </section>
           )}
 
-          {/* GEEN SLOTS */}
-          {slots.length === 0 ? (
-            <section className="mt-8 border-2 border-white bg-white p-3 text-[#14171A] shadow-[8px_8px_0_0_#D6FF3F]">
-              <div className="bg-[#14171A] p-6 text-white sm:p-8">
-                <p className="font-display text-4xl text-[#D6FF3F]">GEEN TOEKOMSTIGE SLOTS.</p>
-                <p className="mt-4 max-w-xl text-lg leading-relaxed text-[#B9BEC2]">
-                  Voeg een nieuw tijdslot toe of stel een vaste weekreeks in zodat spelers je kunnen boeken.
-                </p>
-
-                <div className="mt-7 flex flex-col gap-3 sm:flex-row">
-                  <a
-                    href="/trainer-slot-toevoegen"
-                    className={`inline-flex items-center justify-center px-6 py-4 font-display text-lg transition ${
-                      trainerIsActive
-                        ? "bg-[#FF4B3E] text-white hover:bg-[#D6FF3F] hover:!text-[#14171A]"
-                        : "pointer-events-none bg-[#53595E] text-white/60"
-                    }`}
-                  >
-                    NIEUW SLOT TOEVOEGEN →
-                  </a>
-
-                  <a
-                    href="/trainer-beschikbaarheid"
-                    className="inline-flex items-center justify-center border-2 border-white px-6 py-4 font-display text-lg !text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:!text-[#14171A]"
-                  >
-                    VASTE MOMENTEN →
-                  </a>
-                </div>
+          {/* CONFIRMATION BANNER VOOR PAKKET ANNULEREN */}
+          {pendingCancelPackage && (
+            <section ref={cancelConfirmationRef} tabIndex={-1} className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white outline-none shadow-[8px_8px_0_0_#14171A]">
+              <p className="font-display text-3xl">LESPAKKET ANNULEREN?</p>
+              <p className="mt-2 text-sm">Lespakket '{pendingCancelPackage.title}' wordt geannuleerd en verwijderd van je profiel.</p>
+              <div className="mt-5 flex gap-3">
+                <button type="button" onClick={closeCancelConfirmation} className="border-2 border-white px-5 py-3 font-display text-sm text-white hover:bg-white hover:text-[#14171A]">TERUG</button>
+                <button type="button" onClick={() => void cancelPackage(pendingCancelPackage)} className="bg-[#14171A] px-5 py-3 font-display text-sm text-white hover:bg-white hover:text-[#14171A]">JA, ANNULEER PAKKET</button>
               </div>
             </section>
-          ) : (
-            <div className="mt-8 grid gap-6 lg:grid-cols-2">
-              {slots.map((slot) => {
-                const canCancel = slot.status === "available";
-                const isUpdating = updatingSlotId === slot.id;
+          )}
 
-                return (
-                  <article
-                    key={slot.id}
-                    className="border-2 border-white bg-white p-3 text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E]"
+          {/* TAB SWITCHER */}
+          <div className="mt-8 flex gap-3 border-b-2 border-white/20 pb-4">
+            <button
+              type="button"
+              onClick={() => { clearMessages(); setActiveTab("slots"); setStatusFilter("all"); }}
+              className={`border-2 px-6 py-3 font-display text-lg transition ${
+                activeTab === "slots"
+                  ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A] shadow-[4px_4px_0_0_#FF4B3E]"
+                  : "border-white/30 text-white hover:border-white"
+              }`}
+            >
+              LOSSE SLOTS ({availableSlotsCount})
+            </button>
+
+            <button
+              type="button"
+              onClick={() => { clearMessages(); setActiveTab("packages"); setStatusFilter("all"); }}
+              className={`border-2 px-6 py-3 font-display text-lg transition ${
+                activeTab === "packages"
+                  ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A] shadow-[4px_4px_0_0_#FF4B3E]"
+                  : "border-white/30 text-white hover:border-white"
+              }`}
+            >
+              LESPAKKETTEN &amp; TRAJECTEN ({packages.length})
+            </button>
+          </div>
+
+          {/* FILTER BALK VOOR STATUS EN MAAND */}
+          <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b border-white/15 pb-6">
+            <div className="flex flex-wrap gap-2">
+              {activeTab === "slots" ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setStatusFilter("all")}
+                    className={`border px-3 py-1.5 font-display text-xs transition ${
+                      statusFilter === "all" ? "bg-[#D6FF3F] text-[#14171A] border-[#D6FF3F]" : "text-white border-white/30"
+                    }`}
                   >
-                    <div className="bg-[#14171A] p-5 text-white">
-                      
-                      <div className="flex items-start justify-between gap-4">
-                        <div>
-                          <p className="font-display text-xl text-[#D6FF3F]">
-                            {formatShortDate(slot.starts_at)}
-                          </p>
-                          <p className="mt-2 font-display text-4xl">
-                            {formatTime(slot.starts_at)} – {formatTime(slot.ends_at)}
-                          </p>
+                    ALLES
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setStatusFilter("available")}
+                    className={`border px-3 py-1.5 font-display text-xs transition ${
+                      statusFilter === "available" ? "bg-[#D6FF3F] text-[#14171A] border-[#D6FF3F]" : "text-white border-white/30"
+                    }`}
+                  >
+                    BESCHIKBAAR ({availableSlotsCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setStatusFilter("booked")}
+                    className={`border px-3 py-1.5 font-display text-xs transition ${
+                      statusFilter === "booked" ? "bg-[#D6FF3F] text-[#14171A] border-[#D6FF3F]" : "text-white border-white/30"
+                    }`}
+                  >
+                    GEBOEKT ({bookedSlotsCount})
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setStatusFilter("all")}
+                    className={`border px-3 py-1.5 font-display text-xs transition ${
+                      statusFilter === "all" ? "bg-[#D6FF3F] text-[#14171A] border-[#D6FF3F]" : "text-white border-white/30"
+                    }`}
+                  >
+                    ALLES
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setStatusFilter("available")}
+                    className={`border px-3 py-1.5 font-display text-xs transition ${
+                      statusFilter === "available" ? "bg-[#D6FF3F] text-[#14171A] border-[#D6FF3F]" : "text-white border-white/30"
+                    }`}
+                  >
+                    ACTIEF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setStatusFilter("booked")}
+                    className={`border px-3 py-1.5 font-display text-xs transition ${
+                      statusFilter === "booked" ? "bg-[#D6FF3F] text-[#14171A] border-[#D6FF3F]" : "text-white border-white/30"
+                    }`}
+                  >
+                    GEPAUZEERD / GEBOEKT
+                  </button>
+                </>
+              )}
+            </div>
+
+            {monthOptions.length > 0 && (
+              <div className="flex items-center gap-2">
+                <span className="font-display text-xs text-[#D6FF3F]">PER MAAND:</span>
+                <select
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(e.target.value)}
+                  className="border border-white/30 bg-[#14171A] px-3 py-1.5 font-display text-xs text-white outline-none focus:border-[#D6FF3F]"
+                >
+                  <option value="all">ALLE MAANDEN</option>
+                  {monthOptions.map((mKey) => {
+                    const [year, month] = mKey.split("-");
+                    const date = new Date(Number(year), Number(month) - 1, 1);
+                    const label = new Intl.DateTimeFormat("nl-NL", { month: "long", year: "numeric" }).format(date).toUpperCase();
+                    return <option key={mKey} value={mKey}>{label}</option>;
+                  })}
+                </select>
+              </div>
+            )}
+          </div>
+
+          {/* TAB 1: LOSSE SLOTS */}
+          {activeTab === "slots" && (
+            <div className="mt-8 space-y-8">
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] p-5 text-[#14171A]">
+                  <p className="font-display text-5xl">{availableSlotsCount}</p>
+                  <p className="mt-2 font-display text-base">BESCHIKBAAR</p>
+                </div>
+                <div className="border-2 border-white bg-white p-5 text-[#14171A]">
+                  <p className="font-display text-5xl">{heldSlotsCount}</p>
+                  <p className="mt-2 font-display text-base">IN BETALING</p>
+                </div>
+                <div className="border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white">
+                  <p className="font-display text-5xl">{bookedSlotsCount}</p>
+                  <p className="mt-2 font-display text-base">GEBOEKT</p>
+                </div>
+              </div>
+
+              {filteredSlots.length === 0 ? (
+                <div className="border-2 border-white/20 p-8 text-center text-[#B9BEC2]">
+                  Geen slots gevonden voor dit filter.
+                </div>
+              ) : (
+                <div className="grid gap-6 md:grid-cols-2">
+                  {filteredSlots.map((slot) => (
+                    <article key={slot.id} className="border-2 border-white bg-white p-3 text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E]">
+                      <div className="bg-[#14171A] p-5 text-white">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <p className="font-display text-xl text-[#D6FF3F]">{formatShortDate(slot.starts_at)}</p>
+                            <p className="font-display text-3xl mt-1">{formatTime(slot.starts_at)} – {formatTime(slot.ends_at)}</p>
+                          </div>
+                          <span className={`px-2.5 py-1 font-display text-xs ${getStatusClass(slot.status)}`}>{getStatusLabel(slot.status)}</span>
                         </div>
 
-                        <span
-                          className={`shrink-0 px-3 py-1.5 font-display text-xs ${getStatusClass(
-                            slot.status
-                          )}`}
-                        >
-                          {getStatusLabel(slot.status)}
-                        </span>
-                      </div>
-
-                      <div className="mt-6 border-y border-white/20 py-4">
-                        <div className="flex items-start justify-between gap-5">
+                        <div className="mt-4 border-y border-white/20 py-3 flex justify-between">
                           <div>
                             <p className="font-display text-[10px] text-[#8A8F94]">SPORT</p>
-                            <p className="mt-1 font-display text-xl text-white">
-                              {slot.sport.toUpperCase()}
-                            </p>
-                            <p className="mt-1 text-xs text-[#B9BEC2]">
-                              Max. {slot.max_participants} {slot.max_participants === 1 ? "speler" : "spelers"}
-                            </p>
+                            <p className="font-display text-base text-white">{slot.sport.toUpperCase()}</p>
                           </div>
-
                           <div className="text-right">
-                            <p className="font-display text-[10px] text-[#8A8F94]">PRIJS PER LES</p>
-                            <p className="mt-1 font-display text-2xl text-[#D6FF3F]">
-                              {formatEuro(slot.price_cents, slot.currency)}
-                            </p>
-                            <p className="mt-0.5 text-xs text-[#B9BEC2]">Incl. baanhuur</p>
+                            <p className="font-display text-[10px] text-[#8A8F94]">PRIJS</p>
+                            <p className="font-display text-2xl text-[#D6FF3F]">{formatEuro(slot.price_cents)}</p>
                           </div>
                         </div>
-                      </div>
 
-                      <div className="mt-4">
-                        <p className="font-display text-xs text-[#FF4B3E]">LOCATIE</p>
-                        <p className="mt-1 font-display text-base text-white">
-                          {getVenueLabel(slot.venue)}
-                        </p>
-                        {slot.venue && (
-                          <p className="mt-0.5 text-xs text-[#B9BEC2]">
-                            {slot.venue.address_line}, {slot.venue.city}
-                          </p>
+                        {slot.status === "available" && (
+                          <div className="mt-5 grid grid-cols-2 gap-3">
+                            <Link
+                              href={`/trainer-slots/${slot.id}/wijzigen`}
+                              className="flex items-center justify-center border-2 border-white px-4 py-3.5 font-display text-sm !text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:!text-[#14171A]"
+                            >
+                              WIJZIG SLOT
+                            </Link>
+
+                            <button
+                              type="button"
+                              onClick={() => openSlotCancelConfirmation(slot)}
+                              className="bg-[#FF4B3E] px-4 py-3.5 font-display text-sm text-white transition hover:bg-white hover:!text-[#14171A]"
+                            >
+                              ANNULEER SLOT
+                            </button>
+                          </div>
                         )}
                       </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
-                      {canCancel ? (
-                        <div className="mt-6 grid gap-3 sm:grid-cols-2">
-                          <a
-                            href={`/trainer-slots/${slot.id}/wijzigen`}
-                            className="flex items-center justify-center border-2 border-white px-4 py-3.5 font-display text-sm !text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:!text-[#14171A]"
-                          >
-                            WIJZIG SLOT
-                          </a>
+          {/* TAB 2: LESPAKKETTEN & TRAJECTEN */}
+          {activeTab === "packages" && (
+            <div className="mt-8 space-y-6">
+              {filteredPackages.length === 0 ? (
+                <div className="border-2 border-white/20 p-8 text-center text-[#B9BEC2]">
+                  <p className="font-display text-2xl text-[#D6FF3F]">GEEN LESPAKKETTEN GEVONDEN BINNEN DIT FILTER.</p>
+                  <Link href="/trainer-pakket-toevoegen" className="mt-6 inline-flex bg-[#FF4B3E] px-6 py-4 font-display text-lg text-white hover:bg-[#D6FF3F] hover:!text-[#14171A]">
+                    + NIEUW PAKKET TOEVOEGEN →
+                  </Link>
+                </div>
+              ) : (
+                <div className="grid gap-6 md:grid-cols-2">
+                  {filteredPackages.map((pkg) => {
+                    const isUpdating = updatingId === pkg.id;
 
-                          <button
-                            type="button"
-                            disabled={isUpdating}
-                            onClick={() => openCancelConfirmation(slot)}
-                            className="bg-[#FF4B3E] px-4 py-3.5 font-display text-sm text-white transition hover:bg-white hover:!text-[#14171A] disabled:opacity-60"
-                          >
-                            {isUpdating ? "ANNULEREN..." : "ANNULEER SLOT"}
-                          </button>
+                    return (
+                      <article key={pkg.id} className="border-2 border-[#D6FF3F] bg-white p-3 text-[#14171A] shadow-[6px_6px_0_0_#D6FF3F]">
+                        <div className="bg-[#14171A] p-5 text-white flex flex-col justify-between h-full">
+                          <div>
+                            <div className="flex justify-between items-start gap-4">
+                              <div>
+                                <span className="bg-[#FF4B3E] px-2.5 py-0.5 font-display text-[10px] text-white">
+                                  {pkg.lesson_count} LESSEN TRAJECT
+                                </span>
+                                <h3 className="font-display text-2xl mt-2">{pkg.title}</h3>
+                              </div>
+
+                              <span className={`px-2.5 py-1 font-display text-xs ${pkg.is_active ? "bg-[#D6FF3F] text-[#14171A]" : "bg-[#303438] text-white"}`}>
+                                {pkg.is_active ? "ACTIEF" : "GEPAUZEERD / GEBOEKT"}
+                              </span>
+                            </div>
+
+                            <div className="mt-5 border-y border-white/20 py-4 space-y-1.5 text-xs text-[#B9BEC2]">
+                              <p>🗓️ <strong>Start:</strong> {formatShortDate(pkg.starts_at)} om {formatTime(pkg.starts_at)} uur</p>
+                              <p>⏳ <strong>Duur:</strong> {pkg.duration_minutes} min per les ({pkg.lesson_count} weken)</p>
+                              <p>💰 <strong>Totaalprijs:</strong> <span className="text-[#D6FF3F] font-display text-lg">{formatEuro(pkg.price_cents)}</span> (incl. baanhuur)</p>
+                            </div>
+                          </div>
+
+                          <div className="mt-6 grid grid-cols-2 gap-3">
+                            <Link
+                              href={`/trainer-pakket/${pkg.id}/wijzigen`}
+                              className="flex items-center justify-center border-2 border-white px-4 py-3.5 font-display text-sm !text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:!text-[#14171A]"
+                            >
+                              WIJZIG PAKKET
+                            </Link>
+
+                            <button
+                              type="button"
+                              disabled={isUpdating}
+                              onClick={() => openPackageCancelConfirmation(pkg)}
+                              className="bg-[#FF4B3E] px-4 py-3.5 font-display text-sm text-white transition hover:bg-white hover:!text-[#14171A] disabled:opacity-60"
+                            >
+                              {isUpdating ? "..." : "ANNULEER PAKKET"}
+                            </button>
+                          </div>
+
                         </div>
-                      ) : (
-                        <div className="mt-5 border-l-2 border-[#FF4B3E] pl-4">
-                          <p className="text-xs text-[#B9BEC2]">
-                            {getStatusExplanation(slot.status)}
-                          </p>
-                        </div>
-                      )}
-
-                    </div>
-                  </article>
-                );
-              })}
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 

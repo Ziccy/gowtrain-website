@@ -27,13 +27,13 @@ const issueOptions: Array<{
     value: "player_no_show",
     label: "SPELER NIET VERSCHENEN",
     description:
-      "De speler was niet aanwezig op het afgesproken moment. Er volgt niet automatisch een refund.",
+      "De speler was niet aanwezig op het afgesproken moment.",
   },
   {
     value: "weather",
     label: "SLECHT WEER",
     description:
-      "De training kon niet doorgaan door regen, wind of andere weersomstandigheden.",
+      "De training kon niet doorgaan door regen, wind of weersomstandigheden.",
   },
   {
     value: "court_unavailable",
@@ -97,18 +97,15 @@ export default function TrainerBookingIssueModal({
 
       if (error) {
         console.error("Trainerprobleem melden fout:", error.message);
-
         setErrorMessage(
           "Je melding kon niet worden verstuurd. Probeer het opnieuw."
         );
-
         return;
       }
 
       onSubmitted();
     } catch (error) {
       console.error("Onverwachte trainer issue-melding fout:", error);
-
       setErrorMessage(
         "Je melding kon niet worden verstuurd. Probeer het opnieuw."
       );
@@ -118,117 +115,125 @@ export default function TrainerBookingIssueModal({
   }
 
   return (
-    <section className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white sm:p-6">
-      <p className="font-display text-3xl">PROBLEEM MELDEN?</p>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-lg border-2 border-[#FF4B3E] bg-[#14171A] text-white shadow-[10px_10px_0_0_#D6FF3F]">
+        
+        {/* HEADER */}
+        <div className="border-b-2 border-white/20 p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <span className="bg-[#FF4B3E] px-2.5 py-0.5 font-display text-[10px] text-white uppercase">
+                GOWTRAIN GARANTIE
+              </span>
+              <h3 className="font-display text-2xl text-white mt-1">
+                PROBLEEM MELDEN
+              </h3>
+              <p className="text-xs text-[#B9BEC2] mt-1">
+                Les met {playerName} · {trainingLabel}
+              </p>
+            </div>
 
-      <p className="mt-3 max-w-2xl leading-relaxed text-white/90">
-        Meld wat er is misgegaan bij de training met{" "}
-        <strong>{playerName}</strong>.
-      </p>
-
-      <div className="mt-5 border-l-2 border-white pl-4">
-        <p className="font-display text-lg">{trainingLabel}</p>
-
-        <p className="mt-2 text-sm leading-relaxed text-white/90">
-          Gowtrain beoordeelt de melding. Bij slecht weer of een baanprobleem
-          kijken we eerst naar gratis verplaatsen of Gowtrain-tegoed.
-        </p>
-      </div>
-
-      {errorMessage ? (
-        <div
-          role="alert"
-          className="mt-6 border-2 border-white bg-[#14171A] px-4 py-3 font-semibold text-white"
-        >
-          {errorMessage}
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex h-9 w-9 shrink-0 items-center justify-center border-2 border-white font-display text-lg text-white hover:bg-[#FF4B3E] transition"
+            >
+              ✕
+            </button>
+          </div>
         </div>
-      ) : null}
 
-      <form onSubmit={handleSubmit} className="mt-6">
-        <fieldset>
-          <legend className="font-display text-base">
-            WAT IS ER GEBEURD?
-          </legend>
+        {/* FORM */}
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          <div>
+            <label className="block font-display text-xs text-[#D6FF3F] mb-2 uppercase">
+              Wat is er gebeurd?
+            </label>
 
-          <div className="mt-3 grid gap-3">
-            {issueOptions.map((option) => {
-              const isSelected = selectedIssueType === option.value;
+            <div className="space-y-2">
+              {issueOptions.map((option) => {
+                const isSelected = selectedIssueType === option.value;
 
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  disabled={submitting}
-                  onClick={() => {
-                    clearError();
-                    setSelectedIssueType(option.value);
-                  }}
-                  className={`border-2 p-4 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                    isSelected
-                      ? "border-[#14171A] bg-[#14171A] text-white"
-                      : "border-white text-white hover:bg-white hover:text-[#14171A]"
-                  }`}
-                >
-                  <span className="block font-display text-lg">
-                    {option.label}
-                  </span>
-
-                  <span
-                    className={`mt-2 block text-sm leading-relaxed ${
-                      isSelected ? "text-[#D7D9DA]" : "text-white/90"
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => {
+                      clearError();
+                      setSelectedIssueType(option.value);
+                    }}
+                    className={`w-full border-2 p-3 text-left transition select-none flex flex-col justify-between ${
+                      isSelected
+                        ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A]"
+                        : "border-white/25 bg-[#14171A] text-white hover:bg-white hover:text-[#14171A]"
                     }`}
                   >
-                    {option.description}
-                  </span>
-                </button>
-              );
-            })}
+                    <span className="font-display text-sm">
+                      {option.label}
+                    </span>
+                    <span
+                      className={`text-xs mt-0.5 ${
+                        isSelected ? "text-[#14171A]/80" : "text-[#B9BEC2]"
+                      }`}
+                    >
+                      {option.description}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </fieldset>
 
-        <div className="mt-6">
-          <label
-            htmlFor="trainer-booking-issue-description"
-            className="mb-2 block font-display text-base"
-          >
-            EXTRA UITLEG{" "}
-            <span className="text-white/70">(OPTIONEEL)</span>
-          </label>
+          <div>
+            <label
+              htmlFor="trainer-issue-description"
+              className="block font-display text-xs text-[#D6FF3F] mb-1 uppercase"
+            >
+              Extra uitleg <span className="text-white/60">(optioneel)</span>
+            </label>
 
-          <textarea
-            id="trainer-booking-issue-description"
-            rows={4}
-            maxLength={1000}
-            disabled={submitting}
-            value={description}
-            onChange={(event) => {
-              clearError();
-              setDescription(event.target.value);
-            }}
-            placeholder="Vertel kort wat er is gebeurd."
-            className="w-full resize-y border-2 border-white bg-transparent px-4 py-4 text-white outline-none placeholder:text-white/60 focus:border-[#14171A] disabled:cursor-not-allowed disabled:opacity-60"
-          />
-        </div>
+            <textarea
+              id="trainer-issue-description"
+              rows={3}
+              maxLength={1000}
+              disabled={submitting}
+              value={description}
+              onChange={(event) => {
+                clearError();
+                setDescription(event.target.value);
+              }}
+              placeholder="Vertel kort wat er is gebeurd..."
+              className="w-full border-2 border-white/25 bg-transparent p-3 text-xs text-white outline-none focus:border-[#D6FF3F]"
+            />
+          </div>
 
-        <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-          <button
-            type="button"
-            disabled={submitting}
-            onClick={onClose}
-            className="border-2 border-white px-5 py-3 font-display text-base text-white transition hover:bg-white hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            TERUG
-          </button>
+          {errorMessage && (
+            <p className="text-xs text-[#FF4B3E] font-semibold bg-[#FF4B3E]/10 p-2.5 border border-[#FF4B3E]">
+              {errorMessage}
+            </p>
+          )}
 
-          <button
-            type="submit"
-            disabled={submitting}
-            className="bg-[#14171A] px-5 py-3 font-display text-base text-white transition hover:bg-white hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {submitting ? "MELDING VERSTUREN..." : "MELD PROBLEEM"}
-          </button>
-        </div>
-      </form>
-    </section>
+          <div className="pt-2 flex gap-2">
+            <button
+              type="submit"
+              disabled={submitting}
+              className="flex-1 bg-[#FF4B3E] py-3.5 font-display text-sm text-white hover:bg-[#D6FF3F] hover:text-[#14171A] transition disabled:opacity-50"
+            >
+              {submitting ? "VERSTUREN..." : "VERSTUUR MELDING. GOW! →"}
+            </button>
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="border-2 border-white/30 px-4 py-3.5 font-display text-xs text-white hover:border-white"
+            >
+              ANNULEREN
+            </button>
+          </div>
+        </form>
+
+      </div>
+    </div>
   );
 }

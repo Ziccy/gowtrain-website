@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import TrainerBookingIssueModal from "@/components/TrainerBookingIssueModal";
+import BookingChatModal from "@/components/BookingChatModal";
 import { supabase } from "@/lib/supabase-browser";
 
 type ApprovalStatus = "pending" | "approved" | "rejected";
@@ -35,6 +37,7 @@ type TrainerAccount = {
   stripe_details_submitted: boolean;
   stripe_charges_enabled: boolean;
   stripe_payouts_enabled: boolean;
+  calendar_feed_token: string | null;
 };
 
 type VenueSummary = {
@@ -52,6 +55,12 @@ type BookingSlot = {
   venue: VenueSummary | null;
 } | null;
 
+type MessageState = {
+  has_messages: boolean;
+  has_unread_player_message: boolean;
+  last_sender_role: "player" | "trainer" | null;
+};
+
 type Booking = {
   id: string;
   slot_id: string | null;
@@ -59,12 +68,15 @@ type Booking = {
   player_email: string;
   participant_count: number;
   total_price_cents: number;
+  commission_amount_cents: number;
+  trainer_net_amount_cents: number;
   currency: string;
   status: BookingStatus;
   created_at: string;
   hold_expires_at: string | null;
   cancellation_policy: string | null;
   availability_slots: BookingSlot;
+  chat_state?: MessageState;
 };
 
 type BookingSection = {
@@ -130,7 +142,7 @@ function getStatusLabel(status: BookingStatus): string {
 }
 
 function getStatusClass(status: BookingStatus): string {
-  if (status === "confirmed") {
+  if (status === "confirmed" || status === "completed") {
     return "bg-[#D6FF3F] text-[#14171A]";
   }
   if (status === "payment_pending" || status === "refund_pending") {
@@ -170,23 +182,26 @@ function canTrainerCancelBooking(booking: Booking): boolean {
   return Boolean(startsAt && new Date(startsAt).getTime() > Date.now());
 }
 
-function canTrainerReportIssue(booking: Booking): boolean {
-  return booking.status === "confirmed" || booking.status === "completed";
-}
-
 export default function TrainerDashboardPage() {
   const router = useRouter();
 
   const [trainerAccount, setTrainerAccount] = useState<TrainerAccount | null>();
+  const [currentUserId, setCurrentUserId] = useState<string>("");
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [availableSlotsCount, setAvailableSlotsCount] = useState(0);
 
+  // FILTERS
   const [bookingFilter, setBookingFilter] = useState<BookingFilter>("all");
+  const [startDateFilter, setStartDateFilter] = useState<string>("");
+  const [endDateFilter, setEndDateFilter] = useState<string>("");
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [settingUpStripe, setSettingUpStripe] = useState(false);
   const [profileMissing, setProfileMissing] = useState(false);
+
+  // CHAT MODAL
+  const [chatBooking, setChatBooking] = useState<Booking | null>(null);
 
   const [pendingTrainerCancellation, setPendingTrainerCancellation] = useState<Booking | null>();
   const [pendingTrainerIssueBooking, setPendingTrainerIssueBooking] = useState<Booking | null>();
@@ -196,11 +211,16 @@ export default function TrainerDashboardPage() {
   const [successMessage, setSuccessMessage] = useState("");
 
   const trainerCancellationRef = useRef<HTMLElement | null>(null);
-  const trainerIssueRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     void loadDashboard();
   }, []);
+
+  const unreadBookings = useMemo(() => {
+    return bookings.filter(
+      (b) => b.chat_state?.has_unread_player_message && b.status === "confirmed"
+    );
+  }, [bookings]);
 
   const paymentPendingCount = useMemo(
     () => bookings.filter((booking) => booking.status === "payment_pending").length,
@@ -212,6 +232,25 @@ export default function TrainerDashboardPage() {
     [bookings]
   );
 
+  const thisMonthNetEarningsCents = useMemo(() => {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
+
+    let totalCents = 0;
+    bookings.forEach((b) => {
+      if (b.status === "confirmed" || b.status === "completed") {
+        const startsAt = b.availability_slots?.starts_at;
+        const date = startsAt ? new Date(startsAt) : new Date(b.created_at);
+        if (date.getFullYear() === currentYear && date.getMonth() === currentMonth) {
+          totalCents += b.trainer_net_amount_cents || (b.total_price_cents - (b.commission_amount_cents || 0));
+        }
+      }
+    });
+
+    return totalCents;
+  }, [bookings]);
+
   const stripeIsReady =
     trainerAccount?.stripe_details_submitted === true &&
     trainerAccount?.stripe_payouts_enabled === true;
@@ -219,9 +258,18 @@ export default function TrainerDashboardPage() {
   const stripeHasStarted = Boolean(trainerAccount?.stripe_account_id);
 
   const bookingSections = useMemo((): BookingSection[] => {
-    const sortedBookings = [...bookings].sort(
+    let sortedBookings = [...bookings].sort(
       (first, second) => getBookingTime(first) - getBookingTime(second)
     );
+
+    if (startDateFilter) {
+      const startMs = new Date(startDateFilter).getTime();
+      sortedBookings = sortedBookings.filter((b) => getBookingTime(b) >= startMs);
+    }
+    if (endDateFilter) {
+      const endMs = new Date(endDateFilter).setHours(23, 59, 59, 999);
+      sortedBookings = sortedBookings.filter((b) => getBookingTime(b) <= endMs);
+    }
 
     if (bookingFilter !== "all") {
       const filteredBookings = sortedBookings.filter(
@@ -234,7 +282,7 @@ export default function TrainerDashboardPage() {
         refund_pending: "REFUNDS IN VERWERKING",
         cancelled: "GEANNULEERDE BOEKINGEN",
         refunded: "TERUGBETAALDE BOEKINGEN",
-        completed: "AFGERONDE TRAININGEN",
+        completed: "AFGEROND",
       };
 
       return filteredBookings.length
@@ -286,7 +334,7 @@ export default function TrainerDashboardPage() {
     }
 
     return sections;
-  }, [bookings, bookingFilter]);
+  }, [bookings, bookingFilter, startDateFilter, endDateFilter]);
 
   function clearMessages(): void {
     setErrorMessage("");
@@ -305,11 +353,7 @@ export default function TrainerDashboardPage() {
     setProfileMissing(false);
 
     try {
-      const { error: cleanupError } = await supabase.rpc("release_expired_booking_holds");
-
-      if (cleanupError) {
-        console.error("Verlopen reserveringen opruimen fout:", cleanupError.message);
-      }
+      await supabase.rpc("release_expired_booking_holds");
 
       const {
         data: { session },
@@ -319,6 +363,8 @@ export default function TrainerDashboardPage() {
         router.replace("/trainer-login");
         return;
       }
+
+      setCurrentUserId(session.user.id);
 
       const {
         data: { user },
@@ -333,23 +379,11 @@ export default function TrainerDashboardPage() {
 
       const { data: trainerData, error: trainerError } = await supabase
         .from("trainers")
-        .select(
-          `
-            id,
-            name,
-            is_active,
-            approval_status,
-            stripe_account_id,
-            stripe_details_submitted,
-            stripe_charges_enabled,
-            stripe_payouts_enabled
-          `
-        )
+        .select("id, name, is_active, approval_status, stripe_account_id, stripe_details_submitted, stripe_charges_enabled, stripe_payouts_enabled, calendar_feed_token")
         .eq("user_id", user.id)
-        .single();
+        .maybeSingle();
 
       if (trainerError || !trainerData) {
-        console.error("Trainer ophalen fout:", trainerError?.message);
         setTrainerAccount(null);
         setBookings([]);
         setAvailableSlotsCount(0);
@@ -357,8 +391,8 @@ export default function TrainerDashboardPage() {
         return;
       }
 
+      setTrainerAccount(trainerData as TrainerAccount);
       const trainer = trainerData as TrainerAccount;
-      setTrainerAccount(trainer);
 
       if (trainer.approval_status !== "approved" || trainer.is_active !== true) {
         setBookings([]);
@@ -376,23 +410,19 @@ export default function TrainerDashboardPage() {
             player_email,
             participant_count,
             total_price_cents,
+            commission_amount_cents,
+            trainer_net_amount_cents,
             currency,
             status,
             created_at,
             hold_expires_at,
             cancellation_policy,
-
             availability_slots (
               starts_at,
               ends_at,
               sport,
-
               venue:venues!availability_slots_location_id_fkey (
-                id,
-                name,
-                city,
-                address_line,
-                postal_code
+                id, name, city, address_line, postal_code
               )
             )
           `
@@ -401,29 +431,74 @@ export default function TrainerDashboardPage() {
         .order("created_at", { ascending: false });
 
       if (bookingError) {
-        console.error("Boekingen ophalen fout:", bookingError.message);
-        setBookings([]);
         showError("Je boekingen konden niet worden geladen.");
       } else {
-        setBookings((bookingData ?? []) as unknown as Booking[]);
+        const rawBookings = (bookingData ?? []) as unknown as Booking[];
+        const bookingIds = rawBookings.map((b) => b.id);
+
+        let messagesData: Array<{ booking_id: string; sender_role: string; created_at: string }> = [];
+
+        if (bookingIds.length > 0) {
+          const { data: fetchedMsgs } = await supabase
+            .from("booking_messages")
+            .select("booking_id, sender_role, created_at")
+            .in("booking_id", bookingIds)
+            .order("created_at", { ascending: true });
+
+          messagesData = fetchedMsgs ?? [];
+        }
+
+        const messagesByBooking = new Map<string, Array<{ sender_role: string; created_at: string }>>();
+        messagesData.forEach((m) => {
+          const list = messagesByBooking.get(m.booking_id) || [];
+          list.push(m);
+          messagesByBooking.set(m.booking_id, list);
+        });
+
+        const bookingsWithState = rawBookings.map((b) => {
+          const bMessages = messagesByBooking.get(b.id) || [];
+          const hasMessages = bMessages.length > 0;
+          const lastMsg = bMessages[bMessages.length - 1];
+
+          let lastReadTimeStr: string | null = null;
+          try {
+            lastReadTimeStr = localStorage.getItem(`gowtrain_read_trainer_${b.id}`);
+          } catch {
+            lastReadTimeStr = null;
+          }
+
+          const lastReadTime = lastReadTimeStr ? new Date(lastReadTimeStr).getTime() : 0;
+
+          const hasUnreadPlayer = bMessages.some((m) => {
+            if (m.sender_role !== "player") return false;
+            const msgTime = new Date(m.created_at).getTime();
+            return msgTime > lastReadTime;
+          });
+
+          return {
+            ...b,
+            chat_state: {
+              has_messages: hasMessages,
+              has_unread_player_message: hasUnreadPlayer,
+              last_sender_role: lastMsg ? (lastMsg.sender_role as "player" | "trainer") : null,
+            },
+          };
+        });
+
+        setBookings(bookingsWithState);
       }
 
-      const { count, error: countError } = await supabase
+      const { count } = await supabase
         .from("availability_slots")
         .select("id", { count: "exact", head: true })
         .eq("trainer_id", trainer.id)
         .eq("status", "available")
         .gte("starts_at", new Date().toISOString());
 
-      if (countError) {
-        console.error("Slots tellen fout:", countError.message);
-        setAvailableSlotsCount(0);
-      } else {
-        setAvailableSlotsCount(count ?? 0);
-      }
-    } catch (error) {
-      console.error("Dashboard laden fout:", error);
-      showError("Je dashboard kon niet worden geladen. Probeer het opnieuw.");
+      setAvailableSlotsCount(count ?? 0);
+
+    } catch {
+      showError("Je dashboard kon niet worden geladen.");
     } finally {
       if (showLoading) setLoading(false);
     }
@@ -441,10 +516,7 @@ export default function TrainerDashboardPage() {
     clearMessages();
 
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
+      const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {
         router.replace("/trainer-login");
         return;
@@ -455,22 +527,15 @@ export default function TrainerDashboardPage() {
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
 
-      const result = (await response.json()) as {
-        onboardingUrl?: string;
-        error?: string;
-      };
-
+      const result = (await response.json()) as { onboardingUrl?: string; error?: string };
       if (!response.ok || !result.onboardingUrl) {
-        showError(
-          result.error || "Uitbetalingen instellen lukt nu niet. Probeer het opnieuw."
-        );
+        showError(result.error || "Uitbetalingen instellen lukt nu niet.");
         return;
       }
 
       window.location.href = result.onboardingUrl;
-    } catch (error) {
-      console.error("Stripe onboarding fout:", error);
-      showError("Uitbetalingen instellen lukt nu niet. Probeer het opnieuw.");
+    } catch {
+      showError("Uitbetalingen instellen lukt nu niet.");
     } finally {
       setSettingUpStripe(false);
     }
@@ -482,10 +547,7 @@ export default function TrainerDashboardPage() {
     setPendingTrainerCancellation(booking);
 
     window.setTimeout(() => {
-      trainerCancellationRef.current?.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
+      trainerCancellationRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
       trainerCancellationRef.current?.focus();
     }, 50);
   }
@@ -498,14 +560,6 @@ export default function TrainerDashboardPage() {
     clearMessages();
     setPendingTrainerCancellation(null);
     setPendingTrainerIssueBooking(booking);
-
-    window.setTimeout(() => {
-      trainerIssueRef.current?.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
-      trainerIssueRef.current?.focus();
-    }, 50);
   }
 
   function closeTrainerIssueReport(): void {
@@ -514,9 +568,7 @@ export default function TrainerDashboardPage() {
 
   function handleTrainerIssueSubmitted(): void {
     setPendingTrainerIssueBooking(null);
-    setSuccessMessage(
-      "Je melding is verstuurd naar GowTrain. We nemen zo snel mogelijk contact met je op."
-    );
+    setSuccessMessage("Je melding is verstuurd naar GowTrain.");
   }
 
   async function handleTrainerCancellation(booking: Booking): Promise<void> {
@@ -530,29 +582,22 @@ export default function TrainerDashboardPage() {
     clearMessages();
 
     try {
-      const { data, error } = await supabase.rpc(
-        "request_trainer_booking_cancellation",
-        { p_booking_id: booking.id }
-      );
+      const { data, error } = await supabase.rpc("request_trainer_booking_cancellation", {
+        p_booking_id: booking.id,
+      });
 
       if (error) {
         showError(error.message || "De training kon niet worden geannuleerd.");
         return;
       }
 
-      const result = (
-        Array.isArray(data) ? data[0] : data
-      ) as TrainerCancellationResult | null;
-
+      const result = (Array.isArray(data) ? data[0] : data) as TrainerCancellationResult | null;
       if (!result) {
         showError("De training kon niet worden geannuleerd.");
         return;
       }
 
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
+      const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {
         router.replace("/trainer-login");
         return;
@@ -567,28 +612,16 @@ export default function TrainerDashboardPage() {
         body: JSON.stringify({ bookingId: booking.id }),
       });
 
-      const refundResult = (await response.json()) as { error?: string };
-
       if (!response.ok) {
-        showError(
-          refundResult.error ||
-            "De annulering is opgeslagen, maar de terugbetaling kon niet direct worden verwerkt."
-        );
+        showError("De annulering is opgeslagen, maar de terugbetaling kon niet worden verwerkt.");
         await loadDashboard(false);
         return;
       }
 
       setPendingTrainerCancellation(null);
-      setSuccessMessage(
-        `De training met ${booking.player_name} is geannuleerd. ${formatEuro(
-          result.refund_amount_cents,
-          result.currency
-        )} is volledig terugbetaald aan de speler.`
-      );
-
+      setSuccessMessage(`De training met ${booking.player_name} is geannuleerd.`);
       await loadDashboard(false);
-    } catch (error) {
-      console.error("Trainerannulering fout:", error);
+    } catch {
       showError("De training kon niet worden geannuleerd.");
     } finally {
       setCancellingBookingId(null);
@@ -596,29 +629,20 @@ export default function TrainerDashboardPage() {
   }
 
   async function handleLogout(): Promise<void> {
-    const { error } = await supabase.auth.signOut();
-    if (error) {
-      showError("Uitloggen lukt nu niet.");
-      return;
-    }
+    await supabase.auth.signOut();
     router.replace("/trainer-login");
     router.refresh();
   }
 
-  /* BRANDBOOK BRANDED LOADER */
   if (loading) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
         <div className="flex flex-col items-center">
           <div className="flex items-center gap-2">
-            <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">
-              GOWTRAIN
-            </span>
+            <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">GOWTRAIN</span>
             <span className="h-0 w-0 animate-pulse border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
           </div>
-          <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">
-            DASHBOARD LADEN...
-          </p>
+          <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">DASHBOARD LADEN...</p>
         </div>
       </main>
     );
@@ -631,63 +655,31 @@ export default function TrainerDashboardPage() {
           <div className="w-full max-w-xl border-2 border-white bg-white p-3 shadow-[10px_10px_0_0_#FF4B3E]">
             <div className="bg-[#14171A] p-6 text-white sm:p-8">
               <p className="font-display text-lg text-[#FF4B3E]">TRAINERPROFIEL ONTBREEKT</p>
-              <h1 className="mt-4 font-display text-5xl leading-[0.85]">
-                JE ACCOUNT IS NOG NIET GEKOPPELD.
-              </h1>
-              <p className="mt-6 text-lg leading-relaxed text-[#B9BEC2]">
-                Je bent ingelogd, maar er is nog geen trainerprofiel gekoppeld aan dit e-mailadres.
-              </p>
-              <button
-                type="button"
-                onClick={() => void handleLogout()}
-                className="mt-8 w-full bg-[#FF4B3E] px-6 py-5 font-display text-xl text-white"
-              >
-                UITLOGGEN
-              </button>
+              <h1 className="mt-4 font-display text-5xl leading-[0.85]">JE ACCOUNT IS NOG NIET GEKOPPELD.</h1>
+              <p className="mt-6 text-lg leading-relaxed text-[#B9BEC2]">Je bent ingelogd, maar er is nog geen trainerprofiel gekoppeld aan dit e-mailadres.</p>
+              <button type="button" onClick={() => void handleLogout()} className="mt-8 w-full bg-[#FF4B3E] px-6 py-5 font-display text-xl text-white">UITLOGGEN</button>
             </div>
           </div>
         </section>
-
         <SiteFooter />
       </main>
     );
   }
 
-  if (
-    trainerAccount?.approval_status !== "approved" ||
-    trainerAccount?.is_active !== true
-  ) {
+  if (trainerAccount?.approval_status !== "approved" || trainerAccount?.is_active !== true) {
     const isRejected = trainerAccount?.approval_status === "rejected";
-
     return (
       <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
         <section className="flex flex-1 items-center justify-center px-5 py-16">
           <div className="w-full max-w-xl border-2 border-white bg-white p-3 shadow-[10px_10px_0_0_#FF4B3E]">
             <div className="bg-[#14171A] p-6 text-white sm:p-8">
-              <p className="font-display text-lg text-[#FF4B3E]">
-                {isRejected ? "AANMELDING AFGEKEURD" : "WACHT OP GOEDKEURING"}
-              </p>
-              <h1 className="mt-4 font-display text-5xl leading-[0.85]">
-                {isRejected
-                  ? "JE PROFIEL IS NIET GOEDGEKEURD."
-                  : "JE PROFIEL IS IN BEHANDELING."}
-              </h1>
-              <p className="mt-6 text-lg leading-relaxed text-[#B9BEC2]">
-                {isRejected
-                  ? "Neem contact op met GowTrain als je denkt dat dit een vergissing is."
-                  : "We controleren je trainerprofiel. Je ontvangt bericht zodra je live kunt gaan."}
-              </p>
-              <button
-                type="button"
-                onClick={() => void handleLogout()}
-                className="mt-8 w-full bg-[#FF4B3E] px-6 py-5 font-display text-xl text-white"
-              >
-                UITLOGGEN
-              </button>
+              <p className="font-display text-lg text-[#FF4B3E]">{isRejected ? "AANMELDING AFGEKEURD" : "WACHT OP GOEDKEURING"}</p>
+              <h1 className="mt-4 font-display text-5xl leading-[0.85]">{isRejected ? "JE PROFIEL IS NIET GOEDGEKEURD." : "JE PROFIEL IS IN BEHANDELING."}</h1>
+              <p className="mt-6 text-lg leading-relaxed text-[#B9BEC2]">{isRejected ? "Neem contact op met GowTrain als je denkt dat dit een vergissing is." : "We controleren je trainerprofiel. Je ontvangt bericht zodra je live kunt gaan."}</p>
+              <button type="button" onClick={() => void handleLogout()} className="mt-8 w-full bg-[#FF4B3E] px-6 py-5 font-display text-xl text-white">UITLOGGEN</button>
             </div>
           </div>
         </section>
-
         <SiteFooter />
       </main>
     );
@@ -697,39 +689,11 @@ export default function TrainerDashboardPage() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* HEADER */}
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <Link
-            href="/"
-            aria-label="Terug naar GowTrain home"
-            className="group inline-flex items-center gap-2"
-          >
-            <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-              GOWTRAIN
-            </span>
-            <span className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform group-hover:translate-x-1" />
-          </Link>
-
-          <button
-            type="button"
-            onClick={() => void handleLogout()}
-            className="border-2 border-white px-4 py-2 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:text-[#14171A]"
-          >
-            UITLOGGEN
-          </button>
-        </div>
-      </header>
+      {/* 💡 DYNAMISCHE SITE HEADER */}
+      <SiteHeader />
 
       {/* CONTENT */}
       <section className="relative flex-1 overflow-hidden py-10 sm:py-14">
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -right-10 -top-20 select-none font-display text-[16rem] leading-none text-[#D6FF3F] opacity-[0.04] sm:text-[25rem]"
-        >
-          GOW
-        </div>
-
         <div className="relative mx-auto max-w-7xl px-5 sm:px-8">
           
           {/* TOP BANNER */}
@@ -737,249 +701,280 @@ export default function TrainerDashboardPage() {
             <div>
               <p className="font-display text-lg text-[#FF4B3E]">TRAINER DASHBOARD</p>
               <h1 className="mt-3 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
-                HÉ, {firstName.toUpperCase()}.<br />
-                KLAAR OM TE GOW!EN?
+                HÉ, {firstName.toUpperCase()}.<br />KLAAR OM TE GOW!EN?
               </h1>
             </div>
 
-            <button
-              type="button"
-              onClick={() => void handleRefresh()}
-              disabled={refreshing}
-              className="font-display text-base text-[#D6FF3F] transition hover:text-white disabled:opacity-60"
-            >
-              {refreshing ? "VERVERSEN..." : "↻ VERVERS DASHBOARD"}
-            </button>
+            {/* 💡 PROFIEL BEWERKEN, BOEKINGEN & VERVERS KNOPPEN IN HOOFDBANNER */}
+            <div className="flex flex-wrap items-center gap-3 sm:gap-4">
+              <Link
+                href="/trainer-profiel-bewerken"
+                className="border-2 border-white px-4 py-3 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:!text-[#14171A]"
+              >
+                PROFIEL BEWERKEN
+              </Link>
+
+              <button
+                type="button"
+                onClick={() => {
+                  document.getElementById("boekingen-overzicht")?.scrollIntoView({ behavior: "smooth" });
+                }}
+                className="border-2 border-white px-4 py-3 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:!text-[#14171A]"
+              >
+                BOEKINGEN ↓
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void handleRefresh()}
+                disabled={refreshing}
+                className="font-display text-base text-[#D6FF3F] transition hover:text-white disabled:opacity-60"
+              >
+                {refreshing ? "VERVERSEN..." : "↻ VERVERS"}
+              </button>
+            </div>
           </div>
 
-          {errorMessage && (
-            <div role="alert" className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] px-5 py-4 font-semibold text-white">
-              {errorMessage}
-            </div>
-          )}
-
-          {successMessage && (
-            <div role="status" className="mt-8 border-2 border-[#D6FF3F] bg-[#D6FF3F] px-5 py-5 font-semibold text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E]">
-              {successMessage}
-            </div>
-          )}
-
-          {/* STRIPE CONNECT CARD */}
-          <section className="mt-8 border-2 border-white/25 bg-white/5">
-            <div className="flex flex-col justify-between gap-5 p-5 sm:flex-row sm:items-center sm:p-6">
+          {/* RODE NOTIFICATIE BANNER VOOR ONGELEZEN BERICHTEN */}
+          {unreadBookings.length > 0 && (
+            <div role="alert" className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white shadow-[8px_8px_0_0_#D6FF3F] flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
               <div>
-                <p className="font-display text-sm text-[#FF4B3E]">UITBETALINGEN & STRIPE</p>
-                <h2 className="mt-1 font-display text-3xl">
-                  {stripeIsReady
-                    ? "STRIPE IS ACTIEF & GEKOPPELD"
-                    : stripeHasStarted
-                    ? "MAAK JE STRIPE GEGEVENS COMPLEET"
-                    : "STEL JE UITBETALINGEN IN"}
-                </h2>
-                <p className="mt-2 max-w-2xl text-sm text-[#B9BEC2]">
-                  {stripeIsReady
-                    ? "Je bankrekening is gekoppeld via Stripe. GowTrain kan je automatische uitbetalingen na elke les verwerken."
-                    : "Koppel je bankrekening veilig via Stripe om uitbetalingen van geboekte lessen te ontvangen."}
+                <p className="font-display text-2xl text-white">
+                  {unreadBookings.length === 1 ? "1 NIEUW BERICHT VAN JE SPELER!" : `${unreadBookings.length} NIEUWE BERICHTEN VAN JE SPELERS!`}
+                </p>
+                <p className="mt-1 text-sm text-white/90">
+                  {unreadBookings.length === 1
+                    ? `${unreadBookings[0].player_name} heeft een bericht gestuurd voor de training op ${formatDate(unreadBookings[0].availability_slots?.starts_at)}.`
+                    : `Je hebt ongelezen berichten van spelers voor ${unreadBookings.length} van je geplande trainingen.`}
                 </p>
               </div>
 
-              {stripeIsReady ? (
-                <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] px-4 py-3 text-[#14171A]">
-                  <p className="font-display text-lg">✓ ACTIEF</p>
-                  <p className="font-display text-xs">STRIPE CONNECT</p>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => void handleStripeOnboarding()}
-                  disabled={settingUpStripe}
-                  className="bg-[#D6FF3F] px-6 py-4 font-display text-base text-[#14171A] transition hover:bg-white disabled:opacity-60"
-                >
-                  {settingUpStripe
-                    ? "STRIPE OPENEN..."
-                    : stripeHasStarted
-                    ? "ONBOARDING AFRONDEN →"
-                    : "KOPPEL STRIPE. GOW! →"}
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setChatBooking(unreadBookings[0])}
+                className="inline-flex shrink-0 items-center justify-center bg-[#14171A] px-6 py-3.5 font-display text-lg !text-[#D6FF3F] hover:bg-white hover:!text-[#14171A] transition shadow-[4px_4px_0_0_#14171A]"
+              >
+                OPEN BERICHT. GOW! →
+              </button>
             </div>
-          </section>
+          )}
 
-          {/* STATS COUNTERS */}
+          {errorMessage && <div role="alert" className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] px-5 py-4 font-semibold text-white">{errorMessage}</div>}
+          {successMessage && <div role="status" className="mt-8 border-2 border-[#D6FF3F] bg-[#D6FF3F] px-5 py-5 font-semibold text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E]">{successMessage}</div>}
+
+          {/* CHAT MODAL */}
+          {chatBooking && (
+            <BookingChatModal
+              bookingId={chatBooking.id}
+              recipientName={chatBooking.player_name}
+              trainingLabel={`${chatBooking.availability_slots?.sport?.toUpperCase() || "TRAINING"} · ${formatDate(chatBooking.availability_slots?.starts_at)} (${formatTime(chatBooking.availability_slots?.starts_at)} - ${formatTime(chatBooking.availability_slots?.ends_at)})`}
+              venueLabel={chatBooking.availability_slots?.venue ? getVenueLabel(chatBooking.availability_slots.venue) : ""}
+              currentUserRole="trainer"
+              currentUserId={currentUserId}
+              currentUserName={trainerAccount?.name || "Trainer"}
+              onClose={() => setChatBooking(null)}
+              onMessagesRead={() => void loadDashboard(false)}
+            />
+          )}
+
+          {/* STRIPE & AGENDA CARDS */}
+          <div className="mt-8 grid gap-6 lg:grid-cols-2">
+            <section className="border-2 border-[#FF4B3E] bg-white/5 p-5 sm:p-6 shadow-[6px_6px_0_0_#FF4B3E] flex flex-col justify-between h-full">
+              <div>
+                <p className="font-display text-sm text-[#FF4B3E]">UITBETALINGEN &amp; STRIPE</p>
+                <h2 className="mt-1 font-display text-2xl text-white">
+                  {stripeIsReady ? "STRIPE IS ACTIEF & GEKOPPELD" : stripeHasStarted ? "MAAK JE STRIPE GEGEVENS COMPLEET" : "STEL JE UITBETALINGEN IN"}
+                </h2>
+                <p className="mt-2 text-xs text-[#B9BEC2] leading-relaxed">
+                  {stripeIsReady ? "Je bankrekening is gekoppeld via Stripe. GowTrain kan je automatische uitbetalingen na elke les verwerken." : "Koppel je bankrekening veilig via Stripe om uitbetalingen van geboekte lessen te ontvangen."}
+                </p>
+              </div>
+
+              <div className="mt-5">
+                {stripeIsReady ? (
+                  <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] px-4 py-3 text-[#14171A]">
+                    <p className="font-display text-base">ACTIEF - STRIPE CONNECT GEKOPPELD</p>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => void handleStripeOnboarding()} disabled={settingUpStripe} className="w-full bg-[#D6FF3F] px-5 py-3.5 font-display text-sm text-[#14171A] hover:bg-white transition disabled:opacity-60">
+                    {settingUpStripe ? "STRIPE OPENEN..." : stripeHasStarted ? "ONBOARDING AFRONDEN →" : "KOPPEL STRIPE. GOW! →"}
+                  </button>
+                )}
+              </div>
+            </section>
+
+            <section className="border-2 border-[#D6FF3F] bg-[#14171A] p-5 sm:p-6 shadow-[6px_6px_0_0_#D6FF3F] flex flex-col justify-between h-full">
+              <div>
+                <p className="font-display text-xs text-[#D6FF3F]">AUTOMATISCHE AGENDA SYNC</p>
+                <h3 className="mt-1 font-display text-2xl text-white">TELEFOON &amp; PC AGENDA</h3>
+                <p className="mt-2 text-xs text-[#B9BEC2] leading-relaxed">
+                  Koppel GowTrain met Outlook, Google Calendar of Apple Calendar. Alle nieuwe boekingen verschijnen automatisch in je agenda.
+                </p>
+              </div>
+
+              <div className="mt-5 flex flex-wrap items-center gap-2">
+                <a href={`https://calendar.google.com/calendar/r?cid=${encodeURIComponent(`https://${typeof window !== "undefined" ? window.location.host : "gowtrain.app"}/api/calendar/trainer/${trainerAccount?.calendar_feed_token || ""}.ics`)}`} target="_blank" rel="noopener noreferrer" className="inline-flex h-10 items-center justify-center bg-[#D6FF3F] px-3.5 font-display text-s !text-[#14171A] leading-none transition hover:bg-white select-none shrink-0">
+                  GOOGLE
+                </a>
+                <a href={`webcal://${typeof window !== "undefined" ? window.location.host : "gowtrain.app"}/api/calendar/trainer/${trainerAccount?.calendar_feed_token || ""}.ics`} className="inline-flex h-10 items-center justify-center bg-[#D6FF3F] px-3.5 font-display text-s !text-[#14171A] leading-none transition hover:bg-white select-none shrink-0">
+                  OUTLOOK / APPLE
+                </a>
+                <button type="button" onClick={() => {
+                  if (trainerAccount?.calendar_feed_token) {
+                    const feedUrl = `https://${window.location.host}/api/calendar/trainer/${trainerAccount.calendar_feed_token}.ics`;
+                    navigator.clipboard.writeText(feedUrl);
+                    alert("Agenda-link gekopieerd!");
+                  }
+                }} className="inline-flex h-10 items-center justify-center bg-[#D6FF3F] px-3.5 font-display text-xs !text-[#14171A] leading-none transition hover:bg-white select-none shrink-0">
+                  LINK
+                </button>
+              </div>
+            </section>
+          </div>
+
+          {/* COUNTERS */}
           <div className="mt-8 grid gap-4 sm:grid-cols-3">
             <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] p-5 text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E]">
               <p className="font-display text-5xl">{availableSlotsCount}</p>
               <p className="mt-2 font-display text-base">OPEN TIJDSLOTEN</p>
             </div>
-
-            <div className="border-2 border-[#D6FF3F] bg-[#ffffff] p-5 text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E]">
+            <div className="border-2 border-white bg-white p-5 text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E]">
               <p className="font-display text-5xl">{paymentPendingCount}</p>
               <p className="mt-2 font-display text-base">IN BETALING (SPELERS)</p>
             </div>
-
             <div className="border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white shadow-[6px_6px_0_0_#D6FF3F]">
               <p className="font-display text-5xl">{confirmedBookingsCount}</p>
               <p className="mt-2 font-display text-base">BEVESTIGDE BOEKINGEN</p>
             </div>
           </div>
 
-          {/* TRAINER CANCELLATION BOX */}
+          {/* ANNULEREN DIALOG */}
           {pendingTrainerCancellation && (
-            <section
-              ref={trainerCancellationRef}
-              tabIndex={-1}
-              className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white outline-none sm:p-6 shadow-[8px_8px_0_0_#14171A]"
-            >
+            <section ref={trainerCancellationRef} tabIndex={-1} className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white outline-none sm:p-6 shadow-[8px_8px_0_0_#14171A]">
               <p className="font-display text-3xl">TRAINING ANNULEREN?</p>
               <p className="mt-3 max-w-2xl leading-relaxed text-white/90">
-                Je annuleert de training met <strong>{pendingTrainerCancellation.player_name}</strong> op{" "}
-                {formatDate(pendingTrainerCancellation.availability_slots?.starts_at)} om{" "}
-                {formatTime(pendingTrainerCancellation.availability_slots?.starts_at)}.
+                Je annuleert de training met <strong>{pendingTrainerCancellation.player_name}</strong> op {formatDate(pendingTrainerCancellation.availability_slots?.starts_at)} om {formatTime(pendingTrainerCancellation.availability_slots?.starts_at)}.
               </p>
-
               <div className="mt-5 border-l-2 border-white pl-4">
                 <p className="font-display text-lg">SPELER ONTVANGT 100% TERUG</p>
-                <p className="mt-1 text-sm leading-relaxed text-white/90">
-                  {formatEuro(
-                    pendingTrainerCancellation.total_price_cents,
-                    pendingTrainerCancellation.currency
-                  )}{" "}
-                  wordt automatisch teruggestort. Het tijdslot wordt daarna geannuleerd.
-                </p>
+                <p className="mt-1 text-sm leading-relaxed text-white/90">{formatEuro(pendingTrainerCancellation.total_price_cents, pendingTrainerCancellation.currency)} wordt automatisch teruggestort.</p>
               </div>
-
               <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-                <button
-                  type="button"
-                  onClick={closeTrainerCancellation}
-                  disabled={cancellingBookingId === pendingTrainerCancellation.id}
-                  className="border-2 border-white px-5 py-3 font-display text-base text-white transition hover:bg-white hover:text-[#14171A] disabled:opacity-60"
-                >
-                  TERUG
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => void handleTrainerCancellation(pendingTrainerCancellation)}
-                  disabled={cancellingBookingId === pendingTrainerCancellation.id}
-                  className="bg-[#14171A] px-5 py-3 font-display text-base text-white transition hover:bg-white hover:text-[#14171A] disabled:opacity-60"
-                >
-                  {cancellingBookingId === pendingTrainerCancellation.id
-                    ? "VERWERKEN..."
-                    : "JA, ANNULEER LES"}
+                <button type="button" onClick={closeTrainerCancellation} disabled={cancellingBookingId === pendingTrainerCancellation.id} className="border-2 border-white px-5 py-3 font-display text-base text-white hover:bg-white hover:text-[#14171A]">TERUG</button>
+                <button type="button" onClick={() => void handleTrainerCancellation(pendingTrainerCancellation)} disabled={cancellingBookingId === pendingTrainerCancellation.id} className="bg-[#14171A] px-5 py-3 font-display text-base text-white hover:bg-white hover:text-[#14171A]">
+                  {cancellingBookingId === pendingTrainerCancellation.id ? "VERWERKEN..." : "JA, ANNULEER LES"}
                 </button>
               </div>
             </section>
           )}
 
-          {/* ISSUE REPORT MODAL */}
+          {/* ISSUE REPORT MODAL (POP-UP) */}
           {pendingTrainerIssueBooking && (
-            <div
-              ref={trainerIssueRef}
-              id="trainer-booking-issue-report"
-              tabIndex={-1}
-              className="outline-none"
-            >
-              <TrainerBookingIssueModal
-                bookingId={pendingTrainerIssueBooking.id}
-                playerName={pendingTrainerIssueBooking.player_name}
-                trainingLabel={`${formatDate(
-                  pendingTrainerIssueBooking.availability_slots?.starts_at
-                )} · ${formatTime(
-                  pendingTrainerIssueBooking.availability_slots?.starts_at
-                )} – ${formatTime(
-                  pendingTrainerIssueBooking.availability_slots?.ends_at
-                )}`}
-                onClose={closeTrainerIssueReport}
-                onSubmitted={handleTrainerIssueSubmitted}
-              />
-            </div>
+            <TrainerBookingIssueModal
+              bookingId={pendingTrainerIssueBooking.id}
+              playerName={pendingTrainerIssueBooking.player_name}
+              trainingLabel={`${formatDate(pendingTrainerIssueBooking.availability_slots?.starts_at)} · ${formatTime(pendingTrainerIssueBooking.availability_slots?.starts_at)} – ${formatTime(pendingTrainerIssueBooking.availability_slots?.ends_at)}`}
+              onClose={closeTrainerIssueReport}
+              onSubmitted={handleTrainerIssueSubmitted}
+            />
           )}
 
-          {/* SNEL ACTIE GRID */}
+          {/* QUICK LINKS */}
           <div className="mt-12">
             <p className="font-display text-lg text-[#FF4B3E]">SNEL BEHEREN</p>
-
-            <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <Link
-                href="/trainer-slot-toevoegen"
-                className="border-2 border-[#D6FF3F] bg-[#D6FF3F] p-5 !text-[#14171A] transition hover:-translate-y-1 shadow-[6px_6px_0_0_#FF4B3E]"
-              >
-                <p className="font-display text-3xl">+ NIEUW SLOT</p>
-                <p className="mt-2 text-xs font-semibold">Zet een los moment open voor spelers.</p>
+            <div className="mt-4 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+              <Link href="/trainer-slot-toevoegen" className="border-2 border-[#D6FF3F] bg-[#D6FF3F] p-6 !text-[#14171A] transition hover:-translate-y-1 shadow-[6px_6px_0_0_#FF4B3E]">
+                <p className="font-display text-3xl">+ SLOT</p>
+                <p className="mt-2 text-xs font-semibold">Zet een losse les open voor spelers.</p>
                 <p className="mt-6 font-display text-sm text-[#FF4B3E]">TOEVOEGEN →</p>
               </Link>
 
-              <Link
-                href="/trainer-beschikbaarheid"
-                className="border-2 border-white bg-white p-5 !text-[#14171A] transition hover:-translate-y-1 shadow-[6px_6px_0_0_#FF4B3E]"
-              >
+              <Link href="/trainer-pakket-toevoegen" className="border-2 border-[#FF4B3E] bg-[#FF4B3E] p-6 text-white transition hover:-translate-y-1 shadow-[6px_6px_0_0_#D6FF3F]">
+                <p className="font-display text-3xl">+ PAKKET</p>
+                <p className="mt-2 text-xs font-semibold text-white/90">Bied een 5-12 weken traject aan.</p>
+                <p className="mt-6 font-display text-sm text-[#D6FF3F]">AANMAKEN →</p>
+              </Link>
+
+              <Link href="/trainer-beschikbaarheid" className="border-2 border-white bg-white p-6 !text-[#14171A] transition hover:-translate-y-1 shadow-[6px_6px_0_0_#FF4B3E]">
                 <p className="font-display text-3xl">ROOSTER</p>
                 <p className="mt-2 text-xs text-[#53595E]">Stel je wekelijkse vaste tijden in.</p>
                 <p className="mt-6 font-display text-sm">BEHEREN →</p>
               </Link>
 
-              <Link
-                href="/trainer-slots"
-                className="border-2 border-white bg-[#14171A] p-5 text-white transition hover:-translate-y-1 shadow-[6px_6px_0_0_#D6FF3F]"
-              >
-                <p className="font-display text-3xl text-[#D6FF3F]">MIJN SLOTS</p>
-                <p className="mt-2 text-xs text-[#B9BEC2]">Bekijk en bewerk al je open slots.</p>
-                <p className="mt-6 font-display text-sm text-[#D6FF3F]">BEKIJK SLOTS →</p>
-              </Link>
-
-              <Link
-                href="/trainer-profiel-bewerken"
-                className="border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white transition hover:-translate-y-1 shadow-[6px_6px_0_0_#D6FF3F]"
-              >
-                <p className="font-display text-3xl">PROFIEL</p>
-                <p className="mt-2 text-xs text-white/90">Pas je uurtarief, bio en foto aan.</p>
-                <p className="mt-6 font-display text-sm">BEWERKEN →</p>
+              <Link href="/trainer-slots" className="border-2 border-white bg-[#14171A] p-6 text-white transition hover:-translate-y-1 shadow-[6px_6px_0_0_#D6FF3F]">
+                <p className="font-display text-3xl text-[#D6FF3F]">SLOTS</p>
+                <p className="mt-2 text-xs text-[#B9BEC2]">Bekijk al je open slots &amp; pakketten.</p>
+                <p className="mt-6 font-display text-sm text-[#D6FF3F]">BEKIJK ALLES →</p>
               </Link>
             </div>
           </div>
 
-          {/* OVERZICHT BOEKINGEN */}
-          <div className="mt-14">
-            <div className="flex flex-col justify-between gap-5 border-b-2 border-white/20 pb-5 sm:flex-row sm:items-end">
+          {/* INKOMSTEN BANNER */}
+          <div className="mt-12 border-2 border-[#D6FF3F] bg-[#D6FF3F] p-5 text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E] flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+            <div>
+              <p className="font-display text-xs opacity-80">NETTO INKOMSTEN DEZE MAAND</p>
+              <p className="font-display text-4xl leading-none mt-1">{formatEuro(thisMonthNetEarningsCents)}</p>
+            </div>
+            <Link href="/trainer-inkomsten" className="inline-flex items-center justify-center bg-[#14171A] px-6 py-4 font-display text-base !text-white hover:bg-white hover:!text-[#14171A] transition shadow-[4px_4px_0_0_#FF4B3E]">
+              OPEN FINANCIEEL DASHBOARD &amp; GRAFIEKEN →
+            </Link>
+          </div>
+
+          {/* BOEKINGEN OVERZICHT */}
+          <div id="boekingen-overzicht" className="mt-12 scroll-mt-10">
+            <div className="flex flex-col justify-between gap-5 border-b-2 border-white/20 pb-5 lg:flex-row lg:items-end">
               <div>
                 <p className="font-display text-lg text-[#FF4B3E]">JOUW AGENDA & BOEKINGEN</p>
                 <h2 className="mt-2 font-display text-5xl leading-[0.83] sm:text-6xl">OVERZICHT.</h2>
               </div>
 
-              {/* FILTERS */}
-              <div className="flex flex-wrap gap-2">
-                {(
-                  [
-                    ["ALLES", "all"],
-                    ["IN BETALING", "payment_pending"],
-                    ["BEVESTIGD", "confirmed"],
-                    ["REFUND", "refund_pending"],
-                    ["GEANNULEERD", "cancelled"],
-                  ] as [string, BookingFilter][]
-                ).map(([label, value]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setBookingFilter(value)}
-                    className={`border-2 px-3 py-2 font-display text-xs transition ${
-                      bookingFilter === value
-                        ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A]"
-                        : "border-white/30 text-white hover:border-white"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:flex-wrap">
+                <div className="flex flex-wrap gap-2">
+                  {(
+                    [
+                      ["ALLES", "all"],
+                      ["IN BETALING", "payment_pending"],
+                      ["BEVESTIGD", "confirmed"],
+                      ["AFGEROND", "completed"],
+                      ["REFUND", "refund_pending"],
+                      ["GEANNULEERD", "cancelled"],
+                    ] as [string, BookingFilter][]
+                  ).map(([label, value]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setBookingFilter(value)}
+                      className={`border-2 px-3 py-2 font-display text-xs transition ${
+                        bookingFilter === value
+                          ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A]"
+                          : "border-white/30 text-white hover:border-white"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-2 border-t border-white/10 pt-2 sm:border-t-0 sm:pt-0 sm:border-l sm:border-white/20 sm:pl-3">
+                  <div className="flex items-center gap-1">
+                    <span className="font-display text-[10px] text-[#D6FF3F]">VAN:</span>
+                    <input type="date" value={startDateFilter} onChange={(e) => setStartDateFilter(e.target.value)} className="border-2 border-white/30 bg-[#14171A] px-2 py-1 font-display text-xs text-white outline-none focus:border-[#D6FF3F]" />
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="font-display text-[10px] text-[#D6FF3F]">TOT:</span>
+                    <input type="date" value={endDateFilter} onChange={(e) => setEndDateFilter(e.target.value)} className="border-2 border-white/30 bg-[#14171A] px-2 py-1 font-display text-xs text-white outline-none focus:border-[#D6FF3F]" />
+                  </div>
+                  {(startDateFilter || endDateFilter) && (
+                    <button type="button" onClick={() => { setStartDateFilter(""); setEndDateFilter(""); }} className="border border-[#FF4B3E] px-2 py-1 font-display text-[10px] text-[#FF4B3E] hover:bg-[#FF4B3E] hover:text-white">RESET</button>
+                  )}
+                </div>
               </div>
             </div>
 
             {bookingSections.length === 0 ? (
               <div className="mt-6 border-2 border-white/20 p-6 text-center">
                 <p className="font-display text-3xl text-[#D6FF3F]">GEEN BOEKINGEN VOOR DIT FILTER.</p>
-                <p className="mt-2 text-sm text-[#B9BEC2]">
-                  Kies een ander filter of voeg meer tijdsloten toe aan je agenda.
-                </p>
+                <p className="mt-2 text-sm text-[#B9BEC2]">Kies een ander filter of voeg meer tijdsloten toe.</p>
               </div>
             ) : (
               <div className="mt-8 space-y-12">
@@ -991,30 +986,20 @@ export default function TrainerDashboardPage() {
                       {section.bookings.map((booking) => {
                         const slot = booking.availability_slots;
                         const canCancel = canTrainerCancelBooking(booking);
-                        const canReportIssue = canTrainerReportIssue(booking);
+                        const isCompleted = booking.status === "completed";
+                        const chat = booking.chat_state;
 
                         return (
-                          <article
-                            key={booking.id}
-                            className="border-2 border-white bg-white p-3 text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E]"
-                          >
+                          <article key={booking.id} className="border-2 border-white bg-white p-3 text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E]">
                             <div className="bg-[#14171A] p-5 text-white">
                               
                               <div className="flex items-start justify-between gap-4">
                                 <div className="min-w-0">
-                                  <p className="font-display text-2xl text-white">
-                                    {booking.player_name}
-                                  </p>
-                                  <p className="mt-0.5 truncate text-xs text-[#B9BEC2]">
-                                    {booking.player_email}
-                                  </p>
+                                  <p className="font-display text-2xl text-white">{booking.player_name}</p>
+                                  <p className="mt-0.5 truncate text-xs text-[#B9BEC2]">{booking.player_email}</p>
                                 </div>
 
-                                <span
-                                  className={`shrink-0 px-3 py-1.5 font-display text-xs ${getStatusClass(
-                                    booking.status
-                                  )}`}
-                                >
+                                <span className={`shrink-0 px-3 py-1.5 font-display text-xs ${getStatusClass(booking.status)}`}>
                                   {getStatusLabel(booking.status)}
                                 </span>
                               </div>
@@ -1022,33 +1007,17 @@ export default function TrainerDashboardPage() {
                               <div className="mt-6 border-y border-white/20 py-4">
                                 <div className="flex items-start justify-between gap-4">
                                   <div>
-                                    <p className="font-display text-lg text-[#D6FF3F]">
-                                      {formatDate(slot?.starts_at)}
-                                    </p>
-                                    <p className="mt-1 font-display text-2xl">
-                                      {formatTime(slot?.starts_at)} – {formatTime(slot?.ends_at)}
-                                    </p>
+                                    <p className="font-display text-lg text-[#D6FF3F]">{formatDate(slot?.starts_at)}</p>
+                                    <p className="mt-1 font-display text-2xl">{formatTime(slot?.starts_at)} – {formatTime(slot?.ends_at)}</p>
                                     {slot && (
-                                      <p className="mt-1 font-display text-xs text-[#B9BEC2]">
-                                        {slot.sport.toUpperCase()} · {booking.participant_count}{" "}
-                                        {booking.participant_count === 1 ? "SPELER" : "SPELERS"}
-                                      </p>
+                                      <p className="mt-1 font-display text-xs text-[#B9BEC2]">{slot.sport.toUpperCase()} · {booking.participant_count} {booking.participant_count === 1 ? "SPELER" : "SPELERS"}</p>
                                     )}
                                   </div>
 
                                   <div className="text-right">
-                                    <p className="font-display text-[10px] text-[#8A8F94]">
-                                      INVOEREN INKOMSTEN
-                                    </p>
-                                    <p className="mt-1 font-display text-3xl text-[#D6FF3F]">
-                                      {formatEuro(
-                                        booking.total_price_cents,
-                                        booking.currency
-                                      )}
-                                    </p>
-                                    <p className="mt-0.5 font-display text-[10px] text-[#B9BEC2]">
-                                      INCL. BAANHUUR
-                                    </p>
+                                    <p className="font-display text-[10px] text-[#8A8F94]">INKOMSTEN</p>
+                                    <p className="mt-1 font-display text-3xl text-[#D6FF3F]">{formatEuro(booking.total_price_cents, booking.currency)}</p>
+                                    <p className="mt-0.5 font-display text-[10px] text-[#B9BEC2]">INCL. BAANHUUR</p>
                                   </div>
                                 </div>
                               </div>
@@ -1056,44 +1025,59 @@ export default function TrainerDashboardPage() {
                               {slot?.venue && (
                                 <div className="mt-4">
                                   <p className="font-display text-xs text-[#FF4B3E]">LOCATIE</p>
-                                  <p className="mt-1 font-display text-base text-white">
-                                    {getVenueLabel(slot.venue)}
-                                  </p>
-                                  <p className="mt-1 text-xs text-[#B9BEC2]">
-                                    {slot.venue.address_line}, {slot.venue.city}
-                                  </p>
+                                  <p className="mt-1 font-display text-base text-white">{getVenueLabel(slot.venue)}</p>
+                                  <p className="mt-1 text-xs text-[#B9BEC2]">{slot.venue.address_line}, {slot.venue.city}</p>
                                 </div>
                               )}
 
                               <div className="mt-4 border-l-2 border-[#D6FF3F] pl-4">
-                                <p className="text-xs text-[#D7D9DA]">
-                                  {getStatusExplanation(booking.status)}
-                                </p>
+                                <p className="text-xs text-[#D7D9DA]">{getStatusExplanation(booking.status)}</p>
                               </div>
 
+                              {/* 💡 CHATKNOP VOOR BEVESTIGDE LESSEN */}
+                              {booking.status === "confirmed" && (
+                                <div className="mt-6">
+                                  <button
+                                    type="button"
+                                    onClick={() => setChatBooking(booking)}
+                                    className={`w-full h-11 inline-flex items-center justify-center px-4 font-display text-xs font-bold leading-none tracking-tight transition select-none ${
+                                      chat?.has_unread_player_message
+                                        ? "bg-[#FF4B3E] !text-white animate-pulse shadow-[0_0_12px_#FF4B3E]"
+                                        : "bg-[#D6FF3F] !text-[#14171A] hover:bg-white"
+                                    }`}
+                                  >
+                                    {chat?.has_unread_player_message
+                                      ? "NIEUW BERICHT VAN SPELER!"
+                                      : chat?.has_messages
+                                      ? "CHAT OPENEN"
+                                      : "CHAT MET SPELER"}
+                                  </button>
+                                </div>
+                              )}
+
                               {canCancel && (
-                                <button
-                                  type="button"
-                                  disabled={
-                                    cancellingBookingId === booking.id ||
-                                    pendingTrainerCancellation?.id === booking.id
-                                  }
-                                  onClick={() => openTrainerCancellation(booking)}
-                                  className="mt-6 w-full bg-[#FF4B3E] px-4 py-3.5 font-display text-sm text-white transition hover:bg-white hover:text-[#14171A] disabled:opacity-60"
-                                >
+                                <button type="button" disabled={cancellingBookingId === booking.id || pendingTrainerCancellation?.id === booking.id} onClick={() => openTrainerCancellation(booking)} className="mt-3 w-full bg-[#FF4B3E] px-4 py-3.5 font-display text-sm text-white hover:bg-white hover:text-[#14171A]">
                                   TRAINING ANNULEREN
                                 </button>
                               )}
 
-                              {canReportIssue && (
-                                <button
-                                  type="button"
-                                  onClick={() => openTrainerIssueReport(booking)}
-                                  className="mt-3 w-full border-2 border-white/20 px-4 py-2.5 font-display text-xs text-[#B9BEC2] transition hover:border-[#FF4B3E] hover:text-[#FF4B3E]"
-                                >
-                                  PROBLEEM MELDEN
-                                </button>
+                              {/* 💡 SUBTIELE GARANTIE / PROBLEEM MELDEN LINK (ALLEEN BINNEN 24 UUR NA AFGERONDE LES) */}
+                              {isCompleted && (
+                                <div className="mt-4 pt-3 border-t border-white/10 flex items-center justify-between text-xs">
+                                  <span className="text-[#B9BEC2] text-xs">Les afgerond</span>
+
+                                  {slot?.ends_at && new Date().getTime() - new Date(slot.ends_at).getTime() <= 24 * 60 * 60 * 1000 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => openTrainerIssueReport(booking)}
+                                      className="text-[#B9BEC2] hover:text-[#FF4B3E] transition text-right text-[11px] font-semibold"
+                                    >
+                                      Iets misgegaan met deze les? Meld binnen 24u →
+                                    </button>
+                                  )}
+                                </div>
                               )}
+
                             </div>
                           </article>
                         );

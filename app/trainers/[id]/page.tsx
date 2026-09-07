@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
@@ -13,7 +14,6 @@ type Trainer = {
   sport: string;
   focus: string;
   bio: string | null;
-  rating: number | null;
   city: string | null;
   province: string | null;
   latitude: number | null;
@@ -43,12 +43,26 @@ type AvailabilitySlot = {
   venue: VenueSummary | null;
 };
 
+type TrainerPackage = {
+  id: string;
+  title: string;
+  sport: "padel" | "tennis";
+  lesson_count: number;
+  duration_minutes: number;
+  starts_at: string;
+  price_cents: number;
+  currency: string;
+  max_participants: number;
+  venue: VenueSummary | null;
+};
+
 function getTrainerInitials(trainer: Trainer): string {
   if (trainer.initials?.trim()) {
     return trainer.initials.trim().toUpperCase();
   }
 
   const nameParts = trainer.name.trim().split(" ").filter(Boolean);
+
   if (nameParts.length === 0) return "GT";
   if (nameParts.length === 1) return nameParts[0].slice(0, 2).toUpperCase();
 
@@ -63,6 +77,16 @@ function formatDate(value: string): string {
   })
     .format(new Date(value))
     .replace(".", "")
+    .toUpperCase();
+}
+
+function formatFullDate(value: string): string {
+  return new Intl.DateTimeFormat("nl-NL", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  })
+    .format(new Date(value))
     .toUpperCase();
 }
 
@@ -84,9 +108,11 @@ function getLocation(trainer: Trainer): string {
   if (trainer.city && trainer.province) {
     return `${trainer.city} · ${trainer.province}`;
   }
+
   if (trainer.city) return trainer.city;
   if (trainer.province) return trainer.province;
   if (trainer.distance_label) return trainer.distance_label;
+
   return "Locatie volgt";
 }
 
@@ -101,6 +127,8 @@ export default function TrainerDetailPage() {
 
   const [trainer, setTrainer] = useState<Trainer | null>();
   const [slots, setSlots] = useState<AvailabilitySlot[]>([]);
+  const [packages, setPackages] = useState<TrainerPackage[]>([]);
+
   const [loading, setLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string>("");
 
@@ -129,7 +157,6 @@ export default function TrainerDetailPage() {
             sport,
             focus,
             bio,
-            rating,
             city,
             province,
             latitude,
@@ -146,17 +173,21 @@ export default function TrainerDetailPage() {
         .single();
 
       if (trainerError || !trainerData) {
-        console.error("Trainer detail ophalen fout:", trainerError?.message);
         setTrainer(null);
         setSlots([]);
+        setPackages([]);
         setErrorMessage("Deze trainer is niet gevonden of momenteel niet actief.");
         return;
       }
 
       setTrainer(trainerData as Trainer);
 
-      /* Eerstvolgende 3 beschikbare tijdsloten ophalen */
-      const { data: slotData, error: slotError } = await supabase
+      const minBookingTime = new Date(
+        Date.now() + 2 * 60 * 60 * 1000
+      ).toISOString();
+
+      // 2. Eerstvolgende 2 losse tijdsloten ophalen
+      const { data: slotData } = await supabase
         .from("availability_slots")
         .select(
           `
@@ -168,93 +199,78 @@ export default function TrainerDetailPage() {
             price_cents,
             currency,
             venue:venues!availability_slots_location_id_fkey (
-              id,
-              name,
-              city,
-              address_line,
-              postal_code
+              id, name, city, address_line, postal_code
             )
           `
         )
         .eq("trainer_id", selectedTrainerId)
         .eq("status", "available")
-        .gte("starts_at", new Date().toISOString())
+        .gte("starts_at", minBookingTime)
         .order("starts_at", { ascending: true })
-        .limit(3);
+        .limit(2);
 
-      if (slotError) {
-        console.error("Trainer slots ophalen fout:", slotError.message);
-        setSlots([]);
-      } else {
-        setSlots((slotData ?? []) as unknown as AvailabilitySlot[]);
-      }
-    } catch (error) {
-      console.error("Onverwachte trainerdetail-fout:", error);
+      setSlots((slotData ?? []) as unknown as AvailabilitySlot[]);
+
+      // 3. Lespakketten ophalen
+      const { data: packageData } = await supabase
+        .from("trainer_packages")
+        .select(
+          `
+            id,
+            title,
+            sport,
+            lesson_count,
+            duration_minutes,
+            starts_at,
+            price_cents,
+            currency,
+            max_participants,
+            venue:venues!trainer_packages_location_id_fkey (
+              id, name, city, address_line, postal_code
+            )
+          `
+        )
+        .eq("trainer_id", selectedTrainerId)
+        .eq("is_active", true)
+        .gte("starts_at", minBookingTime)
+        .order("starts_at", { ascending: true });
+
+      setPackages((packageData ?? []) as unknown as TrainerPackage[]);
+    } catch {
       setTrainer(null);
       setSlots([]);
-      setErrorMessage("De trainer kon niet worden geladen. Vernieuw de pagina.");
+      setPackages([]);
+      setErrorMessage("De trainer kon niet worden geladen.");
     } finally {
       setLoading(false);
     }
   }
 
-  /* BRANDBOOK BRANDED LOADER */
   if (loading) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
         <div className="flex flex-col items-center">
           <div className="flex items-center gap-2">
-            <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">
-              GOWTRAIN
-            </span>
+            <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">GOWTRAIN</span>
             <span className="h-0 w-0 animate-pulse border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
           </div>
-          <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">
-            PROFIEL LADEN...
-          </p>
+          <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">PROFIEL LADEN...</p>
         </div>
       </main>
     );
   }
 
-  /* TRAINER NIET GEVONDEN STATE */
   if (!trainer || errorMessage) {
     return (
       <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-        <header className="border-b border-white/15">
-          <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-            <Link
-              href="/"
-              aria-label="Terug naar GowTrain home"
-              className="group inline-flex items-center gap-2"
-            >
-              <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-                GOWTRAIN
-              </span>
-              <span
-                aria-hidden="true"
-                className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1 sm:border-b-[11px] sm:border-l-[9px] sm:border-t-[11px]"
-              />
-            </Link>
-
-            <Link
-              href="/trainers"
-              className="font-display text-sm text-white transition hover:text-[#D6FF3F]"
-            >
-              ← OVERZICHT TRAINERS
-            </Link>
-          </div>
-        </header>
-
+        <SiteHeader />
         <section className="flex flex-1 items-center justify-center px-5 py-16">
           <div className="w-full max-w-xl border-2 border-white bg-white p-3 text-[#14171A] shadow-[10px_10px_0_0_#FF4B3E]">
             <div className="bg-[#14171A] p-6 text-white sm:p-8">
               <p className="font-display text-lg text-[#FF4B3E]">TRAINER NIET GEVONDEN</p>
-              <h1 className="mt-4 font-display text-5xl leading-[0.85] sm:text-6xl">
-                DEZE MATCH IS EVEN WEG.
-              </h1>
+              <h1 className="mt-4 font-display text-5xl leading-[0.85] sm:text-6xl">DEZE MATCH IS EVEN WEG.</h1>
               <p className="mt-6 text-lg leading-relaxed text-[#B9BEC2]">
-                {errorMessage || "Deze trainer is niet meer beschikbaar. Bekijk andere trainers in de buurt."}
+                {errorMessage || "Deze trainer is niet meer beschikbaar."}
               </p>
               <Link
                 href="/trainers"
@@ -265,49 +281,20 @@ export default function TrainerDetailPage() {
             </div>
           </div>
         </section>
-
         <SiteFooter />
       </main>
     );
   }
 
-  const hasRating =
-    trainer.rating !== null &&
-    trainer.rating !== undefined &&
-    trainer.rating > 0;
-
   const firstName = trainer.name.trim().split(" ")[0].toUpperCase();
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* HEADER */}
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <Link
-            href="/"
-            aria-label="Terug naar GowTrain home"
-            className="group inline-flex items-center gap-2"
-          >
-            <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-              GOWTRAIN
-            </span>
-            <span
-              aria-hidden="true"
-              className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1 sm:border-b-[11px] sm:border-l-[9px] sm:border-t-[11px]"
-            />
-          </Link>
+      {/* 💡 SLIMME, DYNAMISCHE SITE HEADER */}
+      <SiteHeader />
 
-          <Link
-            href="/trainers"
-            className="font-display text-sm text-white transition hover:text-[#D6FF3F]"
-          >
-            ← ALLE TRAINERS
-          </Link>
-        </div>
-      </header>
-
-      {/* PROFIEL HERO */}
-      <section className="relative flex-1 overflow-hidden py-12 sm:py-16 lg:py-20">
+      {/* PROFIEL BODY */}
+      <section className="relative flex-1 overflow-hidden py-10 sm:py-14 lg:py-16">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute -right-16 -top-20 select-none font-display text-[17rem] leading-none text-[#D6FF3F] opacity-[0.04] sm:text-[26rem] lg:text-[34rem]"
@@ -315,14 +302,23 @@ export default function TrainerDetailPage() {
           GOW
         </div>
 
-        <div className="relative mx-auto max-w-6xl px-5 sm:px-8">
-          {/* Profiel Header Blok */}
-          <section className="border-b-2 border-white/20 pb-10">
-            <p className="font-display text-lg text-[#FF4B3E]">TRAINERPROFIEL</p>
+        <div className="relative mx-auto max-w-7xl px-5 sm:px-8">
+          
+          {/* PROFIEL HEADER BANNER */}
+          <section className="border-b-2 border-white/20 pb-8 sm:pb-10">
+            <div className="flex items-center justify-between gap-4">
+              <p className="font-display text-lg text-[#FF4B3E]">TRAINERPROFIEL</p>
+              <Link
+                href="/trainers"
+                className="font-display text-xs text-[#B9BEC2] hover:text-[#D6FF3F] transition"
+              >
+                ← TERUG NAAR ALLE TRAINERS
+              </Link>
+            </div>
 
-            <div className="mt-6 flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between">
-              <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
-                <div className="flex h-28 w-28 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-[#D6FF3F] bg-[#14171A] sm:h-36 sm:w-36">
+            <div className="mt-6 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+              <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
+                <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-[#D6FF3F] bg-[#14171A] sm:h-32 sm:w-32">
                   {trainer.image_url ? (
                     <img
                       src={trainer.image_url}
@@ -330,213 +326,221 @@ export default function TrainerDetailPage() {
                       className="h-full w-full object-cover"
                     />
                   ) : (
-                    <span className="font-display text-4xl text-[#D6FF3F] sm:text-5xl">
+                    <span className="font-display text-3xl text-[#D6FF3F] sm:text-5xl">
                       {getTrainerInitials(trainer)}
                     </span>
                   )}
                 </div>
 
                 <div>
-                  <span className="bg-[#FF4B3E] px-3 py-1 font-display text-xs text-white uppercase">
+                  <span className="bg-[#FF4B3E] px-3 py-1 font-display text-xs uppercase text-white">
                     {trainer.sport}
                   </span>
 
-                  <h1 className="mt-3 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
+                  <h1 className="mt-2 font-display text-4xl leading-[0.85] sm:text-6xl lg:text-7xl">
                     {trainer.name}
                   </h1>
 
-                  <p className="mt-3 font-display text-xl text-[#D6FF3F]">
+                  <p className="mt-2 font-display text-lg text-[#D6FF3F] sm:text-xl">
                     {trainer.focus}
                   </p>
                 </div>
               </div>
 
-              {/* Rating & Prijs badges */}
-              <div className="flex flex-wrap gap-3">
-                {hasRating ? (
-                  <div className="bg-[#D6FF3F] px-4 py-3 text-[#14171A]">
-                    <p className="font-display text-2xl leading-none">
-                      {trainer.rating?.toFixed(1)} ★
-                    </p>
-                    <p className="mt-1 font-display text-xs">RATING</p>
-                  </div>
-                ) : (
-                  <div className="border-2 border-white/25 px-4 py-3 text-white">
-                    <p className="font-display text-2xl leading-none">NIEUW</p>
-                    <p className="mt-1 font-display text-xs text-[#B9BEC2]">OP GOWTRAIN</p>
-                  </div>
-                )}
-
-                <div className="border-2 border-white px-4 py-3">
-                  <p className="font-display text-2xl leading-none text-[#D6FF3F]">
+              {/* PRIJS PER UUR */}
+              <div className="flex shrink-0 items-center gap-3">
+                <div className="border-2 border-white bg-[#14171A] px-5 py-3 shadow-[4px_4px_0_0_#FF4B3E]">
+                  <p className="font-display text-3xl leading-none text-[#D6FF3F]">
                     €{Number(trainer.price_per_hour).toFixed(0)}
                   </p>
-                  <p className="mt-1 font-display text-xs text-[#B9BEC2]">PER UUR</p>
+                  <p className="mt-1 font-display text-[10px] text-[#B9BEC2]">
+                    PER UUR (INCL. BAAN)
+                  </p>
                 </div>
               </div>
             </div>
           </section>
 
-          {/* Snel overzicht (Stats) */}
-          <section className="mt-8 grid gap-4 sm:grid-cols-3">
-            <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] p-5 text-[#14171A]">
-              <p className="font-display text-xs">SPORT</p>
-              <p className="mt-1 font-display text-2xl">{trainer.sport}</p>
-            </div>
+          {/* LESPAKKETTEN (ALS ZE ER ZIJN) */}
+          {packages.length > 0 && (
+            <section className="mt-10 border-b-2 border-white/20 pb-10">
+              <div className="flex items-center gap-3">
+                <span className="bg-[#D6FF3F] px-3 py-1 font-display text-xs text-[#14171A]">
+                  MEESTE VOORDEEL
+                </span>
+                <p className="font-display text-base text-[#D6FF3F]">
+                  COMPLETE TRAJECTEN
+                </p>
+              </div>
 
-            <div className="border-2 border-white bg-white p-5 text-[#14171A]">
-              <p className="font-display text-xs text-[#53595E]">REGIO</p>
-              <p className="mt-1 font-display text-2xl truncate">
-                {getLocation(trainer)}
-              </p>
-            </div>
-
-            <div className="border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white">
-              <p className="font-display text-xs">WERKGEBIED</p>
-              <p className="mt-1 font-display text-2xl">
-                {trainer.radius_km ? `${trainer.radius_km} KM REISAFSTAND` : "LOKAAL"}
-              </p>
-            </div>
-          </section>
-
-          {/* MAIN CONTENT GRID */}
-          <div className="mt-12 grid gap-12 lg:grid-cols-[1.1fr_0.9fr]">
-            
-            {/* LINKER KOLOM: BESCHIKBAARHEID (1-TIK BOEKEN) */}
-            <section>
-              <p className="font-display text-lg text-[#FF4B3E]">BESCHIKBARE MOMENTEN</p>
-              <h2 className="mt-2 font-display text-5xl leading-[0.83] sm:text-6xl">
-                EERSTVOLGENDE LES.
+              <h2 className="mt-2 font-display text-4xl sm:text-5xl">
+                LESPAKKETTEN VAN {firstName}.
               </h2>
 
-              {slots.length > 0 ? (
-                <div className="mt-6 space-y-4">
-                  {slots.map((slot) => (
+              <div className="mt-6 grid gap-6 md:grid-cols-2">
+                {packages.map((pkg) => {
+                  const perLessonCents = Math.round(pkg.price_cents / pkg.lesson_count);
+
+                  return (
                     <article
-                      key={slot.id}
-                      className="group border-2 border-white bg-white p-3 text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E] transition duration-200 hover:-translate-y-1"
+                      key={pkg.id}
+                      className="border-2 border-[#D6FF3F] bg-white p-3 text-[#14171A] shadow-[8px_8px_0_0_#D6FF3F]"
                     >
-                      <div className="bg-[#14171A] p-5 text-white">
-                        <div className="flex items-start justify-between gap-4">
-                          <div>
-                            <span className="bg-[#D6FF3F] px-2.5 py-1 font-display text-xs text-[#14171A]">
-                              {formatDate(slot.starts_at)}
-                            </span>
-                            <p className="mt-3 font-display text-3xl">
-                              {formatTime(slot.starts_at)} – {formatTime(slot.ends_at)}
-                            </p>
-                          </div>
+                      <div className="flex h-full flex-col justify-between bg-[#14171A] p-5 text-white">
+                        <div>
+                          <div className="flex items-start justify-between gap-4">
+                            <div>
+                              <span className="bg-[#FF4B3E] px-2.5 py-1 font-display text-xs text-white">
+                                {pkg.lesson_count} LESSEN TRAJECT
+                              </span>
+                              <h3 className="mt-2 font-display text-2xl text-white">
+                                {pkg.title}
+                              </h3>
+                            </div>
 
-                          <div className="text-right">
-                            <p className="font-display text-3xl text-[#D6FF3F]">
-                              {formatEuro(slot.price_cents, slot.currency)}
-                            </p>
-                            <p className="mt-1 font-display text-xs text-[#B9BEC2]">
-                              INCL. BAANHUUR
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-t border-white/20 pt-4">
-                          <div>
-                            <p className="font-display text-xs text-[#8A8F94]">LOCATIE</p>
-                            <p className="mt-1 font-display text-sm text-white">
-                              {getVenueLabel(slot.venue)}
-                            </p>
-                            {slot.venue?.address_line && (
-                              <p className="text-xs text-[#B9BEC2]">
-                                {slot.venue.address_line}, {slot.venue.city}
+                            <div className="shrink-0 text-right">
+                              <p className="font-display text-2xl text-[#D6FF3F]">
+                                {formatEuro(pkg.price_cents, pkg.currency)}
                               </p>
-                            )}
+                              <p className="text-[10px] text-[#8A8F94]">
+                                {formatEuro(perLessonCents, pkg.currency)} / LES
+                              </p>
+                            </div>
                           </div>
 
-                          {/* DIRECTE GOW! BOEKINGSKNOP PER SLOT */}
-                          <Link
-                            href={`/boeken/${trainer.id}?slot=${slot.id}`}
-                            className="bg-[#FF4B3E] px-6 py-3 font-display text-lg text-white transition hover:bg-[#D6FF3F] hover:!text-[#14171A]"
-                          >
-                            GOW! →
-                          </Link>
+                          <div className="mt-4 space-y-1.5 border-y border-white/20 py-3 text-xs text-[#B9BEC2]">
+                            <p><b>Startdatum:</b> {formatFullDate(pkg.starts_at)} om {formatTime(pkg.starts_at)}</p>
+                            <p><b>Duur:</b> {pkg.duration_minutes} min per les ({pkg.lesson_count} weken lang)</p>
+                            <p><b>Locatie:</b> {getVenueLabel(pkg.venue)}</p>
+                            <p><b>Groep:</b> Max. {pkg.max_participants} {pkg.max_participants === 1 ? "speler (privé)" : "spelers"}</p>
+                          </div>
                         </div>
+
+                        <Link
+                          href={`/boeken/pakket/${pkg.id}`}
+                          className="mt-5 flex items-center justify-center gap-2 bg-[#D6FF3F] px-5 py-3.5 font-display text-lg !text-[#14171A] transition hover:bg-white"
+                        >
+                          BOEK TRAJECT. GOW! →
+                        </Link>
                       </div>
                     </article>
-                  ))}
-
-                  <div className="mt-6 pt-2">
-                    <Link
-                      href={`/boeken/${trainer.id}`}
-                      className="inline-flex w-full items-center justify-center gap-3 bg-[#D6FF3F] px-6 py-5 font-display text-xl !text-[#14171A] transition hover:bg-white"
-                    >
-                      BEKIJK ALLE DAGEN & TIJDEN. GOW! →
-                    </Link>
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-6 border-2 border-white bg-white p-3 text-[#14171A]">
-                  <div className="bg-[#14171A] p-6 text-white">
-                    <p className="font-display text-3xl text-[#D6FF3F]">GEEN GEPLANDE SLOTS.</p>
-                    <p className="mt-3 leading-relaxed text-[#B9BEC2]">
-                      {firstName} heeft momenteel geen openstaande tijdsloten. Kom later terug of bekijk andere trainers.
-                    </p>
-                  </div>
-                </div>
-              )}
+                  );
+                })}
+              </div>
             </section>
+          )}
 
-            {/* RECHTER KOLOM: OVER DE TRAINER */}
-            <section>
-              <p className="font-display text-lg text-[#FF4B3E]">
-                OVER {trainer.name.toUpperCase()}
-              </p>
-              <h2 className="mt-2 font-display text-5xl leading-[0.83] sm:text-6xl">
-                JOUW VOLGENDE<br />
-                STAP OP DE BAAN.
+          {/* 💡 HOOFDINHOUD: TWEEDELING IN BALANS */}
+          <div className="mt-10 grid gap-10 lg:grid-cols-2 lg:items-start">
+            
+            {/* LINKERKOLOM: OVER DE TRAINER */}
+            <section className="border-2 border-white/20 bg-[#14171A] p-6 sm:p-8 shadow-[6px_6px_0_0_#FF4B3E]">
+              <p className="font-display text-lg text-[#FF4B3E]">OVER {trainer.name.toUpperCase()}</p>
+              <h2 className="mt-1 font-display text-4xl leading-[0.85] sm:text-5xl">
+                JOUW VOLGENDE STAP OP DE BAAN.
               </h2>
 
-              <div className="mt-6 border-l-2 border-[#D6FF3F] pl-5">
-                <p className="font-display text-2xl text-[#D6FF3F]">
+              <div className="mt-5 border-l-2 border-[#D6FF3F] pl-4">
+                <p className="font-display text-xl text-[#D6FF3F]">
                   {trainer.focus}
                 </p>
               </div>
 
-              <div className="mt-6 text-lg leading-relaxed text-[#D7D9DA]">
+              <div className="mt-5 text-base leading-relaxed text-[#D7D9DA]">
                 {trainer.bio ? (
                   <p className="whitespace-pre-line">{trainer.bio}</p>
                 ) : (
                   <p className="italic text-[#8A8F94]">
-                    {trainer.name} heeft nog geen uitgebreide biografie ingevuld. Bekijk de tijdsloten hiernaast en boek je eerste les!
+                    {trainer.name} heeft nog geen uitgebreide biografie ingevuld.
                   </p>
                 )}
               </div>
 
-              <div className="mt-10 border-t border-white/20 pt-6">
+              <div className="mt-8 border-t border-white/20 pt-5">
                 <p className="font-display text-xs text-[#FF4B3E]">TRAININGSREGIO</p>
-                <p className="mt-2 font-display text-3xl text-white">
+                <p className="mt-1 font-display text-2xl text-white">
                   {getLocation(trainer)}
                 </p>
-                <p className="mt-2 text-sm leading-relaxed text-[#B9BEC2]">
-                  De exacte locatie (club/baan) en details worden direct bij je boeking bevestigd.
-                </p>
               </div>
+            </section>
 
-              {slots.length > 0 ? (
+            {/* RECHTERKOLOM: BOEKINGSOPTIES (KALENDER KNOP DRECT ZICHTBAAR BOVENAAN!) */}
+            <section className="space-y-6">
+              
+              {/* 💡 HOOFD CTA KNOP: DIRECT ZICHTBAAR BOVENAAN HET BOEKINGSBLOK */}
+              <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] p-6 text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E]">
+                <p className="font-display text-xs text-[#FF4B3E]">DIRECT BOEKEN</p>
+                <h3 className="mt-1 font-display text-3xl">KIES EEN DATUM & TIJD</h3>
+                <p className="mt-2 text-xs font-semibold text-[#14171A]/80 leading-relaxed">
+                  Bekijk alle beschikbare dagen, tijden en locaties in de volledige agenda van {firstName}.
+                </p>
+
                 <Link
                   href={`/boeken/${trainer.id}`}
-                  className="mt-8 flex w-full items-center justify-center gap-3 border-2 border-white px-6 py-5 font-display text-xl text-white transition hover:bg-white hover:!text-[#14171A]"
+                  className="mt-5 flex items-center justify-center gap-2 bg-[#14171A] px-6 py-4 font-display text-xl !text-[#D6FF3F] hover:bg-white hover:!text-[#14171A] transition shadow-[4px_4px_0_0_#FF4B3E]"
                 >
-                  TRAINEN MET {firstName}. GOW! →
+                  BEKIJK ALLE DAGEN & TIJDEN. GOW! →
                 </Link>
-              ) : (
-                <Link
-                  href="/trainers"
-                  className="mt-8 flex w-full items-center justify-center gap-3 border-2 border-white px-6 py-5 font-display text-xl text-white transition hover:bg-white hover:text-[#14171A]"
-                >
-                  ZOEK ANDERE TRAINERS →
-                </Link>
-              )}
+              </div>
+
+              {/* LOSSE BINNENKORT BESCHIKBARE LESSEN */}
+              <div>
+                <p className="font-display text-sm text-[#FF4B3E]">EERSTVOLGENDE LOSSE SLOTS</p>
+
+                {slots.length > 0 ? (
+                  <div className="mt-3 space-y-3">
+                    {slots.map((slot) => (
+                      <article
+                        key={slot.id}
+                        className="group border-2 border-white bg-white p-2.5 text-[#14171A] shadow-[4px_4px_0_0_#FF4B3E] transition hover:-translate-y-0.5"
+                      >
+                        <div className="bg-[#14171A] p-4 text-white">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <span className="bg-[#D6FF3F] px-2 py-0.5 font-display text-[11px] text-[#14171A]">
+                                {formatDate(slot.starts_at)}
+                              </span>
+                              <p className="mt-2 font-display text-2xl">
+                                {formatTime(slot.starts_at)} – {formatTime(slot.ends_at)}
+                              </p>
+                            </div>
+
+                            <div className="text-right">
+                              <p className="font-display text-2xl text-[#D6FF3F]">
+                                {formatEuro(slot.price_cents, slot.currency)}
+                              </p>
+                              <p className="text-[9px] text-[#8A8F94]">INCL. BAANHUUR</p>
+                            </div>
+                          </div>
+
+                          <div className="mt-3 flex items-center justify-between gap-2 border-t border-white/20 pt-3">
+                            <p className="text-xs text-[#B9BEC2] truncate">
+                              {getVenueLabel(slot.venue)}
+                            </p>
+
+                            <Link
+                              href={`/boeken/${trainer.id}?slot=${slot.id}`}
+                              className="shrink-0 bg-[#FF4B3E] px-4 py-2 font-display text-sm text-white hover:bg-[#D6FF3F] hover:!text-[#14171A] transition"
+                            >
+                              GOW! →
+                            </Link>
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-3 border-2 border-white/20 bg-[#14171A] p-5 text-center text-[#B9BEC2]">
+                    <p className="font-display text-lg text-[#D6FF3F]">GEEN LOSSE SLOTS DIT WEEKEND.</p>
+                    <p className="mt-1 text-xs">Klik hierboven op 'Bekijk Alle Dagen & Tijden' voor alle opties.</p>
+                  </div>
+                )}
+              </div>
+
             </section>
 
           </div>
+
         </div>
       </section>
 

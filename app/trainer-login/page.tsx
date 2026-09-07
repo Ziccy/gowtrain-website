@@ -497,7 +497,7 @@ export default function TrainerLoginPage() {
                   </p>
                   <a
                     href="/trainer-worden"
-                    className="mt-3 inline-flex font-display text-lg text-[#D6FF3F] transition hover:text-white"
+                    className="mt-3 inline-flex font-display text-lg !text-[#D6FF3F] transition hover:text-white"
                   >
                     WORD TRAINER. GOW! →
                   </a>

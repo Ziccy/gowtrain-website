@@ -556,16 +556,6 @@ export default function AdminIssuesPage() {
     }
   }
 
-  async function handleLogout(): Promise<void> {
-    const { error } = await supabase.auth.signOut();
-    if (error) {
-      showError("Uitloggen lukt nu niet.");
-      return;
-    }
-    router.replace("/speler-login");
-    router.refresh();
-  }
-
   /* BRANDBOOK BRANDED LOADER */
   if (loading) {
     return (
@@ -604,6 +594,7 @@ export default function AdminIssuesPage() {
             <span className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1" />
           </Link>
 
+          {/* 💡 GEAANGEPASTE UNIFORME HEADER LINK NAAR ADMIN HUB */}
           <div className="flex items-center gap-3">
             <Link
               href="/admin"
@@ -611,14 +602,6 @@ export default function AdminIssuesPage() {
             >
               ← ADMIN HUB
             </Link>
-
-            <button
-              type="button"
-              onClick={() => void handleLogout()}
-              className="border-2 border-white px-4 py-2 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:text-[#14171A]"
-            >
-              UITLOGGEN
-            </button>
           </div>
         </div>
       </header>
@@ -801,7 +784,7 @@ export default function AdminIssuesPage() {
             {/* RECHTER KOLOM: ISSUE DETAIL & OPLOSSING */}
             <section>
               <p className="font-display text-lg text-[#FF4B3E]">AFHANDELING</p>
-              <h2 className="mt-2 font-display text-4xl leading-[0.83] sm:text-5xl">
+              <h2 className="mt-2 font-display text-4xl leading-[0.83] sm:text-6xl">
                 {selectedIssue ? "MELDING BEKIJKEN." : "KIES EEN MELDING."}
               </h2>
 

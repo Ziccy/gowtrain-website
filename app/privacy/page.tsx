@@ -1,4 +1,5 @@
 import Link from "next/link";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 
 const lastUpdated = "24 augustus 2026";
@@ -7,31 +8,7 @@ export default function PrivacyPage() {
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
       {/* HEADER */}
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <Link
-            href="/"
-            aria-label="Terug naar GowTrain home"
-            className="group inline-flex items-center gap-2"
-          >
-            <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-              GOWTRAIN
-            </span>
-
-            <span
-              aria-hidden="true"
-              className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1 sm:border-b-[11px] sm:border-l-[9px] sm:border-t-[11px]"
-            />
-          </Link>
-
-          <Link
-            href="/"
-            className="font-display text-sm text-white transition hover:text-[#D6FF3F]"
-          >
-            ← HOME
-          </Link>
-        </div>
-      </header>
+      <SiteHeader />
 
       {/* CONTENT */}
       <section className="relative flex-1 overflow-hidden py-12 sm:py-16 lg:py-20">

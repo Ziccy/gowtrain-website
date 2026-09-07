@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 type SiteFooterProps = {
   showAppBadges?: boolean;
 };
@@ -9,7 +11,8 @@ export default function SiteFooter({
     <footer className="border-t border-white/20 bg-[#14171A] text-white">
       <div className="mx-auto max-w-7xl px-5 py-10 sm:px-8">
         <div className="flex flex-col justify-between gap-10 border-b border-white/20 pb-10 md:flex-row md:items-start">
-          {/* Logo en app-downloads */}
+          
+          {/* Logo, app-downloads & Trust Badge */}
           <div className="flex flex-col items-start gap-6">
             <a
               href="/"
@@ -53,23 +56,33 @@ export default function SiteFooter({
                 </a>
               </div>
             ) : null}
+
+            {/* 🔒 STRIPE & iDEAL TRUST BADGE */}
+            <div className="mt-2 flex items-center gap-3 border-2 border-white/20 bg-white/5 px-4 py-2.5">
+              <span className="text-base">🔒</span>
+              <span className="font-display text-xs tracking-wider text-[#D6FF3F]">
+                100% VEILIG AFREKENEN VIA STRIPE &amp; iDEAL
+              </span>
+            </div>
           </div>
 
           {/* Navigatie en socials */}
           <div className="flex flex-col items-start gap-7 md:items-end">
             <nav
               aria-label="Footer navigatie"
-              className="grid grid-cols-2 gap-x-12 gap-y-4 font-display text-lg sm:flex sm:flex-wrap sm:justify-end sm:gap-x-8 sm:gap-y-4"
+              className="grid grid-cols-2 gap-x-10 gap-y-4 font-display text-base sm:flex sm:flex-wrap sm:justify-end sm:gap-x-7 sm:gap-y-4 sm:text-lg"
             >
               <a href="/#spelers" className="transition hover:text-[#D6FF3F]">
                 SPELERS
               </a>
 
-              <a
-                href="/#trainers"
-                className="transition hover:text-[#D6FF3F]"
-              >
+              <a href="/#trainers" className="transition hover:text-[#D6FF3F]">
                 TRAINERS
+              </a>
+
+              {/* 💡 NIEUW: FAQ LINK */}
+              <a href="/faq" className="transition hover:text-[#D6FF3F]">
+                FAQ
               </a>
 
               <a
@@ -79,21 +92,17 @@ export default function SiteFooter({
                 CONTACT
               </a>
 
-              <a
-                href="/privacy"
-                className="transition hover:text-[#D6FF3F]"
-              >
+              <a href="/privacy" className="transition hover:text-[#D6FF3F]">
                 PRIVACY
               </a>
-              <a
-  href="/voorwaarden"
-  className="transition hover:text-[#D6FF3F]"
->
-  VOORWAARDEN
-</a>
-<a href="/cookies" className="transition hover:text-[#D6FF3F]">
-  COOKIES
-</a>
+
+              <a href="/voorwaarden" className="transition hover:text-[#D6FF3F]">
+                VOORWAARDEN
+              </a>
+
+              <a href="/cookies" className="transition hover:text-[#D6FF3F]">
+                COOKIES
+              </a>
             </nav>
 
             <div className="flex items-center gap-3">
@@ -172,7 +181,9 @@ export default function SiteFooter({
             © {new Date().getFullYear()} GowTrain. Alle rechten voorbehouden.
           </p>
 
-          <p>TRAINERS VINDEN. BOEKEN. GOW!</p>
+          <p className="font-display tracking-wider text-xs">
+            TRAINERS VINDEN. BOEKEN. GOW!
+          </p>
         </div>
       </div>
     </footer>

@@ -3,6 +3,8 @@
 import type { ChangeEvent, FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { locations, type LocationOption } from "@/constants/locations";
 import { supabase } from "@/lib/supabase-browser";
@@ -143,19 +145,14 @@ export default function TrainerProfielBewerkenPage() {
     clearMessages();
 
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      const { data: { session } } = await supabase.auth.getSession();
 
       if (!session?.user) {
         router.replace("/trainer-login");
         return;
       }
 
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
 
       if (userError || !user) {
         await supabase.auth.signOut();
@@ -187,7 +184,6 @@ export default function TrainerProfielBewerkenPage() {
         .single();
 
       if (error || !data) {
-        console.error("Trainerprofiel ophalen fout:", error?.message);
         showError("Je trainerprofiel kon niet worden geladen.");
         return;
       }
@@ -209,8 +205,7 @@ export default function TrainerProfielBewerkenPage() {
           : ""
       );
       setImageUrl(profile.image_url ?? null);
-    } catch (error) {
-      console.error("Onverwachte profiel-fout:", error);
+    } catch {
       showError("Je trainerprofiel kon niet worden geladen.");
     } finally {
       setLoading(false);
@@ -276,7 +271,6 @@ export default function TrainerProfielBewerkenPage() {
         });
 
       if (uploadError) {
-        console.error("Foto upload fout:", uploadError.message);
         showError("Je foto kon niet worden geüpload.");
         return;
       }
@@ -293,15 +287,13 @@ export default function TrainerProfielBewerkenPage() {
         .eq("id", trainerId);
 
       if (updateError) {
-        console.error("Foto-url opslaan fout:", updateError.message);
         showError("De foto kon niet aan je profiel worden gekoppeld.");
         return;
       }
 
       setImageUrl(publicUrl);
       setSuccessMessage("Je profielfoto is succesvol bijgewerkt!");
-    } catch (error) {
-      console.error("Onverwachte foto-upload fout:", error);
+    } catch {
       showError("Je foto kon niet worden geüpload.");
     } finally {
       setUploadingPhoto(false);
@@ -368,31 +360,18 @@ export default function TrainerProfielBewerkenPage() {
         .eq("id", trainerId);
 
       if (error) {
-        console.error("Trainerprofiel opslaan fout:", error.message);
         showError("Je profiel kon niet worden opgeslagen.");
         return;
       }
 
       setSuccessMessage("Je trainerprofiel is opgeslagen! Spelers zien je wijzigingen direct.");
-    } catch (error) {
-      console.error("Onverwachte opslaan-fout:", error);
+    } catch {
       showError("Je profiel kon niet worden opgeslagen.");
     } finally {
       setSaving(false);
     }
   }
 
-  async function handleLogout(): Promise<void> {
-    const { error } = await supabase.auth.signOut();
-    if (error) {
-      showError("Uitloggen lukt nu niet.");
-      return;
-    }
-    router.replace("/trainer-login");
-    router.refresh();
-  }
-
-  /* BRANDBOOK BRANDED LOADER */
   if (loading) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
@@ -413,41 +392,11 @@ export default function TrainerProfielBewerkenPage() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* HEADER */}
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <a
-            href="/trainer-dashboard"
-            aria-label="Terug naar trainerdashboard"
-            className="group inline-flex items-center gap-2"
-          >
-            <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-              GOWTRAIN
-            </span>
-            <span className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1 sm:border-b-[11px] sm:border-l-[9px] sm:border-t-[11px]" />
-          </a>
-
-          <div className="flex items-center gap-3">
-            <a
-              href="/trainer-dashboard"
-              className="hidden font-display text-sm text-white transition hover:text-[#D6FF3F] sm:block"
-            >
-              ← DASHBOARD
-            </a>
-
-            <button
-              type="button"
-              onClick={() => void handleLogout()}
-              className="border-2 border-white px-4 py-2 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:text-[#14171A]"
-            >
-              UITLOGGEN
-            </button>
-          </div>
-        </div>
-      </header>
+      {/* 💡 UNIVERSELE DYNAMISCHE SITE HEADER */}
+      <SiteHeader />
 
       {/* CONTENT */}
-      <section className="relative flex-1 overflow-hidden py-12 sm:py-16">
+      <section className="relative flex-1 overflow-hidden py-10 sm:py-14">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute -right-10 -top-16 select-none font-display text-[16rem] leading-none text-[#D6FF3F] opacity-[0.04] sm:text-[25rem]"
@@ -455,17 +404,25 @@ export default function TrainerProfielBewerkenPage() {
           PROFIEL
         </div>
 
-        <div className="relative mx-auto max-w-5xl px-5 sm:px-8">
+        <div className="relative mx-auto max-w-7xl px-5 sm:px-8">
+          
           <div className="flex flex-col justify-between gap-6 border-b-2 border-white/20 pb-8 md:flex-row md:items-end">
             <div>
               <p className="font-display text-lg text-[#FF4B3E]">TRAINERPROFIEL</p>
               <h1 className="mt-3 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
                 LAAT JEZELF ZIEN.
               </h1>
-              <p className="mt-6 max-w-2xl text-lg leading-relaxed text-[#D7D9DA]">
+              <p className="mt-4 max-w-2xl text-base leading-relaxed text-[#D7D9DA]">
                 Dit zien spelers wanneer ze jou bekijken en een training bij je willen boeken.
               </p>
             </div>
+
+            <Link
+              href="/trainer-dashboard"
+              className="inline-flex shrink-0 border-2 border-white px-4 py-2.5 font-display text-xs text-white hover:border-[#D6FF3F] hover:text-[#D6FF3F] transition"
+            >
+              ← DASHBOARD
+            </Link>
           </div>
 
           {errorMessage && (
@@ -480,12 +437,12 @@ export default function TrainerProfielBewerkenPage() {
               className="mt-8 flex flex-col justify-between gap-4 border-2 border-[#D6FF3F] bg-[#D6FF3F] px-5 py-4 text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E] sm:flex-row sm:items-center"
             >
               <p className="font-semibold leading-relaxed">{successMessage}</p>
-              <a
+              <Link
                 href="/trainer-dashboard"
                 className="shrink-0 font-display text-base underline underline-offset-4 transition hover:text-[#FF4B3E]"
               >
                 NAAR DASHBOARD →
-              </a>
+              </Link>
             </div>
           )}
 
@@ -707,7 +664,7 @@ export default function TrainerProfielBewerkenPage() {
 
                 <div className="mt-5">
                   <label htmlFor="price" className="mb-2 block font-display text-base text-[#D6FF3F]">
-                    UURTARIEF (EXCL. BAANHUUR)
+                    UURTARIEF (INCLUSIEF BAANHUUR)
                   </label>
 
                   <div className="flex border-2 border-white/25 transition focus-within:border-[#D6FF3F]">

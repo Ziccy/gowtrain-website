@@ -3,8 +3,15 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
+
+import {
+  getWhatsAppShareUrl,
+  getGoogleCalendarUrl,
+  downloadIcsFile,
+} from "@/lib/calendar-share";
 
 type BookingStatus =
   | "payment_pending"
@@ -58,94 +65,102 @@ function formatTime(value: string): string {
   }).format(new Date(value));
 }
 
-function formatEuro(cents: number, currency = "eur"): string {
-  return new Intl.NumberFormat("nl-NL", {
-    style: "currency",
-    currency: currency.toUpperCase(),
-  }).format(cents / 100);
-}
-
 function BookingSuccesContent() {
   const searchParams = useSearchParams();
   const checkoutSessionId = searchParams.get("session_id");
+  const packageId = searchParams.get("package_id");
 
   const [booking, setBooking] = useState<Booking | null>();
+  const [isPackage, setIsPackage] = useState<boolean>(false);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
 
   useEffect(() => {
-    if (!checkoutSessionId) {
-      setLoading(false);
-      setErrorMessage("De betaalbevestiging kon niet worden gevonden.");
-      return;
-    }
+    void verifyAndLoadConfirmation();
+  }, [checkoutSessionId, packageId]);
 
-    void loadBooking(checkoutSessionId);
-  }, [checkoutSessionId]);
-
-  async function loadBooking(sessionId: string): Promise<void> {
+  async function verifyAndLoadConfirmation(): Promise<void> {
     setLoading(true);
     setErrorMessage("");
 
     try {
-      const { data, error } = await supabase
-        .from("bookings")
-        .select(
-          `
-            id,
-            status,
-            participant_count,
-            total_price_cents,
-            currency,
-            paid_at,
+      const { data: { session } } = await supabase.auth.getSession();
+      const userId = session?.user?.id;
 
-            trainers (
+      if (packageId && userId) {
+        setIsPackage(true);
+
+        await supabase.rpc("confirm_package_purchase", {
+          p_package_id: packageId,
+          p_player_id: userId,
+        });
+
+        const { data: packageBooking } = await supabase
+          .from("bookings")
+          .select(
+            `
               id,
-              name
-            ),
-
-            availability_slots (
-              starts_at,
-              ends_at,
-              sport,
-
-              venues (
-                name,
-                city,
-                address_line,
-                postal_code
+              status,
+              participant_count,
+              total_price_cents,
+              currency,
+              paid_at,
+              trainers ( id, name ),
+              availability_slots!inner (
+                starts_at,
+                ends_at,
+                sport,
+                package_id,
+                venues ( name, city, address_line, postal_code )
               )
-            )
-          `
-        )
-        .eq("stripe_checkout_session_id", sessionId)
-        .maybeSingle();
+            `
+          )
+          .eq("player_id", userId)
+          .eq("availability_slots.package_id", packageId)
+          .order("created_at", { ascending: true })
+          .limit(1)
+          .maybeSingle();
 
-      if (error) {
-        console.error("Bevestigde booking ophalen fout:", error.message);
-
-        setErrorMessage(
-          "Je boekingsbevestiging kon niet worden geladen. Controleer Mijn boekingen."
-        );
-
+        if (packageBooking) {
+          setBooking(packageBooking as unknown as Booking);
+        }
+        setLoading(false);
         return;
       }
 
-      if (!data) {
-        setErrorMessage(
-          "Je betaling wordt nog verwerkt. Vernieuw deze pagina over een paar seconden."
-        );
+      if (checkoutSessionId) {
+        const { data, error } = await supabase
+          .from("bookings")
+          .select(
+            `
+              id,
+              status,
+              participant_count,
+              total_price_cents,
+              currency,
+              paid_at,
+              trainers ( id, name ),
+              availability_slots (
+                starts_at,
+                ends_at,
+                sport,
+                venues ( name, city, address_line, postal_code )
+              )
+            `
+          )
+          .eq("stripe_checkout_session_id", checkoutSessionId)
+          .maybeSingle();
 
-        return;
+        if (error || !data) {
+          setErrorMessage("Je betaling wordt verwerkt.");
+          return;
+        }
+
+        setBooking(data as unknown as Booking);
       }
-
-      setBooking(data as unknown as Booking);
     } catch (error) {
       console.error("Onverwachte bevestigingsfout:", error);
-
-      setErrorMessage(
-        "Je boekingsbevestiging kon niet worden geladen. Controleer Mijn boekingen."
-      );
+      setErrorMessage("Je boekingsbevestiging kon niet worden geladen.");
     } finally {
       setLoading(false);
     }
@@ -154,169 +169,148 @@ function BookingSuccesContent() {
   if (loading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#14171A] px-5 text-white">
-        <div className="text-center">
-          <p className="font-display text-5xl text-[#D6FF3F]">GOW!</p>
-
-          <p className="mt-4 font-display text-lg text-[#FF4B3E]">
-            BETALING CONTROLEREN...
-          </p>
+        <div className="flex flex-col items-center">
+          <div className="flex items-center gap-2">
+            <span className="font-display text-5xl text-[#D6FF3F]">GOWTRAIN</span>
+            <span className="h-0 w-0 animate-pulse border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
+          </div>
+          <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">BETALING CONTROLEREN...</p>
         </div>
       </main>
     );
   }
 
-  const isConfirmed = booking?.status === "confirmed";
+  const isConfirmed = isPackage || booking?.status === "confirmed";
+
+  // Data voor WhatsApp & Agenda
+  const slot = booking?.availability_slots;
+  const trainerName = booking?.trainers?.name || "de trainer";
+  const venueName = slot?.venues ? `${slot.venues.city} — ${slot.venues.name}` : "de club";
+  const dateLabel = slot ? formatDate(slot.starts_at) : "";
+  const timeLabel = slot ? `${formatTime(slot.starts_at)} - ${formatTime(slot.ends_at)}` : "";
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <Link
-            href="/"
-            className="group inline-flex items-center gap-2"
-            aria-label="Terug naar GowTrain home"
-          >
-            <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-              GOWTRAIN
-            </span>
+      {/* 💡 UNIVERSELE DYNAMISCHE SITE HEADER */}
+      <SiteHeader />
 
-            <span
-              aria-hidden="true"
-              className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform group-hover:translate-x-1"
-            />
-          </Link>
-
-          <Link
-            href="/mijn-boekingen"
-            className="font-display text-sm text-white transition hover:text-[#D6FF3F]"
-          >
-            MIJN BOEKINGEN →
-          </Link>
-        </div>
-      </header>
-
-      <section className="flex flex-1 items-center justify-center px-5 py-16">
-        <div className="w-full max-w-3xl">
-          {isConfirmed && booking?.availability_slots ? (
-            <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] p-5 text-[#14171A] shadow-[10px_10px_0_0_#FF4B3E] sm:p-8">
-              <p className="font-display text-lg">BETAALD. BEVESTIGD.</p>
-
-              <h1 className="mt-4 font-display text-5xl leading-[0.85] sm:text-6xl">
-                JE STAAT
-                <br />
-                OP DE BAAN.
-              </h1>
-
-              <p className="mt-6 max-w-2xl text-lg font-semibold leading-relaxed">
-                Je training bij {booking.trainers?.name || "je trainer"} is
-                definitief geboekt. Tijd om te Gow!en.
-              </p>
-
-              <div className="mt-8 border-y-2 border-[#14171A]/20 py-5">
-                <p className="font-display text-2xl">
-                  {formatDate(booking.availability_slots.starts_at)}
+      <section className="flex flex-1 items-center justify-center px-5 py-10 sm:py-16">
+        <div className="w-full max-w-7xl">
+          <div className="mx-auto max-w-3xl">
+            {isConfirmed ? (
+              <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] p-5 text-[#14171A] shadow-[10px_10px_0_0_#FF4B3E] sm:p-8">
+                <p className="font-display text-lg">
+                  {isPackage ? "LESPAKKET GEBOEKT!" : "BETAALD. BEVESTIGD."}
                 </p>
 
-                <p className="mt-2 font-display text-4xl">
-                  {formatTime(booking.availability_slots.starts_at)} –{" "}
-                  {formatTime(booking.availability_slots.ends_at)}
-                </p>
-
-                <p className="mt-4 font-display text-lg">
-                  {booking.availability_slots.sport.toUpperCase()} ·{" "}
-                  {booking.participant_count}{" "}
-                  {booking.participant_count === 1 ? "SPELER" : "SPELERS"}
-                </p>
-
-                <p className="mt-2 font-display text-2xl">
-                  {formatEuro(
-                    booking.total_price_cents,
-                    booking.currency
-                  )}
-                </p>
-
-                <p className="mt-1 text-sm font-semibold">
-                  Inclusief training en baanhuur.
-                </p>
-              </div>
-
-              {booking.availability_slots.venues ? (
-                <div className="mt-6">
-                  <p className="font-display text-sm">LOCATIE</p>
-
-                  <p className="mt-2 font-display text-xl">
-                    {booking.availability_slots.venues.city.toUpperCase()} —{" "}
-                    {booking.availability_slots.venues.name}
-                  </p>
-
-                  <p className="mt-2 font-semibold leading-relaxed">
-                    {booking.availability_slots.venues.address_line}
-                    <br />
-                    {booking.availability_slots.venues.postal_code
-                      ? `${booking.availability_slots.venues.postal_code} `
-                      : ""}
-                    {booking.availability_slots.venues.city}
-                  </p>
-                </div>
-              ) : null}
-
-              <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-                <Link
-                  href="/mijn-boekingen"
-                  className="inline-flex items-center justify-center bg-[#14171A] px-5 py-4 font-display text-base !text-white transition hover:bg-white hover:!text-[#14171A]"
-                >
-                  MIJN BOEKINGEN →
-                </Link>
-
-                <Link
-                  href="/trainers"
-                  className="inline-flex items-center justify-center border-2 border-[#14171A] bg-transparent px-5 py-4 font-display text-base !text-[#14171A] transition hover:bg-[#14171A] hover:!text-white"
-                >
-                  BEKIJK MEER TRAINERS
-                </Link>
-              </div>
-            </div>
-          ) : (
-            <div className="border-2 border-white bg-white p-3 text-[#14171A] shadow-[10px_10px_0_0_#FF4B3E]">
-              <div className="bg-[#14171A] p-6 text-white sm:p-8">
-                <p className="font-display text-lg text-[#FF4B3E]">
-                  BETALING WORDT VERWERKT
-                </p>
-
-                <h1 className="mt-4 font-display text-5xl leading-[0.85] sm:text-6xl">
-                  NOG HEEL
-                  <br />
-                  EVEN.
+                <h1 className="mt-3 font-display text-5xl leading-[0.85] sm:text-6xl">
+                  JE STAAT<br />OP DE BAAN.
                 </h1>
 
-                <p className="mt-6 max-w-xl text-lg leading-relaxed text-[#B9BEC2]">
-                  {errorMessage ||
-                    "Je betaling wordt gecontroleerd. Vernieuw deze pagina over een paar seconden of bekijk Mijn boekingen."}
+                <p className="mt-5 max-w-2xl text-base font-semibold leading-relaxed">
+                  {isPackage
+                    ? `Gefeliciteerd! Je hebt je lespakket bij ${trainerName} succesvol afgerekend. Alle lessen van jouw traject staan in je overzicht.`
+                    : `Je training bij ${trainerName} is definitief geboekt. Tijd om te Gow!en.`}
                 </p>
 
-                <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (checkoutSessionId) {
-                        void loadBooking(checkoutSessionId);
-                      }
-                    }}
-                    className="bg-[#D6FF3F] px-5 py-4 font-display text-base !text-[#14171A] font-bold transition hover:bg-white"
-                  >
-                    ↻ OPNIEUW CONTROLEREN
-                  </button>
+                {slot && (
+                  <div className="mt-6 border-y-2 border-[#14171A]/20 py-5">
+                    <p className="font-display text-xs text-[#FF4B3E]">EERSTE LES VAN JOUW TRAJECT</p>
+                    <p className="mt-1 font-display text-xl">{formatDate(slot.starts_at)}</p>
+                    <p className="mt-1 font-display text-3xl">
+                      {formatTime(slot.starts_at)} – {formatTime(slot.ends_at)}
+                    </p>
+                  </div>
+                )}
 
+                {/* WHATSAPP & AGENDA KNOPPEN BLOK */}
+                {slot && (
+                  <div className="mt-6 space-y-3">
+                    <p className="font-display text-xs text-[#14171A] opacity-80 uppercase">DEEL OF BEWAAR JE LES:</p>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <a
+                        href={getWhatsAppShareUrl(trainerName, slot.sport, dateLabel, timeLabel, venueName)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-center gap-2 bg-[#14171A] px-4 py-3.5 font-display text-sm !text-white transition hover:bg-white hover:!text-[#14171A]"
+                      >
+                        DEEL VIA WHATSAPP
+                      </a>
+
+                      <a
+                        href={getGoogleCalendarUrl(
+                          `GowTrain ${slot.sport.toUpperCase()} les bij ${trainerName}`,
+                          slot.starts_at,
+                          slot.ends_at,
+                          venueName,
+                          `GowTrain les bij ${trainerName} op ${venueName}.`
+                        )}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-center gap-2 border-2 border-[#14171A] bg-transparent px-4 py-3.5 font-display text-sm !text-[#14171A] transition hover:bg-[#14171A] hover:!text-white"
+                      >
+                        ZET IN GOOGLE CALENDAR
+                      </a>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        downloadIcsFile(
+                          `GowTrain ${slot.sport.toUpperCase()} les bij ${trainerName}`,
+                          slot.starts_at,
+                          slot.ends_at,
+                          venueName,
+                          `GowTrain les bij ${trainerName} op ${venueName}.`
+                        )
+                      }
+                      className="w-full text-center font-display text-xs text-[#14171A] underline underline-offset-4 hover:text-[#FF4B3E]"
+                    >
+                      Download .ics voor Apple Calendar / Outlook
+                    </button>
+                  </div>
+                )}
+
+                {/* NAVIGATIE */}
+                <div className="mt-8 pt-4 border-t-2 border-[#14171A]/20 flex flex-col gap-3 sm:flex-row">
                   <Link
                     href="/mijn-boekingen"
-                    className="inline-flex items-center justify-center border-2 border-white bg-transparent px-5 py-4 font-display text-base !text-white transition hover:bg-white hover:!text-[#14171A]"
+                    className="inline-flex items-center justify-center bg-[#14171A] px-6 py-4 font-display text-lg !text-white transition hover:bg-white hover:!text-[#14171A]"
                   >
-                    MIJN BOEKINGEN →
+                    BEKIJK AL JE LESDATUMS →
+                  </Link>
+
+                  <Link
+                    href="/trainers"
+                    className="inline-flex items-center justify-center border-2 border-[#14171A] bg-transparent px-5 py-4 font-display text-base !text-[#14171A] transition hover:bg-[#14171A] hover:!text-white"
+                  >
+                    MEER TRAINERS
                   </Link>
                 </div>
+
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="border-2 border-white bg-white p-3 text-[#14171A] shadow-[10px_10px_0_0_#FF4B3E]">
+                <div className="bg-[#14171A] p-6 text-white sm:p-8">
+                  <p className="font-display text-lg text-[#FF4B3E]">BETALING WORDT VERWERKT</p>
+                  <h1 className="mt-3 font-display text-5xl leading-[0.83]">NOG HEEL EVEN...</h1>
+                  <p className="mt-5 max-w-xl text-base leading-relaxed text-[#B9BEC2]">
+                    {errorMessage || "Je betaling wordt gecontroleerd. Bekijk je overzicht op Mijn boekingen."}
+                  </p>
+
+                  <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+                    <Link
+                      href="/mijn-boekingen"
+                      className="inline-flex items-center justify-center bg-[#D6FF3F] px-6 py-4 font-display text-lg !text-[#14171A] font-bold"
+                    >
+                      NAAR MIJN BOEKINGEN →
+                    </Link>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </section>
 
@@ -330,10 +324,7 @@ function BookingSuccesFallback() {
     <main className="flex min-h-screen items-center justify-center bg-[#14171A] px-5 text-white">
       <div className="text-center">
         <p className="font-display text-5xl text-[#D6FF3F]">GOW!</p>
-
-        <p className="mt-4 font-display text-lg text-[#FF4B3E]">
-          BETALING CONTROLEREN...
-        </p>
+        <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">BETALING CONTROLEREN...</p>
       </div>
     </main>
   );
