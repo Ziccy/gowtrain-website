@@ -3,6 +3,8 @@
 import type { FormEvent } from "react";
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
@@ -10,7 +12,6 @@ function getSafeRedirectTo(value: string | null): string | null {
   if (value?.startsWith("/boeken/")) {
     return value;
   }
-
   return null;
 }
 
@@ -64,7 +65,6 @@ function SpelerWordenContent() {
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
     if (!emailRegex.test(email.trim())) {
       showError("Vul een geldig e-mailadres in.");
       return;
@@ -112,20 +112,14 @@ function SpelerWordenContent() {
       });
 
       if (error) {
-        console.error("Spelerregistratie fout:", error.message);
-
-        if (
-          error.message.toLowerCase().includes("already registered")
-        ) {
+        if (error.message.toLowerCase().includes("already registered")) {
           showError(
             "Er bestaat al een account met dit e-mailadres. Log in met je speleraccount."
           );
           return;
         }
 
-        showError(
-          "Je account kon niet worden aangemaakt. Probeer het opnieuw."
-        );
+        showError("Je account kon niet worden aangemaakt. Probeer het opnieuw.");
         return;
       }
 
@@ -141,12 +135,8 @@ function SpelerWordenContent() {
 
       router.replace(safeRedirectTo ?? "/mijn-boekingen");
       router.refresh();
-    } catch (error) {
-      console.error("Onverwachte spelerregistratie-fout:", error);
-
-      showError(
-        "Je account kon niet worden aangemaakt. Probeer het opnieuw."
-      );
+    } catch {
+      showError("Je account kon niet worden aangemaakt. Probeer het opnieuw.");
     } finally {
       setLoading(false);
     }
@@ -154,33 +144,10 @@ function SpelerWordenContent() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <a
-            href="/"
-            aria-label="Terug naar GowTrain home"
-            className="group inline-flex items-center gap-2"
-          >
-            <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-              GOWTRAIN
-            </span>
+      {/* 💡 UNIVERSELE DYNAMISCHE SITE HEADER */}
+      <SiteHeader />
 
-            <span
-              aria-hidden="true"
-              className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1 sm:border-b-[11px] sm:border-l-[9px] sm:border-t-[11px]"
-            />
-          </a>
-
-          <a
-            href={loginHref}
-            className="hidden font-display text-base text-white transition hover:text-[#D6FF3F] sm:block"
-          >
-            AL EEN ACCOUNT? LOGIN →
-          </a>
-        </div>
-      </header>
-
-      <section className="relative flex flex-1 items-center overflow-hidden py-12 sm:py-16 lg:py-20">
+      <section className="relative flex flex-1 items-center overflow-hidden py-10 sm:py-16">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute -right-12 top-0 select-none font-display text-[15rem] leading-none text-[#D6FF3F] opacity-[0.05] sm:text-[23rem] lg:text-[32rem]"
@@ -214,7 +181,6 @@ function SpelerWordenContent() {
                 <p className="font-display text-xl text-[#D6FF3F]">
                   ⚡ BIJNA KLAAR OM TE BOEKEN!
                 </p>
-
                 <p className="mt-2 text-sm leading-relaxed text-[#D7D9DA]">
                   Maak binnen 30 seconden je speleraccount aan. Daarna ga je
                   direct terug om je gekozen training te bevestigen.
@@ -223,52 +189,31 @@ function SpelerWordenContent() {
             ) : (
               <div className="space-y-4 border-t border-white/20 pt-6">
                 <div className="flex items-start gap-3">
-                  <span className="font-display text-xl text-[#D6FF3F]">
-                    ✓
-                  </span>
-
+                  <span className="font-display text-xl text-[#D6FF3F]">✓</span>
                   <div>
-                    <p className="font-display text-base text-white">
-                      DIRECT LES BOEKEN
-                    </p>
-
+                    <p className="font-display text-base text-white">DIRECT LES BOEKEN</p>
                     <p className="text-sm text-[#B9BEC2]">
-                      Geen heen-en-weer appen. Bekijk live beschikbaarheid en
-                      boek meteen.
+                      Geen heen-en-weer appen. Bekijk live beschikbaarheid en boek meteen.
                     </p>
                   </div>
                 </div>
 
                 <div className="flex items-start gap-3">
-                  <span className="font-display text-xl text-[#D6FF3F]">
-                    ✓
-                  </span>
-
+                  <span className="font-display text-xl text-[#D6FF3F]">✓</span>
                   <div>
-                    <p className="font-display text-base text-white">
-                      VERGELIJK OP JOUW NIVEAU
-                    </p>
-
+                    <p className="font-display text-base text-white">VERGELIJK OP JOUW NIVEAU</p>
                     <p className="text-sm text-[#B9BEC2]">
-                      Kies op basis van ervaring, tactiek, techniek of
-                      beoordelingen van anderen.
+                      Kies op basis van ervaring, tactiek, techniek of beoordelingen van anderen.
                     </p>
                   </div>
                 </div>
 
                 <div className="flex items-start gap-3">
-                  <span className="font-display text-xl text-[#D6FF3F]">
-                    ✓
-                  </span>
-
+                  <span className="font-display text-xl text-[#D6FF3F]">✓</span>
                   <div>
-                    <p className="font-display text-base text-white">
-                      AL JE BOEKINGEN BIJ ELKAAR
-                    </p>
-
+                    <p className="font-display text-base text-white">AL JE BOEKINGEN BIJ ELKAAR</p>
                     <p className="text-sm text-[#B9BEC2]">
-                      Overzicht van al je geplande trainingen en directe
-                      communicatie met je trainer.
+                      Overzicht van al je geplande trainingen en directe communicatie met je trainer.
                     </p>
                   </div>
                 </div>
@@ -279,18 +224,16 @@ function SpelerWordenContent() {
               <p className="font-display text-lg text-white">
                 AL EEN SPELERACCOUNT?
               </p>
-
               <p className="mt-2 text-sm leading-relaxed text-[#B9BEC2]">
-                Log in om je geplande trainingen te bekijken of een nieuwe les
-                aan te vragen.
+                Log in om je geplande trainingen te bekijken of een nieuwe les aan te vragen.
               </p>
 
-              <a
+              <Link
                 href={loginHref}
                 className="mt-4 inline-flex font-display text-base text-[#D6FF3F] transition hover:text-white"
               >
                 LOGIN. GOW! →
-              </a>
+              </Link>
             </div>
           </div>
 
@@ -328,12 +271,12 @@ function SpelerWordenContent() {
                 >
                   <p>{successMessage}</p>
 
-                  <a
+                  <Link
                     href={loginHref}
                     className="mt-4 inline-flex font-display text-base underline underline-offset-4 transition hover:text-[#FF4B3E]"
                   >
                     GA NAAR LOGIN →
-                  </a>
+                  </Link>
                 </div>
               )}
 
@@ -453,12 +396,12 @@ function SpelerWordenContent() {
 
                   <span>
                     Ik ga akkoord met de{" "}
-                    <a
+                    <Link
                       href="/privacy"
                       className="font-semibold text-[#D6FF3F] underline underline-offset-4 transition hover:text-white"
                     >
                       privacyverklaring
-                    </a>
+                    </Link>
                     .
                   </span>
                 </label>
@@ -466,7 +409,7 @@ function SpelerWordenContent() {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="flex w-full items-center justify-center gap-3 bg-[#FF4B3E] px-6 py-5 font-display text-xl text-white transition hover:-translate-y-1 hover:bg-[#D6FF3F] hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+                  className="flex w-full items-center justify-center gap-3 bg-[#FF4B3E] px-6 py-5 font-display text-xl text-white transition hover:-translate-y-1 hover:bg-[#D6FF3F] hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {loading ? "ACCOUNT MAKEN..." : "REGISTREER. GOW!"}
 
@@ -474,8 +417,7 @@ function SpelerWordenContent() {
                 </button>
 
                 <p className="text-center text-xs leading-relaxed text-[#8A8F94]">
-                  Na registratie sturen we een bevestigingsmail om je account
-                  te activeren.
+                  Na registratie sturen we een bevestigingsmail om je account te activeren.
                 </p>
               </form>
 
@@ -484,12 +426,12 @@ function SpelerWordenContent() {
                   Heb je al een speleraccount?
                 </p>
 
-                <a
+                <Link
                   href={loginHref}
                   className="mt-3 inline-flex font-display text-lg !text-[#D6FF3F] transition hover:text-white"
                 >
                   LOGIN. GOW! →
-                </a>
+                </Link>
               </div>
             </div>
           </div>
@@ -509,10 +451,8 @@ function SpelerWordenFallback() {
           <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">
             GOWTRAIN
           </span>
-
           <span className="h-0 w-0 animate-pulse border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
         </div>
-
         <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">
           PAGINA LADEN...
         </p>

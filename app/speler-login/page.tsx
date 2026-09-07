@@ -3,6 +3,8 @@
 import type { FormEvent } from "react";
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
@@ -13,7 +15,6 @@ function getSafeRedirectTo(value: string | null): string | null {
   if (value?.startsWith("/boeken/")) {
     return value;
   }
-
   return null;
 }
 
@@ -66,7 +67,6 @@ function SpelerLoginContent() {
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
     if (!emailRegex.test(email.trim())) {
       showError("Vul een geldig e-mailadres in.");
       return false;
@@ -75,9 +75,7 @@ function SpelerLoginContent() {
     return true;
   }
 
-  async function getPlayerRole(
-    userId: string
-  ): Promise<PlayerLoginResult> {
+  async function getPlayerRole(userId: string): Promise<PlayerLoginResult> {
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select("role")
@@ -85,60 +83,36 @@ function SpelerLoginContent() {
       .maybeSingle();
 
     if (profileError) {
-      console.error(
-        "Spelerprofiel controleren fout:",
-        profileError.message
-      );
-
       showError("Je profiel kon niet worden gecontroleerd.");
       return false;
     }
 
     if (!profile) {
       await supabase.auth.signOut();
-
       showError(
-        "Je account is gevonden, maar er is nog geen spelerprofiel gekoppeld. Bevestig eventueel eerst je e-mailadres."
+        "Je account is gevonden, maar er is nog geen spelerprofiel gekoppeld."
       );
-
       return false;
     }
 
-    if (profile.role === "player") {
-      return "player";
-    }
-
-    if (profile.role === "trainer") {
-      return "trainer";
-    }
-
-    if (profile.role === "admin") {
-      return "admin";
-    }
+    if (profile.role === "player") return "player";
+    if (profile.role === "trainer") return "trainer";
+    if (profile.role === "admin") return "admin";
 
     await supabase.auth.signOut();
-
-    showError(
-      "Dit account heeft geen geldige spelerrol. Neem contact op met GowTrain als dit niet klopt."
-    );
-
+    showError("Dit account heeft geen geldige spelerrol.");
     return false;
   }
 
   async function checkExistingSession(): Promise<void> {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
+    const { data: { session } } = await supabase.auth.getSession();
 
     if (!session?.user) {
       setCheckingSession(false);
       return;
     }
 
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
     if (userError || !user) {
       await supabase.auth.signOut();
@@ -155,7 +129,6 @@ function SpelerLoginContent() {
 
     if (result === "trainer") {
       await supabase.auth.signOut();
-
       setErrorMessage(
         "Dit is een traineraccount. Gebruik de trainerlogin om in te loggen."
       );
@@ -163,9 +136,8 @@ function SpelerLoginContent() {
 
     if (result === "admin") {
       await supabase.auth.signOut();
-
       setErrorMessage(
-        "Dit is een beheerderaccount. De beheeromgeving is nog niet beschikbaar op het web."
+        "Dit is een beheerderaccount. Gebruik de adminomgeving om in te loggen."
       );
     }
 
@@ -174,10 +146,7 @@ function SpelerLoginContent() {
 
   async function handleLogin(): Promise<void> {
     clearMessages();
-
-    if (!validateEmail()) {
-      return;
-    }
+    if (!validateEmail()) return;
 
     if (!password.trim()) {
       showError("Vul je wachtwoord in.");
@@ -193,55 +162,33 @@ function SpelerLoginContent() {
       });
 
       if (error) {
-        console.error("Speler login fout:", error.message);
-
-        showError(
-          "Inloggen mislukt. Controleer je e-mailadres en wachtwoord."
-        );
-
+        showError("Inloggen mislukt. Controleer je e-mailadres en wachtwoord.");
         return;
       }
 
       const userId = data.user?.id;
-
       if (!userId) {
-        showError(
-          "Je account kon niet worden gevonden. Probeer het opnieuw."
-        );
-
+        showError("Je account kon niet worden gevonden.");
         return;
       }
 
       const result = await getPlayerRole(userId);
-
-      if (!result) {
-        return;
-      }
+      if (!result) return;
 
       if (result === "trainer") {
         await supabase.auth.signOut();
-
-        showError(
-          "Dit is een traineraccount. Gebruik de trainerlogin om in te loggen."
-        );
-
+        showError("Dit is een traineraccount. Gebruik de trainerlogin om in te loggen.");
         return;
       }
 
       if (result === "admin") {
         await supabase.auth.signOut();
-
-        showError(
-          "Dit is een beheerderaccount. De beheeromgeving is nog niet beschikbaar op het web."
-        );
-
+        showError("Dit is een beheerderaccount.");
         return;
       }
 
       redirectAfterLogin();
-    } catch (error) {
-      console.error("Onverwachte speler-login fout:", error);
-
+    } catch {
       showError("Inloggen lukt nu niet. Probeer het opnieuw.");
     } finally {
       setLoading(false);
@@ -250,10 +197,7 @@ function SpelerLoginContent() {
 
   async function handleForgotPassword(): Promise<void> {
     clearMessages();
-
-    if (!validateEmail()) {
-      return;
-    }
+    if (!validateEmail()) return;
 
     setLoading(true);
 
@@ -265,51 +209,30 @@ function SpelerLoginContent() {
 
       const { error } = await supabase.auth.resetPasswordForEmail(
         email.trim().toLowerCase(),
-        {
-          redirectTo,
-        }
+        { redirectTo }
       );
 
       if (error) {
-        console.error(
-          "Speler wachtwoordherstel fout:",
-          error.message
-        );
-
-        showError(
-          "De resetlink kon niet worden verstuurd. Probeer het later opnieuw."
-        );
-
+        showError("De resetlink kon niet worden verstuurd.");
         return;
       }
 
       setSuccessMessage(
         "Check je e-mail! We hebben je een link gestuurd om je wachtwoord te herstellen."
       );
-    } catch (error) {
-      console.error(
-        "Onverwachte wachtwoordherstel fout:",
-        error
-      );
-
-      showError(
-        "De resetlink kon niet worden verstuurd. Probeer het later opnieuw."
-      );
+    } catch {
+      showError("De resetlink kon niet worden verstuurd.");
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleSubmit(
-    event: FormEvent<HTMLFormElement>
-  ): Promise<void> {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-
     if (mode === "forgot-password") {
       await handleForgotPassword();
       return;
     }
-
     await handleLogin();
   }
 
@@ -327,10 +250,8 @@ function SpelerLoginContent() {
             <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">
               GOWTRAIN
             </span>
-
             <span className="h-0 w-0 animate-pulse border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
           </div>
-
           <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">
             INLOGGEN CONTROLEREN...
           </p>
@@ -350,33 +271,10 @@ function SpelerLoginContent() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <a
-            href="/"
-            aria-label="Terug naar GowTrain home"
-            className="group inline-flex items-center gap-2"
-          >
-            <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-              GOWTRAIN
-            </span>
+      {/* 💡 UNIVERSELE DYNAMISCHE SITE HEADER */}
+      <SiteHeader />
 
-            <span
-              aria-hidden="true"
-              className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1 sm:border-b-[11px] sm:border-l-[9px] sm:border-t-[11px]"
-            />
-          </a>
-
-          <a
-            href={registerHref}
-            className="hidden font-display text-base text-white transition hover:text-[#D6FF3F] sm:block"
-          >
-            NOG GEEN ACCOUNT? WORD SPELER →
-          </a>
-        </div>
-      </header>
-
-      <section className="relative flex flex-1 items-center overflow-hidden py-16 sm:py-20">
+      <section className="relative flex flex-1 items-center overflow-hidden py-10 sm:py-16">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute -right-10 top-1/2 -translate-y-1/2 select-none font-display text-[18rem] leading-none text-[#D6FF3F] opacity-[0.05] sm:text-[28rem] lg:text-[38rem]"
@@ -427,10 +325,8 @@ function SpelerLoginContent() {
                 <p className="font-display text-lg text-[#D6FF3F]">
                   ⚡ BIJNA KLAAR
                 </p>
-
                 <p className="mt-1 text-sm text-[#B9BEC2]">
-                  Na het inloggen word je direct teruggestuurd om je training
-                  af te ronden.
+                  Na het inloggen word je direct teruggestuurd om je training af te ronden.
                 </p>
               </div>
             ) : !isForgotPassword ? (
@@ -438,10 +334,8 @@ function SpelerLoginContent() {
                 <p className="font-display text-2xl text-[#D6FF3F]">
                   JOUW TRAINING. JOUW MOMENT.
                 </p>
-
                 <p className="mt-2 max-w-sm leading-relaxed text-[#B9BEC2]">
-                  Bekijk al je aanvragen en geplande trainingen direct op één
-                  centrale plek.
+                  Bekijk al je aanvragen en geplande trainingen direct op één centrale plek.
                 </p>
               </div>
             ) : null}
@@ -450,18 +344,15 @@ function SpelerLoginContent() {
               <p className="font-display text-lg text-white">
                 NOG GEEN SPELERACCOUNT?
               </p>
-
               <p className="mt-2 text-sm leading-relaxed text-[#B9BEC2]">
-                Maak binnen 1 minuut je speleraccount aan en boek direct je
-                eerste les.
+                Maak binnen 1 minuut je speleraccount aan en boek direct je eerste les.
               </p>
-
-              <a
+              <Link
                 href={registerHref}
                 className="mt-4 inline-flex font-display text-base text-[#D6FF3F] transition hover:text-white"
               >
                 WORD SPELER. GOW! →
-              </a>
+              </Link>
             </div>
           </div>
 
@@ -580,7 +471,7 @@ function SpelerLoginContent() {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="mt-8 flex w-full items-center justify-center gap-3 bg-[#FF4B3E] px-6 py-5 font-display text-xl text-white transition hover:-translate-y-1 hover:bg-[#D6FF3F] hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+                  className="mt-8 flex w-full items-center justify-center gap-3 bg-[#FF4B3E] px-6 py-5 font-display text-xl text-white transition hover:-translate-y-1 hover:bg-[#D6FF3F] hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {loading
                     ? isForgotPassword
@@ -600,12 +491,12 @@ function SpelerLoginContent() {
                     Nog geen speleraccount?
                   </p>
 
-                  <a
+                  <Link
                     href={registerHref}
                     className="mt-3 inline-flex font-display text-lg !text-[#D6FF3F] transition hover:text-white"
                   >
                     WORD SPELER. GOW! →
-                  </a>
+                  </Link>
                 </div>
               )}
             </div>
@@ -626,10 +517,8 @@ function SpelerLoginFallback() {
           <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">
             GOWTRAIN
           </span>
-
           <span className="h-0 w-0 animate-pulse border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
         </div>
-
         <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">
           PAGINA LADEN...
         </p>

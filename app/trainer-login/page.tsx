@@ -2,6 +2,9 @@
 
 import type { FormEvent } from "react";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
@@ -9,6 +12,7 @@ type PageMode = "login" | "forgot-password";
 type TrainerLoginResult = "trainer" | "admin" | false;
 
 export default function TrainerLoginPage() {
+  const router = useRouter();
   const [mode, setMode] = useState<PageMode>("login");
 
   const [email, setEmail] = useState<string>("");
@@ -22,23 +26,18 @@ export default function TrainerLoginPage() {
   const [successMessage, setSuccessMessage] = useState<string>("");
 
   useEffect(() => {
-    checkExistingSession();
+    void checkExistingSession();
   }, []);
 
   async function checkExistingSession(): Promise<void> {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
+    const { data: { session } } = await supabase.auth.getSession();
 
     if (!session?.user) {
       setCheckingSession(false);
       return;
     }
 
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
     if (userError || !user) {
       await supabase.auth.signOut();
@@ -49,12 +48,12 @@ export default function TrainerLoginPage() {
     const result = await getOrRepairTrainerRole(user.id);
 
     if (result === "trainer") {
-      window.location.assign("/trainer-dashboard");
+      router.replace("/trainer-dashboard");
       return;
     }
 
     if (result === "admin") {
-      window.location.assign("/admin");
+      router.replace("/admin");
       return;
     }
 
@@ -78,7 +77,6 @@ export default function TrainerLoginPage() {
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
     if (!emailRegex.test(email.trim())) {
       showError("Vul een geldig e-mailadres in.");
       return false;
@@ -97,24 +95,16 @@ export default function TrainerLoginPage() {
       .maybeSingle();
 
     if (profileError) {
-      console.error("Profielcontrole fout:", profileError.message);
       showError("Je profiel kon niet worden gecontroleerd.");
       return false;
     }
 
-    if (profile?.role === "admin") {
-      return "admin";
-    }
-
-    if (profile?.role === "trainer") {
-      return "trainer";
-    }
+    if (profile?.role === "admin") return "admin";
+    if (profile?.role === "trainer") return "trainer";
 
     if (profile?.role === "player") {
       await supabase.auth.signOut();
-      showError(
-        "Dit is een speleraccount. Log in via de GowTrain app of gebruik een traineraccount."
-      );
+      showError("Dit is een speleraccount. Log in via de GowTrain app of spelerlogin.");
       return false;
     }
 
@@ -125,40 +115,27 @@ export default function TrainerLoginPage() {
       .maybeSingle();
 
     if (trainerError) {
-      console.error("Trainercontrole fout:", trainerError.message);
       showError("Je traineraccount kon niet worden gecontroleerd.");
       return false;
     }
 
     if (trainer) {
-      const { error: repairError } = await supabase.from("profiles").upsert({
+      await supabase.from("profiles").upsert({
         id: userId,
         role: "trainer",
         full_name: trainer.name,
       });
 
-      if (repairError) {
-        console.error("Profielherstel fout:", repairError.message);
-        showError(
-          "Je traineraccount is gevonden, maar je profiel kon niet worden hersteld."
-        );
-        return false;
-      }
-
       return "trainer";
     }
 
     await supabase.auth.signOut();
-    showError(
-      "Er is geen trainerprofiel gekoppeld aan dit account. Maak eerst een traineraccount aan."
-    );
-
+    showError("Er is geen trainerprofiel gekoppeld aan dit account.");
     return false;
   }
 
   async function handleLogin(): Promise<void> {
     clearMessages();
-
     if (!validateEmail()) return;
 
     if (!password.trim()) {
@@ -168,70 +145,70 @@ export default function TrainerLoginPage() {
 
     setLoading(true);
 
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: email.trim().toLowerCase(),
-      password,
-    });
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim().toLowerCase(),
+        password,
+      });
 
-    if (error) {
-      console.error("Trainer login fout:", error.message);
+      if (error) {
+        showError("Inloggen mislukt. Controleer je e-mailadres en wachtwoord.");
+        return;
+      }
+
+      const userId = data.user?.id;
+      if (!userId) {
+        showError("Je account kon niet worden gevonden.");
+        return;
+      }
+
+      const result = await getOrRepairTrainerRole(userId);
+      if (!result) return;
+
+      if (result === "admin") {
+        router.replace("/admin");
+        return;
+      }
+
+      router.replace("/trainer-dashboard");
+      router.refresh();
+    } catch {
+      showError("Inloggen lukt nu niet. Probeer het opnieuw.");
+    } finally {
       setLoading(false);
-      showError("Inloggen mislukt. Controleer je e-mailadres en wachtwoord.");
-      return;
     }
-
-    const userId = data.user?.id;
-
-    if (!userId) {
-      setLoading(false);
-      showError("Je account kon niet worden gevonden. Probeer het opnieuw.");
-      return;
-    }
-
-    const result = await getOrRepairTrainerRole(userId);
-
-    setLoading(false);
-
-    if (!result) return;
-
-    if (result === "admin") {
-      window.location.assign("/admin");
-      return;
-    }
-
-    window.location.assign("/trainer-dashboard");
   }
 
   async function handleForgotPassword(): Promise<void> {
     clearMessages();
-
     if (!validateEmail()) return;
 
     setLoading(true);
 
-    const redirectTo =
-      typeof window !== "undefined"
-        ? `${window.location.origin}/trainer-reset-wachtwoord`
-        : undefined;
+    try {
+      const redirectTo =
+        typeof window !== "undefined"
+          ? `${window.location.origin}/trainer-reset-wachtwoord`
+          : undefined;
 
-    const { error } = await supabase.auth.resetPasswordForEmail(
-      email.trim().toLowerCase(),
-      { redirectTo }
-    );
-
-    setLoading(false);
-
-    if (error) {
-      console.error("Wachtwoordherstel fout:", error.message);
-      showError(
-        "De resetlink kon niet worden verstuurd. Probeer het later opnieuw."
+      const { error } = await supabase.auth.resetPasswordForEmail(
+        email.trim().toLowerCase(),
+        { redirectTo }
       );
-      return;
-    }
 
-    setSuccessMessage(
-      "Check je e-mail! We hebben je een link gestuurd om je wachtwoord te herstellen."
-    );
+      if (error) {
+        showError("De resetlink kon niet worden verstuurd.");
+        return;
+      }
+
+      setSuccessMessage(
+        "Check je e-mail! We hebben je een link gestuurd om je wachtwoord te herstellen."
+      );
+    } catch {
+      showError("De resetlink kon niet worden verstuurd.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -251,7 +228,6 @@ export default function TrainerLoginPage() {
     setPassword("");
   }
 
-  /* VERBETERD LAADSCHERM MET GOW!-BRANDING */
   if (checkingSession) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
@@ -271,38 +247,16 @@ export default function TrainerLoginPage() {
   }
 
   const isForgotPassword = mode === "forgot-password";
-
   const body = isForgotPassword
     ? "Vul je e-mailadres in. We sturen je een link om je wachtwoord direct te herstellen."
     : "Beheer je beschikbaarheid, bekijk geboekte trainingen en houd je trainerprofiel up-to-date.";
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* HEADER */}
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <a
-            href="/"
-            aria-label="GowTrain home"
-            className="group inline-flex items-center gap-2"
-          >
-            <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-              GOWTRAIN
-            </span>
-            <span className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1 sm:border-b-[11px] sm:border-l-[9px] sm:border-t-[11px]" />
-          </a>
+      {/* 💡 UNIVERSELE DYNAMISCHE SITE HEADER */}
+      <SiteHeader />
 
-          <a
-            href="/trainer-worden"
-            className="hidden font-display text-base text-white transition hover:text-[#D6FF3F] sm:block"
-          >
-            NOG GEEN ACCOUNT? WORD TRAINER →
-          </a>
-        </div>
-      </header>
-
-      <section className="relative flex flex-1 items-center overflow-hidden py-16 sm:py-20">
-        {/* Achtergronddecoratie */}
+      <section className="relative flex flex-1 items-center overflow-hidden py-10 sm:py-16">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute -right-10 top-1/2 -translate-y-1/2 select-none font-display text-[18rem] leading-none text-[#D6FF3F] opacity-[0.05] sm:text-[28rem] lg:text-[38rem]"
@@ -356,12 +310,12 @@ export default function TrainerLoginPage() {
               <p className="mt-2 text-sm leading-relaxed text-[#B9BEC2]">
                 Meld je gratis aan, stel je uurtarief in en word vindbaar voor spelers in jouw regio.
               </p>
-              <a
+              <Link
                 href="/trainer-worden"
                 className="mt-4 inline-flex font-display text-base text-[#D6FF3F] transition hover:text-white"
               >
                 WORD TRAINER. GOW! →
-              </a>
+              </Link>
             </div>
           </div>
 
@@ -399,7 +353,6 @@ export default function TrainerLoginPage() {
 
               <form onSubmit={handleSubmit} className="mt-7">
                 <div className="space-y-5">
-                  {/* Email */}
                   <div>
                     <label
                       htmlFor="email"
@@ -419,7 +372,6 @@ export default function TrainerLoginPage() {
                     />
                   </div>
 
-                  {/* Password + Show Toggle */}
                   {!isForgotPassword && (
                     <div>
                       <div className="mb-2 flex items-center justify-between">
@@ -451,7 +403,6 @@ export default function TrainerLoginPage() {
                   )}
                 </div>
 
-                {/* Switch Modes */}
                 {!isForgotPassword ? (
                   <div className="mt-4 flex justify-between text-sm">
                     <button
@@ -472,11 +423,10 @@ export default function TrainerLoginPage() {
                   </button>
                 )}
 
-                {/* Submit button */}
                 <button
                   type="submit"
                   disabled={loading}
-                  className="mt-8 flex w-full items-center justify-center gap-3 bg-[#FF4B3E] px-6 py-5 font-display text-xl text-white transition hover:-translate-y-1 hover:bg-[#D6FF3F] hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+                  className="mt-8 flex w-full items-center justify-center gap-3 bg-[#FF4B3E] px-6 py-5 font-display text-xl text-white transition hover:-translate-y-1 hover:bg-[#D6FF3F] hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {loading
                     ? isForgotPassword
@@ -495,12 +445,12 @@ export default function TrainerLoginPage() {
                   <p className="text-sm text-[#B9BEC2]">
                     Nog geen traineraccount bij GowTrain?
                   </p>
-                  <a
+                  <Link
                     href="/trainer-worden"
                     className="mt-3 inline-flex font-display text-lg !text-[#D6FF3F] transition hover:text-white"
                   >
                     WORD TRAINER. GOW! →
-                  </a>
+                  </Link>
                 </div>
               )}
             </div>

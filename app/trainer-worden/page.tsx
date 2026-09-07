@@ -2,7 +2,9 @@
 
 import type { FormEvent } from "react";
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { locations, type LocationOption } from "@/constants/locations";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
@@ -13,13 +15,8 @@ const radiusOptions: number[] = [10, 25, 50, 100];
 function getInitials(name: string): string {
   const parts = name.trim().split(" ").filter(Boolean);
 
-  if (parts.length === 0) {
-    return "GT";
-  }
-
-  if (parts.length === 1) {
-    return parts[0].slice(0, 2).toUpperCase();
-  }
+  if (parts.length === 0) return "GT";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
 
   return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
 }
@@ -60,9 +57,7 @@ export default function TrainerWordenPage() {
   const locationResults = useMemo((): LocationOption[] => {
     const query = locationQuery.trim().toLocaleLowerCase("nl-NL");
 
-    if (query.length < 2) {
-      return [];
-    }
+    if (query.length < 2) return [];
 
     return locations
       .filter((item: LocationOption) => {
@@ -128,7 +123,6 @@ export default function TrainerWordenPage() {
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
     if (!emailRegex.test(email.trim())) {
       setErrorMessage("Vul een geldig e-mailadres in.");
       return;
@@ -186,11 +180,9 @@ export default function TrainerWordenPage() {
     setLoading(false);
 
     if (error) {
-      console.error("Trainer registratie fout:", error.message);
-
       if (error.message.toLowerCase().includes("already registered")) {
         setErrorMessage(
-          "Er bestaat al een account met dit e-mailadres. Log in via de GowTrain-app."
+          "Er bestaat al een account met dit e-mailadres. Log in met je traineraccount."
         );
         return;
       }
@@ -201,10 +193,10 @@ export default function TrainerWordenPage() {
 
     if (!data.session) {
       setSuccessMessage(
-        "Je traineraccount is aangemaakt! Check je e-mail om je adres te bevestigen. Daarna kun je inloggen in de app."
+        "Je traineraccount is aangemaakt! Check je e-mail om je adres te bevestigen. Daarna kun je inloggen."
       );
     } else {
-      setSuccessMessage("Je traineraccount is aangemaakt! Je kunt nu direct inloggen in de app.");
+      setSuccessMessage("Je traineraccount is aangemaakt! Je kunt nu direct inloggen.");
     }
 
     setPassword("");
@@ -213,31 +205,10 @@ export default function TrainerWordenPage() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* HEADER */}
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <a
-            href="/"
-            aria-label="Terug naar GowTrain home"
-            className="group inline-flex items-center gap-2"
-          >
-            <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">
-              GOWTRAIN
-            </span>
-            <span className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent transition-transform duration-200 group-hover:translate-x-1 sm:border-b-[11px] sm:border-l-[9px] sm:border-t-[11px]" />
-          </a>
+      {/* 💡 UNIVERSELE DYNAMISCHE SITE HEADER */}
+      <SiteHeader />
 
-          <a
-            href="/trainer-login"
-            className="hidden font-display text-base text-white transition hover:text-[#D6FF3F] sm:block"
-          >
-            AL TRAINER? LOG IN →
-          </a>
-        </div>
-      </header>
-
-      <section className="relative flex-1 overflow-hidden py-12 sm:py-16 lg:py-20">
-        {/* Achtergronddecoratie */}
+      <section className="relative flex-1 overflow-hidden py-10 sm:py-14">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute -right-12 top-0 select-none font-display text-[15rem] leading-none text-[#D6FF3F] opacity-[0.05] sm:text-[23rem] lg:text-[32rem]"
@@ -271,7 +242,7 @@ export default function TrainerWordenPage() {
                   <div>
                     <h3 className="font-display text-lg text-white">BEPAAL JE EIGEN AGENDA</h3>
                     <p className="mt-1 text-sm text-[#B9BEC2]">
-                      Stel je locaties, uurtarief en beschikbare tijdsloten in via de app. Jij houdt de volledige controle.
+                      Stel je locaties, uurtarief en beschikbare tijdsloten in via je dashboard. Jij houdt de volledige controle.
                     </p>
                   </div>
                 </div>
@@ -295,7 +266,7 @@ export default function TrainerWordenPage() {
                   <div>
                     <h3 className="font-display text-lg text-white">AUTOMATISCHE UITBETALING</h3>
                     <p className="mt-1 text-sm text-[#B9BEC2]">
-                      Betalingen worden vooraf geregeld in de app. Je geld staat na de les direct netjes op je rekening.
+                      Betalingen worden vooraf geregeld op het platform. Je geld staat na de les direct netjes op je rekening.
                     </p>
                   </div>
                 </div>
@@ -393,7 +364,7 @@ export default function TrainerWordenPage() {
                     className="w-full border-2 border-white/25 bg-transparent px-4 py-4 text-white outline-none transition placeholder:text-[#8A8F94] focus:border-[#D6FF3F]"
                   />
                   <p className="mt-2 text-sm text-[#8A8F94]">
-                    Dit zien spelers direct op jouw trainerkaart in de app.
+                    Dit zien spelers direct op jouw trainerkaart op het platform.
                   </p>
                 </div>
 
@@ -470,7 +441,7 @@ export default function TrainerWordenPage() {
                   </div>
                 </fieldset>
 
-                {/* Uurtarief met duidelijke vermelding van de 5% commissie */}
+                {/* Uurtarief */}
                 <div>
                   <label htmlFor="price" className="mb-2 block font-display text-base text-[#FF4B3E]">
                     JOUW UURTARIEF (EXCL. BANENHUUR)
@@ -557,12 +528,12 @@ export default function TrainerWordenPage() {
                   />
                   <span>
                     Ik ga akkoord met de{" "}
-                    <a
+                    <Link
                       href="/privacy"
                       className="font-semibold text-[#D6FF3F] underline underline-offset-4 transition hover:text-white"
                     >
                       privacyverklaring
-                    </a>{" "}
+                    </Link>{" "}
                     en de algemene voorwaarden voor trainers.
                   </span>
                 </label>
@@ -571,7 +542,7 @@ export default function TrainerWordenPage() {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="flex w-full items-center justify-center gap-3 bg-[#FF4B3E] px-6 py-5 font-display text-xl text-white transition hover:-translate-y-1 hover:bg-[#D6FF3F] hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+                  className="flex w-full items-center justify-center gap-3 bg-[#FF4B3E] px-6 py-5 font-display text-xl text-white transition hover:-translate-y-1 hover:bg-[#D6FF3F] hover:text-[#14171A] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {loading ? "PROFIEL MAKEN..." : "MELD JE AAN. GOW!"}
                   {!loading && <span aria-hidden="true">→</span>}
