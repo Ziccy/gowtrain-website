@@ -198,7 +198,9 @@ function isTimelyCancellation(booking: PlayerBooking): boolean {
 function MijnBoekingenContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const issueReportRef = useRef<HTMLDivElement | null>(null);
+
+  // 💡 REF VOOR AUTOMATISCH SCROLLEN NAAR ANNULEER-BEVESTIGING
+  const cancellationRef = useRef<HTMLElement | null>(null);
 
   const isPackageSuccess = searchParams.get("success") === "package";
   const packageIdParam = searchParams.get("package_id");
@@ -525,10 +527,19 @@ function MijnBoekingenContent() {
     }
   }
 
+  // 💡 MET AUTOMATISCHE SCROLL NAAR DE ANNULEER-BEVESTIGING
   function openCancellationConfirmation(booking: PlayerBooking): void {
     clearMessages();
     setPendingIssueBooking(null);
     setPendingCancellation(booking);
+
+    window.setTimeout(() => {
+      cancellationRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+      cancellationRef.current?.focus();
+    }, 50);
   }
 
   function closeCancellationConfirmation(): void {
@@ -703,8 +714,13 @@ function MijnBoekingenContent() {
           {errorMessage && <div role="alert" className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] px-5 py-4 font-semibold text-white">{errorMessage}</div>}
           {successMessage && <div role="status" className="mt-8 border-2 border-[#D6FF3F] bg-[#D6FF3F] px-5 py-5 font-semibold text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E]">{successMessage}</div>}
 
+          {/* 💡 CONFIRMATION DIALOG VOOR ANNULEREN MET AUTOMATISCHE SCROLL & FOCUS */}
           {pendingCancellation && (
-            <section className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white sm:p-6 shadow-[8px_8px_0_0_#14171A]">
+            <section
+              ref={cancellationRef}
+              tabIndex={-1}
+              className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white outline-none sm:p-6 shadow-[8px_8px_0_0_#14171A]"
+            >
               <p className="font-display text-3xl">TRAINING ANNULEREN?</p>
               <p className="mt-3 max-w-2xl text-white/90">
                 {formatDate(pendingCancellation.availability_slots?.starts_at)} om {formatTime(pendingCancellation.availability_slots?.starts_at)} bij {pendingCancellation.trainers?.name || "je trainer"}.

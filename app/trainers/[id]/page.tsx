@@ -7,6 +7,8 @@ import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
+type OfferTab = "slots" | "packages";
+
 type Trainer = {
   id: string;
   initials: string;
@@ -129,6 +131,9 @@ export default function TrainerDetailPage() {
   const [slots, setSlots] = useState<AvailabilitySlot[]>([]);
   const [packages, setPackages] = useState<TrainerPackage[]>([]);
 
+  // TAB SWITCHER FOR LESSONS VS PACKAGES
+  const [activeOfferTab, setActiveOfferTab] = useState<OfferTab>("slots");
+
   const [loading, setLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string>("");
 
@@ -186,7 +191,7 @@ export default function TrainerDetailPage() {
         Date.now() + 2 * 60 * 60 * 1000
       ).toISOString();
 
-      // 2. Eerstvolgende 2 losse tijdsloten ophalen
+      // 2. Losse tijdsloten ophalen
       const { data: slotData } = await supabase
         .from("availability_slots")
         .select(
@@ -207,7 +212,7 @@ export default function TrainerDetailPage() {
         .eq("status", "available")
         .gte("starts_at", minBookingTime)
         .order("starts_at", { ascending: true })
-        .limit(2);
+        .limit(3);
 
       setSlots((slotData ?? []) as unknown as AvailabilitySlot[]);
 
@@ -290,7 +295,6 @@ export default function TrainerDetailPage() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* 💡 SLIMME, DYNAMISCHE SITE HEADER */}
       <SiteHeader />
 
       {/* PROFIEL BODY */}
@@ -361,23 +365,193 @@ export default function TrainerDetailPage() {
             </div>
           </section>
 
-          {/* LESPAKKETTEN (ALS ZE ER ZIJN) */}
-          {packages.length > 0 && (
-            <section className="mt-10 border-b-2 border-white/20 pb-10">
+          {/* AANBOD TAB SWITCHER */}
+          <div className="mt-8 flex flex-wrap items-center gap-3 border-b-2 border-white/20 pb-4">
+            <button
+              type="button"
+              onClick={() => setActiveOfferTab("slots")}
+              className={`border-2 px-5 py-3 font-display text-base sm:text-lg transition ${
+                activeOfferTab === "slots"
+                  ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A] shadow-[4px_4px_0_0_#FF4B3E]"
+                  : "border-white/30 text-white hover:border-white"
+              }`}
+            >
+              LOSSE LESSEN &amp; AGENDA
+            </button>
+
+            {packages.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setActiveOfferTab("packages")}
+                className={`border-2 px-5 py-3 font-display text-base sm:text-lg transition ${
+                  activeOfferTab === "packages"
+                    ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A] shadow-[4px_4px_0_0_#FF4B3E]"
+                    : "border-white/30 text-white hover:border-white"
+                }`}
+              >
+                COMPLETE TRAJECTEN ({packages.length})
+              </button>
+            )}
+          </div>
+
+          {/* TAB 1: LOSSE LESSEN & HOOFD-AGENDA (STANDAARD ZICHTBAAR) */}
+          {activeOfferTab === "slots" && (
+            <div className="mt-8 grid gap-10 lg:grid-cols-2 lg:items-start">
+              
+              {/* LINKERKOLOM: PAKKET BANNER + OVER DE TRAINER */}
+              <div className="space-y-6">
+                
+                {/* 💡 MOOI INKTZWART BLOK MET GELE RAND BOVEN 'OVER DE TRAINER' */}
+                {packages.length > 0 && (
+                  <div className="border-2 border-[#D6FF3F] bg-[#14171A] p-5 text-white shadow-[6px_6px_0_0_#D6FF3F]">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                      <div>
+                        <span className="bg-[#D6FF3F] px-2.5 py-0.5 font-display text-[10px] text-[#14171A]">
+                          MEESTE VOORDEEL
+                        </span>
+                        <p className="font-display text-2xl text-[#D6FF3F] mt-2">
+                          COMPLETE LESPAKKETTEN &amp; TRAJECTEN
+                        </p>
+                        <p className="text-xs text-[#B9BEC2] mt-1 leading-relaxed">
+                          {firstName} biedt ook {packages.length} complete {packages.length === 1 ? "lespakket" : "lespakketten"} aan voor meerdere weken.
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setActiveOfferTab("packages")}
+                        className="shrink-0 bg-[#D6FF3F] px-5 py-3 font-display text-sm !text-[#14171A] hover:bg-white transition shadow-[3px_3px_0_0_#FF4B3E]"
+                      >
+                        BEKIJK TRAJECTEN →
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* OVER DE TRAINER */}
+                <section className="border-2 border-white/20 bg-[#14171A] p-6 sm:p-8 shadow-[6px_6px_0_0_#FF4B3E]">
+                  <p className="font-display text-lg text-[#FF4B3E]">OVER {trainer.name.toUpperCase()}</p>
+                  <h2 className="mt-1 font-display text-4xl leading-[0.85] sm:text-5xl">
+                    JOUW VOLGENDE STAP OP DE BAAN.
+                  </h2>
+
+                  <div className="mt-5 border-l-2 border-[#D6FF3F] pl-4">
+                    <p className="font-display text-xl text-[#D6FF3F]">
+                      {trainer.focus}
+                    </p>
+                  </div>
+
+                  <div className="mt-5 text-base leading-relaxed text-[#D7D9DA]">
+                    {trainer.bio ? (
+                      <p className="whitespace-pre-line">{trainer.bio}</p>
+                    ) : (
+                      <p className="italic text-[#8A8F94]">
+                        {trainer.name} heeft nog geen uitgebreide biografie ingevuld.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="mt-8 border-t border-white/20 pt-5">
+                    <p className="font-display text-xs text-[#FF4B3E]">TRAININGSREGIO</p>
+                    <p className="mt-1 font-display text-2xl text-white">
+                      {getLocation(trainer)}
+                    </p>
+                  </div>
+                </section>
+
+              </div>
+
+              {/* RECHTERKOLOM: BOEKINGSOPTIES (DIRECT BOEKEN VOOROP!) */}
+              <section className="space-y-6">
+                
+                {/* HOOFD CTA KNOP */}
+                <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] p-6 text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E]">
+                  <p className="font-display text-xs text-[#FF4B3E]">DIRECT BOEKEN</p>
+                  <h3 className="mt-1 font-display text-3xl">KIES EEN DATUM & TIJD</h3>
+                  <p className="mt-2 text-xs font-semibold text-[#14171A]/80 leading-relaxed">
+                    Bekijk alle beschikbare dagen, tijden en locaties in de volledige agenda van {firstName}.
+                  </p>
+
+                  <Link
+                    href={`/boeken/${trainer.id}`}
+                    className="mt-5 flex items-center justify-center gap-2 bg-[#14171A] px-6 py-4 font-display text-xl !text-[#D6FF3F] hover:bg-white hover:!text-[#14171A] transition shadow-[4px_4px_0_0_#FF4B3E]"
+                  >
+                    BEKIJK ALLE DAGEN & TIJDEN. GOW! →
+                  </Link>
+                </div>
+
+                {/* LOSSE BINNENKORT BESCHIKBARE LESSEN */}
+                <div>
+                  <p className="font-display text-sm text-[#FF4B3E]">EERSTVOLGENDE LOSSE SLOTS</p>
+
+                  {slots.length > 0 ? (
+                    <div className="mt-3 space-y-3">
+                      {slots.map((slot) => (
+                        <article
+                          key={slot.id}
+                          className="group border-2 border-white bg-white p-2.5 text-[#14171A] shadow-[4px_4px_0_0_#FF4B3E] transition hover:-translate-y-0.5"
+                        >
+                          <div className="bg-[#14171A] p-4 text-white">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <span className="bg-[#D6FF3F] px-2 py-0.5 font-display text-[11px] text-[#14171A]">
+                                  {formatDate(slot.starts_at)}
+                                </span>
+                                <p className="mt-2 font-display text-2xl">
+                                  {formatTime(slot.starts_at)} – {formatTime(slot.ends_at)}
+                                </p>
+                              </div>
+
+                              <div className="text-right">
+                                <p className="font-display text-2xl text-[#D6FF3F]">
+                                  {formatEuro(slot.price_cents, slot.currency)}
+                                </p>
+                                <p className="text-[9px] text-[#8A8F94]">INCL. BAANHUUR</p>
+                              </div>
+                            </div>
+
+                            <div className="mt-3 flex items-center justify-between gap-2 border-t border-white/20 pt-3">
+                              <p className="text-xs text-[#B9BEC2] truncate">
+                                {getVenueLabel(slot.venue)}
+                              </p>
+
+                              <Link
+                                href={`/boeken/${trainer.id}?slot=${slot.id}`}
+                                className="shrink-0 bg-[#FF4B3E] px-4 py-2 font-display text-sm text-white hover:bg-[#D6FF3F] hover:!text-[#14171A] transition"
+                              >
+                                GOW! →
+                              </Link>
+                            </div>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-3 border-2 border-white/20 bg-[#14171A] p-5 text-center text-[#B9BEC2]">
+                      <p className="font-display text-lg text-[#D6FF3F]">GEEN LOSSE SLOTS DIT WEEKEND.</p>
+                      <p className="mt-1 text-xs">Klik hierboven op 'Bekijk Alle Dagen & Tijden' voor alle opties.</p>
+                    </div>
+                  )}
+                </div>
+
+              </section>
+
+            </div>
+          )}
+
+          {/* TAB 2: COMPLETE LESPAKKETTEN & TRAJECTEN */}
+          {activeOfferTab === "packages" && packages.length > 0 && (
+            <div className="mt-8 space-y-6">
               <div className="flex items-center gap-3">
                 <span className="bg-[#D6FF3F] px-3 py-1 font-display text-xs text-[#14171A]">
                   MEESTE VOORDEEL
                 </span>
                 <p className="font-display text-base text-[#D6FF3F]">
-                  COMPLETE TRAJECTEN
+                  COMPLETE TRAJECTEN VAN {firstName}
                 </p>
               </div>
 
-              <h2 className="mt-2 font-display text-4xl sm:text-5xl">
-                LESPAKKETTEN VAN {firstName}.
-              </h2>
-
-              <div className="mt-6 grid gap-6 md:grid-cols-2">
+              <div className="grid gap-6 md:grid-cols-2">
                 {packages.map((pkg) => {
                   const perLessonCents = Math.round(pkg.price_cents / pkg.lesson_count);
 
@@ -427,119 +601,8 @@ export default function TrainerDetailPage() {
                   );
                 })}
               </div>
-            </section>
+            </div>
           )}
-
-          {/* 💡 HOOFDINHOUD: TWEEDELING IN BALANS */}
-          <div className="mt-10 grid gap-10 lg:grid-cols-2 lg:items-start">
-            
-            {/* LINKERKOLOM: OVER DE TRAINER */}
-            <section className="border-2 border-white/20 bg-[#14171A] p-6 sm:p-8 shadow-[6px_6px_0_0_#FF4B3E]">
-              <p className="font-display text-lg text-[#FF4B3E]">OVER {trainer.name.toUpperCase()}</p>
-              <h2 className="mt-1 font-display text-4xl leading-[0.85] sm:text-5xl">
-                JOUW VOLGENDE STAP OP DE BAAN.
-              </h2>
-
-              <div className="mt-5 border-l-2 border-[#D6FF3F] pl-4">
-                <p className="font-display text-xl text-[#D6FF3F]">
-                  {trainer.focus}
-                </p>
-              </div>
-
-              <div className="mt-5 text-base leading-relaxed text-[#D7D9DA]">
-                {trainer.bio ? (
-                  <p className="whitespace-pre-line">{trainer.bio}</p>
-                ) : (
-                  <p className="italic text-[#8A8F94]">
-                    {trainer.name} heeft nog geen uitgebreide biografie ingevuld.
-                  </p>
-                )}
-              </div>
-
-              <div className="mt-8 border-t border-white/20 pt-5">
-                <p className="font-display text-xs text-[#FF4B3E]">TRAININGSREGIO</p>
-                <p className="mt-1 font-display text-2xl text-white">
-                  {getLocation(trainer)}
-                </p>
-              </div>
-            </section>
-
-            {/* RECHTERKOLOM: BOEKINGSOPTIES (KALENDER KNOP DRECT ZICHTBAAR BOVENAAN!) */}
-            <section className="space-y-6">
-              
-              {/* 💡 HOOFD CTA KNOP: DIRECT ZICHTBAAR BOVENAAN HET BOEKINGSBLOK */}
-              <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] p-6 text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E]">
-                <p className="font-display text-xs text-[#FF4B3E]">DIRECT BOEKEN</p>
-                <h3 className="mt-1 font-display text-3xl">KIES EEN DATUM & TIJD</h3>
-                <p className="mt-2 text-xs font-semibold text-[#14171A]/80 leading-relaxed">
-                  Bekijk alle beschikbare dagen, tijden en locaties in de volledige agenda van {firstName}.
-                </p>
-
-                <Link
-                  href={`/boeken/${trainer.id}`}
-                  className="mt-5 flex items-center justify-center gap-2 bg-[#14171A] px-6 py-4 font-display text-xl !text-[#D6FF3F] hover:bg-white hover:!text-[#14171A] transition shadow-[4px_4px_0_0_#FF4B3E]"
-                >
-                  BEKIJK ALLE DAGEN & TIJDEN. GOW! →
-                </Link>
-              </div>
-
-              {/* LOSSE BINNENKORT BESCHIKBARE LESSEN */}
-              <div>
-                <p className="font-display text-sm text-[#FF4B3E]">EERSTVOLGENDE LOSSE SLOTS</p>
-
-                {slots.length > 0 ? (
-                  <div className="mt-3 space-y-3">
-                    {slots.map((slot) => (
-                      <article
-                        key={slot.id}
-                        className="group border-2 border-white bg-white p-2.5 text-[#14171A] shadow-[4px_4px_0_0_#FF4B3E] transition hover:-translate-y-0.5"
-                      >
-                        <div className="bg-[#14171A] p-4 text-white">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <span className="bg-[#D6FF3F] px-2 py-0.5 font-display text-[11px] text-[#14171A]">
-                                {formatDate(slot.starts_at)}
-                              </span>
-                              <p className="mt-2 font-display text-2xl">
-                                {formatTime(slot.starts_at)} – {formatTime(slot.ends_at)}
-                              </p>
-                            </div>
-
-                            <div className="text-right">
-                              <p className="font-display text-2xl text-[#D6FF3F]">
-                                {formatEuro(slot.price_cents, slot.currency)}
-                              </p>
-                              <p className="text-[9px] text-[#8A8F94]">INCL. BAANHUUR</p>
-                            </div>
-                          </div>
-
-                          <div className="mt-3 flex items-center justify-between gap-2 border-t border-white/20 pt-3">
-                            <p className="text-xs text-[#B9BEC2] truncate">
-                              {getVenueLabel(slot.venue)}
-                            </p>
-
-                            <Link
-                              href={`/boeken/${trainer.id}?slot=${slot.id}`}
-                              className="shrink-0 bg-[#FF4B3E] px-4 py-2 font-display text-sm text-white hover:bg-[#D6FF3F] hover:!text-[#14171A] transition"
-                            >
-                              GOW! →
-                            </Link>
-                          </div>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="mt-3 border-2 border-white/20 bg-[#14171A] p-5 text-center text-[#B9BEC2]">
-                    <p className="font-display text-lg text-[#D6FF3F]">GEEN LOSSE SLOTS DIT WEEKEND.</p>
-                    <p className="mt-1 text-xs">Klik hierboven op 'Bekijk Alle Dagen & Tijden' voor alle opties.</p>
-                  </div>
-                )}
-              </div>
-
-            </section>
-
-          </div>
 
         </div>
       </section>

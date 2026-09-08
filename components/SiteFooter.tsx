@@ -59,7 +59,7 @@ export default function SiteFooter({
 
             {/* 🔒 STRIPE & iDEAL TRUST BADGE */}
             <div className="mt-2 flex items-center gap-3 border-2 border-white/20 bg-white/5 px-4 py-2.5">
-              <span className="text-base">🔒</span>
+              
               <span className="font-display text-xs tracking-wider text-[#D6FF3F]">
                 100% VEILIG AFREKENEN VIA STRIPE &amp; iDEAL
               </span>

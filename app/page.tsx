@@ -302,7 +302,7 @@ export default function Home() {
                   href="/trainers"
                   className="inline-flex items-center justify-center gap-4 bg-[#FF4B3E] px-7 py-4 font-display text-xl text-white transition duration-200 hover:-translate-y-1 hover:bg-[#D6FF3F] hover:!text-[#14171A]"
                 >
-                  BEKIJK ALLE TRAINERS
+                  BEKIJK LESAANBOD. GOW!
                   <span aria-hidden="true" className="text-inherit">→</span>
                 </a>
 

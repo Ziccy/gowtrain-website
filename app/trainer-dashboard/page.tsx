@@ -176,6 +176,24 @@ function getBookingTime(booking: Booking): number {
   return startsAt ? new Date(startsAt).getTime() : Number.MAX_SAFE_INTEGER;
 }
 
+/**
+ * 💡 HAALT EXACTE DATUM IN AMSTERDAMSE TIJDZONE OP OM DATUMFILTERING 100% BETROUWBAAR TE MAKEN
+ */
+function getAmsterdamSlotDate(isoDate?: string): string {
+  if (!isoDate) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Amsterdam",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(isoDate));
+
+  const getPart = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((part) => part.type === type)?.value ?? "00";
+
+  return `${getPart("year")}-${getPart("month")}-${getPart("day")}`;
+}
+
 function canTrainerCancelBooking(booking: Booking): boolean {
   if (booking.status !== "confirmed") return false;
   const startsAt = booking.availability_slots?.starts_at;
@@ -257,18 +275,20 @@ export default function TrainerDashboardPage() {
 
   const stripeHasStarted = Boolean(trainerAccount?.stripe_account_id);
 
+  // 💡 GEFILERDE BOEKINGEN MET GEFIXTE DATUM-VERGELIJKING
   const bookingSections = useMemo((): BookingSection[] => {
     let sortedBookings = [...bookings].sort(
       (first, second) => getBookingTime(first) - getBookingTime(second)
     );
 
-    if (startDateFilter) {
-      const startMs = new Date(startDateFilter).getTime();
-      sortedBookings = sortedBookings.filter((b) => getBookingTime(b) >= startMs);
-    }
-    if (endDateFilter) {
-      const endMs = new Date(endDateFilter).setHours(23, 59, 59, 999);
-      sortedBookings = sortedBookings.filter((b) => getBookingTime(b) <= endMs);
+    // DATUMRANGE FILTER
+    if (startDateFilter || endDateFilter) {
+      sortedBookings = sortedBookings.filter((b) => {
+        const slotDate = getAmsterdamSlotDate(b.availability_slots?.starts_at || b.created_at);
+        if (startDateFilter && slotDate < startDateFilter) return false;
+        if (endDateFilter && slotDate > endDateFilter) return false;
+        return true;
+      });
     }
 
     if (bookingFilter !== "all") {
@@ -689,7 +709,7 @@ export default function TrainerDashboardPage() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* 💡 DYNAMISCHE SITE HEADER */}
+      {/* HEADER */}
       <SiteHeader />
 
       {/* CONTENT */}
@@ -705,7 +725,6 @@ export default function TrainerDashboardPage() {
               </h1>
             </div>
 
-            {/* 💡 PROFIEL BEWERKEN, BOEKINGEN & VERVERS KNOPPEN IN HOOFDBANNER */}
             <div className="flex flex-wrap items-center gap-3 sm:gap-4">
               <Link
                 href="/trainer-profiel-bewerken"
@@ -955,17 +974,34 @@ export default function TrainerDashboardPage() {
                   ))}
                 </div>
 
+                {/* 💡 GEFIXTE DATUMPRIKKER FILTER (VAN EN TOT) */}
                 <div className="flex items-center gap-2 border-t border-white/10 pt-2 sm:border-t-0 sm:pt-0 sm:border-l sm:border-white/20 sm:pl-3">
                   <div className="flex items-center gap-1">
                     <span className="font-display text-[10px] text-[#D6FF3F]">VAN:</span>
-                    <input type="date" value={startDateFilter} onChange={(e) => setStartDateFilter(e.target.value)} className="border-2 border-white/30 bg-[#14171A] px-2 py-1 font-display text-xs text-white outline-none focus:border-[#D6FF3F]" />
+                    <input
+                      type="date"
+                      value={startDateFilter}
+                      onChange={(e) => setStartDateFilter(e.target.value)}
+                      className="border-2 border-white/30 bg-[#14171A] px-2 py-1 font-display text-xs text-white outline-none focus:border-[#D6FF3F] [color-scheme:dark]"
+                    />
                   </div>
                   <div className="flex items-center gap-1">
                     <span className="font-display text-[10px] text-[#D6FF3F]">TOT:</span>
-                    <input type="date" value={endDateFilter} onChange={(e) => setEndDateFilter(e.target.value)} className="border-2 border-white/30 bg-[#14171A] px-2 py-1 font-display text-xs text-white outline-none focus:border-[#D6FF3F]" />
+                    <input
+                      type="date"
+                      value={endDateFilter}
+                      onChange={(e) => setEndDateFilter(e.target.value)}
+                      className="border-2 border-white/30 bg-[#14171A] px-2 py-1 font-display text-xs text-white outline-none focus:border-[#D6FF3F] [color-scheme:dark]"
+                    />
                   </div>
                   {(startDateFilter || endDateFilter) && (
-                    <button type="button" onClick={() => { setStartDateFilter(""); setEndDateFilter(""); }} className="border border-[#FF4B3E] px-2 py-1 font-display text-[10px] text-[#FF4B3E] hover:bg-[#FF4B3E] hover:text-white">RESET</button>
+                    <button
+                      type="button"
+                      onClick={() => { setStartDateFilter(""); setEndDateFilter(""); }}
+                      className="border border-[#FF4B3E] px-2 py-1 font-display text-[10px] text-[#FF4B3E] hover:bg-[#FF4B3E] hover:text-white"
+                    >
+                      RESET
+                    </button>
                   )}
                 </div>
               </div>

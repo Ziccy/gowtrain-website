@@ -91,11 +91,39 @@ function formatDate(value: Date): string {
     .toUpperCase();
 }
 
+function formatPreviewDate(value: Date): string {
+  return new Intl.DateTimeFormat("nl-NL", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  })
+    .format(value)
+    .replace(".", "")
+    .toUpperCase();
+}
+
 function formatTime(value: Date): string {
   return new Intl.DateTimeFormat("nl-NL", {
     hour: "2-digit",
     minute: "2-digit",
   }).format(value);
+}
+
+function formatEuroFromInput(value: string): string {
+  const parsedValue = Number(value.replace(",", "."));
+  if (
+    !value.trim() ||
+    Number.isNaN(parsedValue) ||
+    !Number.isFinite(parsedValue) ||
+    parsedValue <= 0
+  ) {
+    return "–";
+  }
+
+  return new Intl.NumberFormat("nl-NL", {
+    style: "currency",
+    currency: "EUR",
+  }).format(parsedValue);
 }
 
 function getVenueLabel(venue: Venue): string {
@@ -138,7 +166,7 @@ export default function TrainerSlotToevoegenPage() {
     toDateInputValue(initialDate)
   );
 
-  // 💡 CUSTOM TIJDPRIKER STATE (UUR & KWARTIER)
+  // CUSTOM TIJDPRIKER STATE (UUR & KWARTIER)
   const [selectedHour, setSelectedHour] = useState<string>("18");
   const [selectedMinute, setSelectedMinute] = useState<string>("00");
 
@@ -176,6 +204,8 @@ export default function TrainerSlotToevoegenPage() {
   const selectedVenue = useMemo(() => {
     return venues.find((venue) => venue.id === selectedVenueId) ?? null;
   }, [selectedVenueId, venues]);
+
+  const formattedPrice = useMemo(() => formatEuroFromInput(price), [price]);
 
   /* SLIMME DUBBELE FILTERING: STAD | REGIO | REST */
   const { cityVenues, nearbyVenues, otherVenues, searchVenues } = useMemo(() => {
@@ -623,37 +653,36 @@ export default function TrainerSlotToevoegenPage() {
                   </div>
                 </fieldset>
 
-                {/* Datum */}
-                <div className="mt-8">
-                  <label htmlFor="date" className="mb-2 block font-display text-base text-[#FF4B3E]">
-                    DATUM
-                  </label>
-                  <input
-                    id="date"
-                    type="date"
-                    value={dateValue}
-                    min={toDateInputValue(new Date())}
-                    disabled={saving}
-                    onChange={(e) => {
-                      clearMessages();
-                      setDateValue(e.target.value);
-                    }}
-                    className="w-full border-2 border-white/25 bg-transparent px-4 py-4 text-white outline-none transition [color-scheme:dark] focus:border-[#D6FF3F]"
-                  />
-                </div>
+                {/* 💡 DATUM EN STARTTIJD NAAST ELKAAR IN EEN STAKKE 2-KOLOMS GRID */}
+                <div className="mt-8 grid gap-6 sm:grid-cols-2 sm:items-start">
+                  
+                  {/* DATUM */}
+                  <div>
+                    <label htmlFor="date" className="mb-2 block font-display text-base text-[#FF4B3E]">
+                      DATUM
+                    </label>
+                    <input
+                      id="date"
+                      type="date"
+                      value={dateValue}
+                      min={toDateInputValue(new Date())}
+                      disabled={saving}
+                      onChange={(e) => {
+                        clearMessages();
+                        setDateValue(e.target.value);
+                      }}
+                      className="h-[52px] w-full border-2 border-white/25 bg-transparent px-4 font-display text-base text-white outline-none transition [color-scheme:dark] focus:border-[#D6FF3F]"
+                    />
+                  </div>
 
-                {/* 💡 CUSTOM KWARTIER TIJDPRIKER (ONMOGELIJK OM VERKEERDE MINUTEN TE KIEZEN) */}
-                <div className="mt-8">
-                  <label className="mb-2 block font-display text-base text-[#FF4B3E]">
-                    STARTTIJD (PER KWARTIER)
-                  </label>
+                  {/* STARTTIJD (PER KWARTIER) */}
+                  <div>
+                    <label className="mb-2 block font-display text-base text-[#FF4B3E]">
+                      STARTTIJD (PER KWARTIER)
+                    </label>
 
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    {/* UUR SELECTIE */}
-                    <div>
-                      <span className="block font-display text-xs text-[#D6FF3F] mb-1.5 uppercase">
-                        KIES UUR
-                      </span>
+                    <div className="grid grid-cols-[1.2fr_1fr] gap-2 h-[52px]">
+                      {/* UUR SELECTIE */}
                       <select
                         value={selectedHour}
                         disabled={saving}
@@ -661,7 +690,7 @@ export default function TrainerSlotToevoegenPage() {
                           clearMessages();
                           setSelectedHour(e.target.value);
                         }}
-                        className="w-full border-2 border-white/25 bg-[#14171A] px-4 py-3.5 font-display text-lg text-white outline-none focus:border-[#D6FF3F]"
+                        className="h-full w-full border-2 border-white/25 bg-[#14171A] px-3 font-display text-base text-white outline-none focus:border-[#D6FF3F]"
                       >
                         {hoursOptions.map((h) => (
                           <option key={h} value={h}>
@@ -669,14 +698,9 @@ export default function TrainerSlotToevoegenPage() {
                           </option>
                         ))}
                       </select>
-                    </div>
 
-                    {/* KWARTIER KNOPPEN */}
-                    <div>
-                      <span className="block font-display text-xs text-[#D6FF3F] mb-1.5 uppercase">
-                        KIES KWARTIER
-                      </span>
-                      <div className="grid grid-cols-4 gap-1.5">
+                      {/* KWARTIER KNOPPEN (2x2 GRID) */}
+                      <div className="grid grid-cols-2 gap-1 h-full">
                         {minuteOptions.map((m) => (
                           <button
                             key={m}
@@ -686,7 +710,7 @@ export default function TrainerSlotToevoegenPage() {
                               clearMessages();
                               setSelectedMinute(m);
                             }}
-                            className={`border-2 py-3 font-display text-base transition ${
+                            className={`border-2 font-display text-xs transition ${
                               selectedMinute === m
                                 ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A] font-bold"
                                 : "border-white/30 text-white hover:border-white"
@@ -699,7 +723,7 @@ export default function TrainerSlotToevoegenPage() {
                     </div>
                   </div>
 
-                  <p className="mt-3 text-xs text-[#B9BEC2]">
+                  <p className="text-xs text-[#B9BEC2] sm:col-span-2">
                     Gekozen starttijd: <span className="font-display text-sm text-[#D6FF3F]">{selectedHour}:{selectedMinute} UUR</span>
                   </p>
                 </div>
@@ -926,6 +950,82 @@ export default function TrainerSlotToevoegenPage() {
                       className="w-full bg-transparent px-4 py-4 text-white outline-none placeholder:text-[#8A8F94]"
                     />
                   </div>
+                </div>
+
+                {/* 💡 CONTROLEER JE MOMENT PREVIEW KAART */}
+                <div className="mt-10 border-2 border-white/25 bg-white/5">
+                  <div className="flex items-center justify-between border-b-2 border-white/15 px-5 py-4 sm:px-6">
+                    <div>
+                      <p className="font-display text-sm text-[#D6FF3F]">CONTROLEER JE MOMENT</p>
+                      <p className="mt-1 text-sm text-[#B9BEC2]">Dit zien spelers voordat ze boeken.</p>
+                    </div>
+                    <span className="font-display text-sm text-[#FF4B3E]">PREVIEW</span>
+                  </div>
+
+                  {startDateTime && endDateTime ? (
+                    <div className="p-5 sm:p-6">
+                      <div className="flex flex-col gap-4 border-b-2 border-white/15 pb-5 sm:flex-row sm:items-end sm:justify-between">
+                        <div>
+                          <p className="font-display text-xl text-white sm:text-2xl">
+                            {formatPreviewDate(startDateTime)}
+                          </p>
+                          <p className="mt-1 text-sm font-semibold uppercase tracking-wide text-[#8A8F94]">
+                            {selectedSport}training
+                          </p>
+                        </div>
+
+                        <p className="font-display text-4xl leading-none text-[#D6FF3F] sm:text-5xl">
+                          {formatTime(startDateTime)}
+                          <span className="mx-2 text-white/35">–</span>
+                          {formatTime(endDateTime)}
+                        </p>
+                      </div>
+
+                      <div className="grid gap-4 border-b-2 border-white/15 py-5 sm:grid-cols-3">
+                        <div>
+                          <p className="font-display text-xs text-[#8A8F94]">DUUR</p>
+                          <p className="mt-2 font-display text-xl text-white">{selectedDuration} MIN</p>
+                        </div>
+
+                        <div>
+                          <p className="font-display text-xs text-[#8A8F94]">GROEP</p>
+                          <p className="mt-2 font-display text-xl text-white">MAX. {maxParticipants}</p>
+                          <p className="mt-1 text-xs font-semibold text-[#B9BEC2]">
+                            {maxParticipants === 1 ? "1 speler" : `${maxParticipants} spelers`}
+                          </p>
+                        </div>
+
+                        <div>
+                          <p className="font-display text-xs text-[#8A8F94]">TOTAALPRIJS</p>
+                          <p className="mt-2 font-display text-xl text-[#D6FF3F]">{formattedPrice}</p>
+                          <p className="mt-1 text-xs font-semibold text-[#B9BEC2]">Inclusief baanhuur</p>
+                        </div>
+                      </div>
+
+                      <div className="pt-5">
+                        <p className="font-display text-xs text-[#8A8F94]">LOCATIE</p>
+                        {selectedVenue ? (
+                          <div className="mt-3 flex items-start gap-3">
+                            <div className="mt-1 h-3 w-3 shrink-0 bg-[#FF4B3E]" />
+                            <div>
+                              <p className="font-display text-lg leading-tight text-white">
+                                {getVenueLabel(selectedVenue)}
+                              </p>
+                              <p className="mt-2 text-sm font-semibold leading-relaxed text-[#B9BEC2]">
+                                {selectedVenue.address_line}, {selectedVenue.city}
+                              </p>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-sm text-[#B9BEC2]">Kies nog een trainingslocatie.</p>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-5 sm:p-6">
+                      <p className="text-sm font-semibold text-[#B9BEC2]">Kies een geldige datum en starttijd.</p>
+                    </div>
+                  )}
                 </div>
 
                 {/* SUBMIT BUTTON */}

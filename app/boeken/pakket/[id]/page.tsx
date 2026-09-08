@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
@@ -151,7 +152,6 @@ export default function PackageBookingPage() {
         fullName: profile.full_name?.trim() || user.email.split("@")[0],
       });
 
-      // Lespakket details ophalen uit Supabase
       const { data: pkgData, error: pkgError } = await supabase
         .from("trainer_packages")
         .select(
@@ -189,22 +189,19 @@ export default function PackageBookingPage() {
         .single();
 
       if (pkgError || !pkgData) {
-        console.error("Lespakket ophalen fout:", pkgError?.message);
         setPkg(null);
         setErrorMessage("Dit lespakket is niet meer beschikbaar.");
         return;
       }
 
       setPkg(pkgData as unknown as PackageDetail);
-    } catch (error) {
-      console.error("Onverwachte lespakketfout:", error);
+    } catch {
       setErrorMessage("Het lespakket kon niet worden geladen.");
     } finally {
       setLoading(false);
     }
   }
 
-  // Berekent de datums van alle lessen in het traject
   const lessonDates = useMemo(() => {
     if (!pkg) return [];
     const dates: Array<{ number: number; date: Date }> = [];
@@ -219,7 +216,6 @@ export default function PackageBookingPage() {
     return dates;
   }, [pkg]);
 
-  /* 💡 GEAANGEPASTE CHECKOUT FUNCTIE: STUURT DIRECT DOOR NAAR DE EMBEDDED PAGINA */
   async function handlePackageCheckout(): Promise<void> {
     if (!pkg || !player) return;
 
@@ -227,16 +223,13 @@ export default function PackageBookingPage() {
     setErrorMessage("");
 
     try {
-      // Direct doorsturen naar de ingebouwde GowTrain checkout pagina
       window.location.href = `/boeken/checkout?packageId=${pkg.id}`;
-    } catch (error) {
-      console.error("Package checkout fout:", error);
+    } catch {
       setErrorMessage("De betaalpagina kon niet worden geopend.");
       setBooking(false);
     }
   }
 
-  /* BRANDBOOK BRANDED LOADER */
   if (loading) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
@@ -255,22 +248,10 @@ export default function PackageBookingPage() {
     );
   }
 
-  /* PAKKET NIET BESCHIKBAAR */
   if (!pkg) {
     return (
       <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-        <header className="border-b border-white/15">
-          <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-            <Link href="/" aria-label="GowTrain home" className="group inline-flex items-center gap-2">
-              <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">GOWTRAIN</span>
-              <span className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
-            </Link>
-
-            <Link href="/trainers" className="font-display text-sm text-white hover:text-[#D6FF3F]">
-              ← TRAINERS
-            </Link>
-          </div>
-        </header>
+        <SiteHeader />
 
         <section className="flex flex-1 items-center justify-center px-5 py-16">
           <div className="w-full max-w-xl border-2 border-white bg-white p-3 text-[#14171A] shadow-[10px_10px_0_0_#FF4B3E]">
@@ -296,42 +277,27 @@ export default function PackageBookingPage() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* HEADER */}
-      <header className="border-b border-white/15">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <Link href="/" aria-label="GowTrain home" className="group inline-flex items-center gap-2">
-            <span className="font-display text-3xl leading-none text-[#D6FF3F] sm:text-4xl">GOWTRAIN</span>
-            <span className="mt-1 h-0 w-0 border-b-[9px] border-l-[8px] border-t-[9px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
-          </Link>
-
-          <div className="flex items-center gap-4">
-            {pkg.trainer && (
-              <Link href={`/trainers/${pkg.trainer.id}`} className="font-display text-sm text-white hover:text-[#D6FF3F]">
-                ← PROFIEL {pkg.trainer.name.toUpperCase()}
-              </Link>
-            )}
-          </div>
-        </div>
-      </header>
+      {/* 💡 UNIVERSELE DYNAMISCHE SITE HEADER */}
+      <SiteHeader />
 
       {/* CONTENT */}
-      <section className="relative flex-1 overflow-hidden py-12 sm:py-16 lg:py-20">
+      <section className="relative flex-1 overflow-hidden py-10 sm:py-14">
         <div aria-hidden="true" className="pointer-events-none absolute -right-16 -top-20 select-none font-display text-[17rem] leading-none text-[#D6FF3F] opacity-[0.04]">
           GOW
         </div>
 
-        <div className="relative mx-auto max-w-6xl px-5 sm:px-8">
+        <div className="relative mx-auto max-w-7xl px-5 sm:px-8">
           
           {/* HEADER BAR */}
-          <div className="flex flex-col justify-between gap-7 border-b-2 border-white/20 pb-8 lg:flex-row lg:items-end">
+          <div className="flex flex-col justify-between gap-6 border-b-2 border-white/20 pb-8 lg:flex-row lg:items-end">
             <div>
               <span className="bg-[#D6FF3F] px-3 py-1 font-display text-xs text-[#14171A]">
                 {pkg.lesson_count}-WEKEN TRAJECT
               </span>
-              <h1 className="mt-4 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
+              <h1 className="mt-3 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
                 {pkg.title.toUpperCase()}
               </h1>
-              <p className="mt-4 max-w-2xl text-lg text-[#D7D9DA]">
+              <p className="mt-3 max-w-2xl text-base text-[#D7D9DA]">
                 Bij {pkg.trainer?.name || "je trainer"}. Leg in 1 keer je wekelijkse trainingsmoment vast.
               </p>
             </div>
@@ -347,7 +313,6 @@ export default function PackageBookingPage() {
             </div>
           </div>
 
-          {/* FOUTMELDINGEN */}
           {errorMessage && (
             <div role="alert" className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] px-5 py-4 font-semibold text-white">
               {errorMessage}
@@ -355,33 +320,33 @@ export default function PackageBookingPage() {
           )}
 
           {/* MAIN GRID */}
-          <div className="mt-10 grid gap-10 lg:grid-cols-[1.1fr_0.9fr]">
+          <div className="mt-10 grid gap-10 lg:grid-cols-[1.1fr_0.9fr] lg:items-start">
             
             {/* LINKER KOLOM: ALLE DATUMS VAN HET TRAJECT */}
             <section>
               <p className="font-display text-lg text-[#FF4B3E]">TRAJECT PLANNING</p>
-              <h2 className="mt-2 font-display text-4xl sm:text-5xl">
+              <h2 className="mt-1 font-display text-3xl sm:text-4xl">
                 ALLE {pkg.lesson_count} LESSEN.
               </h2>
-              <p className="mt-2 text-sm text-[#B9BEC2]">
+              <p className="mt-2 text-xs text-[#B9BEC2]">
                 Iedere week op hetzelfde tijdstip: <strong>{formatTime(new Date(pkg.starts_at))} uur</strong> ({pkg.duration_minutes} minuten).
               </p>
 
-              <div className="mt-6 space-y-3">
+              <div className="mt-5 space-y-3">
                 {lessonDates.map((item) => (
                   <div
                     key={item.number}
-                    className="flex items-center justify-between border-2 border-white/20 bg-white/5 p-4 text-white"
+                    className="flex items-center justify-between border-2 border-white/20 bg-white/5 p-3.5 text-white"
                   >
-                    <div className="flex items-center gap-4">
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center bg-[#D6FF3F] font-display text-sm text-[#14171A]">
+                    <div className="flex items-center gap-3">
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center bg-[#D6FF3F] font-display text-xs text-[#14171A]">
                         {item.number < 10 ? `0${item.number}` : item.number}
                       </span>
                       <div>
-                        <p className="font-display text-lg text-white">
+                        <p className="font-display text-base text-white">
                           LES {item.number}: {formatDate(item.date)}
                         </p>
-                        <p className="text-xs text-[#B9BEC2]">
+                        <p className="text-[11px] text-[#B9BEC2]">
                           {formatTime(item.date)} uur · {pkg.duration_minutes} min
                         </p>
                       </div>
@@ -394,28 +359,28 @@ export default function PackageBookingPage() {
             </section>
 
             {/* RECHTER KOLOM: OVERZICHT & AFREKENEN */}
-            <section>
+            <section className="lg:sticky lg:top-8">
               <p className="font-display text-lg text-[#FF4B3E]">DETAILS &amp; AFREKENEN</p>
-              <h2 className="mt-2 font-display text-4xl sm:text-5xl">
+              <h2 className="mt-1 font-display text-3xl sm:text-4xl">
                 BEVESTIG JE TRAJECT.
               </h2>
 
-              <div className="mt-6 border-2 border-white bg-white p-3 text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E]">
-                <div className="bg-[#14171A] p-6 text-white space-y-6">
+              <div className="mt-5 border-2 border-white bg-white p-3 text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E]">
+                <div className="bg-[#14171A] p-5 text-white space-y-5">
                   
                   {/* TRAINER INFO */}
                   {pkg.trainer && (
-                    <div className="flex items-center gap-4 border-b border-white/20 pb-5">
-                      <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-[#D6FF3F] bg-[#14171A]">
+                    <div className="flex items-center gap-4 border-b border-white/20 pb-4">
+                      <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-[#D6FF3F] bg-[#14171A]">
                         {pkg.trainer.image_url ? (
                           <img src={pkg.trainer.image_url} alt={pkg.trainer.name} className="h-full w-full object-cover" />
                         ) : (
-                          <span className="font-display text-xl text-[#D6FF3F]">{pkg.trainer.name.slice(0, 2).toUpperCase()}</span>
+                          <span className="font-display text-lg text-[#D6FF3F]">{pkg.trainer.name.slice(0, 2).toUpperCase()}</span>
                         )}
                       </div>
                       <div>
                         <p className="font-display text-xs text-[#FF4B3E]">JOUW TRAINER</p>
-                        <p className="font-display text-2xl">{pkg.trainer.name}</p>
+                        <p className="font-display text-xl">{pkg.trainer.name}</p>
                         <p className="text-xs text-[#B9BEC2]">{pkg.trainer.focus}</p>
                       </div>
                     </div>
@@ -423,24 +388,24 @@ export default function PackageBookingPage() {
 
                   {/* LOCATIE INFO */}
                   {pkg.venue && (
-                    <div className="border-b border-white/20 pb-5">
+                    <div className="border-b border-white/20 pb-4">
                       <p className="font-display text-xs text-[#FF4B3E]">VASTE TRAININGSLOCATIE</p>
-                      <p className="mt-1 font-display text-lg">{pkg.venue.city.toUpperCase()} — {pkg.venue.name}</p>
-                      <p className="mt-1 text-xs text-[#B9BEC2]">{pkg.venue.address_line}, {pkg.venue.city}</p>
+                      <p className="mt-1 font-display text-base">{pkg.venue.city.toUpperCase()} — {pkg.venue.name}</p>
+                      <p className="mt-0.5 text-xs text-[#B9BEC2]">{pkg.venue.address_line}, {pkg.venue.city}</p>
                     </div>
                   )}
 
                   {/* SPELER INFO */}
                   <div>
                     <p className="font-display text-xs text-[#FF4B3E]">BOEKER</p>
-                    <p className="mt-1 font-display text-xl text-white">{player?.fullName}</p>
+                    <p className="mt-1 font-display text-lg text-white">{player?.fullName}</p>
                     <p className="text-xs text-[#B9BEC2]">{player?.email}</p>
                   </div>
 
                   {/* PRIJS TOTAAL */}
                   <div className="bg-white/5 p-4 border-l-2 border-[#D6FF3F]">
                     <p className="font-display text-xs text-[#D6FF3F]">TOTAALPRIJS ({pkg.lesson_count} LESSEN)</p>
-                    <p className="font-display text-4xl text-[#D6FF3F] mt-1">
+                    <p className="font-display text-3xl text-[#D6FF3F] mt-1">
                       {formatEuro(pkg.price_cents, pkg.currency)}
                     </p>
                     <p className="mt-1 text-xs text-[#B9BEC2]">
@@ -453,10 +418,9 @@ export default function PackageBookingPage() {
                     type="button"
                     onClick={() => void handlePackageCheckout()}
                     disabled={booking}
-                    className="flex w-full items-center justify-center gap-3 bg-[#FF4B3E] px-6 py-5 font-display text-xl text-white transition hover:-translate-y-1 hover:bg-[#D6FF3F] hover:text-[#14171A] disabled:opacity-60"
+                    className="flex w-full items-center justify-center gap-2 bg-[#FF4B3E] px-6 py-4 font-display text-lg text-white transition hover:bg-[#D6FF3F] hover:!text-[#14171A] disabled:opacity-60"
                   >
-                    {booking ? "BEZIG MET BOEKEN..." : "RESERVEER PAKKET. GOW!"}
-                    {!booking && <span aria-hidden="true">→</span>}
+                    {booking ? "BEZIG MET BOEKEN..." : "RESERVEER PAKKET. GOW! →"}
                   </button>
 
                   <p className="text-center text-xs text-[#8A8F94]">
