@@ -373,7 +373,6 @@ export default function TrainerDashboardPage() {
     setProfileMissing(false);
 
     try {
-      await supabase.rpc("release_expired_booking_holds");
 
       const {
         data: { session },
