@@ -174,7 +174,11 @@ function validateStripeSession(
 ): void {
   if (
     session.mode !== "payment" ||
-    session.ui_mode !== attempt.checkout_mode ||
+    String(session.ui_mode) !== (
+  attempt.checkout_mode === "embedded"
+    ? "embedded_page"
+    : "hosted"
+) ||
     session.livemode !== attempt.stripe_livemode ||
     session.metadata?.gowtrain_checkout_attempt_id !== attempt.id ||
     session.metadata?.package_id !== attempt.package_id ||
@@ -387,7 +391,10 @@ export async function createOrResumePackageCheckout(
 
     const parameters: Stripe.Checkout.SessionCreateParams = {
       mode: "payment",
-      ui_mode: input.mode,
+      ui_mode:
+      input.mode === "embedded"
+    ? "embedded_page"
+    : "hosted",
       payment_method_types: ["card", "ideal"],
       customer_email: input.playerEmail,
       client_reference_id: attempt.id,

@@ -404,7 +404,7 @@ export async function POST(
     };
 
     const sessionParams: Stripe.Checkout.SessionCreateParams = {
-      ui_mode: "embedded",
+      ui_mode: "embedded_page",
       mode: "payment",
       payment_method_types: ["card", "ideal"],
       customer_email: user.email,
