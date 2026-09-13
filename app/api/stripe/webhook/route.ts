@@ -18,16 +18,22 @@ const stripeSecretKey = getRequiredEnv("STRIPE_SECRET_KEY");
 const stripeWebhookSecret = getRequiredEnv("STRIPE_WEBHOOK_SECRET");
 
 const supabaseUrl = getRequiredEnv("NEXT_PUBLIC_SUPABASE_URL");
-const supabaseServiceRoleKey = getRequiredEnv("SUPABASE_SERVICE_ROLE_KEY");
+const supabaseServiceRoleKey = getRequiredEnv(
+  "SUPABASE_SERVICE_ROLE_KEY"
+);
 
 const stripe = new Stripe(stripeSecretKey);
 
-const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false,
-  },
-});
+const supabaseAdmin = createClient(
+  supabaseUrl,
+  supabaseServiceRoleKey,
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  }
+);
 
 type RefundBooking = {
   id: string;
@@ -37,10 +43,12 @@ type RefundBooking = {
 };
 
 /* -------------------------------------------------------------------------- */
-/* Stripe Connect                                                              */
+/* Stripe Connect                                                             */
 /* -------------------------------------------------------------------------- */
 
-async function syncTrainerStripeStatus(account: Stripe.Account): Promise<void> {
+async function syncTrainerStripeStatus(
+  account: Stripe.Account
+): Promise<void> {
   const trainerIdFromMetadata =
     account.metadata?.gowtrain_trainer_id?.trim() || null;
 
@@ -86,7 +94,8 @@ async function syncTrainerStripeStatus(account: Stripe.Account): Promise<void> {
   }
 
   const onboardingComplete =
-    account.details_submitted === true && account.payouts_enabled === true;
+    account.details_submitted === true &&
+    account.payouts_enabled === true;
 
   const { error: updateError } = await supabaseAdmin
     .from("trainers")
@@ -113,12 +122,239 @@ async function syncTrainerStripeStatus(account: Stripe.Account): Promise<void> {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Betalingen (Losse lessen & Lespakketten)                                    */
+/* Betaalde lespakketten: nieuwe aankoopstructuur                              */
+/* -------------------------------------------------------------------------- */
+
+async function confirmPaidPackageSession(
+  session: Stripe.Checkout.Session
+): Promise<void> {
+  const packageId =
+    session.metadata?.package_id?.trim() || null;
+
+  const playerId =
+    session.metadata?.player_id?.trim() || null;
+
+  const attemptId =
+    session.metadata?.gowtrain_checkout_attempt_id?.trim() ||
+    null;
+
+  /*
+   * Nieuwe pakketaankopen moeten via checkout_attempts lopen.
+   *
+   * Geen terugval naar de oude confirm_package_purchase:
+   * die functie past niet bij de nieuwe aankoopstructuur.
+   */
+  if (
+    !packageId ||
+    !playerId ||
+    !attemptId ||
+    session.metadata?.gowtrain_funds_flow !==
+      "separate_transfers_v1"
+  ) {
+    throw new Error(
+      `Pakketbetaling ${session.id} mist de nieuwe betaalpoginggegevens. Handmatige controle nodig.`
+    );
+  }
+
+  if (
+    session.mode !== "payment" ||
+    session.status !== "complete" ||
+    session.payment_status !== "paid"
+  ) {
+    throw new Error(
+      `Pakketbetaling ${session.id} is niet definitief afgerond.`
+    );
+  }
+
+  const paymentIntentId =
+    typeof session.payment_intent === "string"
+      ? session.payment_intent
+      : session.payment_intent?.id ?? null;
+
+  const amountTotal = session.amount_total;
+  const currency = session.currency;
+
+  if (
+    !paymentIntentId ||
+    typeof amountTotal !== "number" ||
+    !Number.isSafeInteger(amountTotal) ||
+    amountTotal <= 0 ||
+    currency !== "eur"
+  ) {
+    throw new Error(
+      `Pakketbetaling ${session.id} bevat ongeldige betaalgegevens.`
+    );
+  }
+
+  /*
+   * Controleer de koppeling met de opgeslagen betaalpoging.
+   *
+   * De databasefunctie controleert de belangrijkste gegevens
+   * opnieuw binnen de transactie die de aankoop vastlegt.
+   */
+  const {
+    data: attempt,
+    error: attemptError,
+  } = await supabaseAdmin
+    .from("checkout_attempts")
+    .select(
+      `
+        id,
+        package_id,
+        booking_id,
+        player_id,
+        trainer_id,
+        amount_cents,
+        currency,
+        stripe_livemode,
+        funds_flow,
+        stripe_checkout_session_id
+      `
+    )
+    .eq("id", attemptId)
+    .maybeSingle();
+
+  if (attemptError) {
+    throw new Error(
+      `Pakketbetaalpoging ophalen mislukt: ${attemptError.message}`
+    );
+  }
+
+  if (!attempt) {
+    throw new Error(
+      `Betaalpoging ${attemptId} voor Checkout ${session.id} bestaat niet.`
+    );
+  }
+
+  if (
+    attempt.package_id !== packageId ||
+    attempt.booking_id !== null ||
+    attempt.player_id !== playerId ||
+    session.client_reference_id !== attempt.id ||
+    session.metadata?.trainer_id !== attempt.trainer_id ||
+    attempt.amount_cents !== amountTotal ||
+    attempt.currency !== currency ||
+    attempt.stripe_livemode !== session.livemode ||
+    attempt.funds_flow !== "separate_transfers_v1" ||
+    attempt.stripe_checkout_session_id !== session.id
+  ) {
+    throw new Error(
+      `Checkout ${session.id} komt niet overeen met de geregistreerde pakketbetaalpoging.`
+    );
+  }
+
+  /*
+   * Haal de werkelijke Payment Intent op bij Stripe.
+   * Metadata alleen is niet voldoende om de geldstroom
+   * en het ontvangen bedrag vast te stellen.
+   */
+  const paymentIntent = await stripe.paymentIntents.retrieve(
+    paymentIntentId
+  );
+
+  if (
+    paymentIntent.status !== "succeeded" ||
+    paymentIntent.livemode !== session.livemode ||
+    paymentIntent.currency !== currency ||
+    paymentIntent.amount !== amountTotal ||
+    paymentIntent.amount_received !== amountTotal
+  ) {
+    throw new Error(
+      `Payment Intent ${paymentIntent.id} komt niet overeen met de betaalde pakket-Checkout.`
+    );
+  }
+
+  if (
+    paymentIntent.metadata.gowtrain_checkout_attempt_id !==
+      attempt.id ||
+    paymentIntent.metadata.package_id !== packageId ||
+    paymentIntent.metadata.player_id !== playerId ||
+    paymentIntent.metadata.trainer_id !== attempt.trainer_id ||
+    paymentIntent.metadata.gowtrain_funds_flow !==
+      "separate_transfers_v1"
+  ) {
+    throw new Error(
+      `Payment Intent ${paymentIntent.id} hoort niet bij deze pakketbetaalpoging.`
+    );
+  }
+
+  /*
+   * De nieuwe pakketflow gebruikt platformbetalingen
+   * met afzonderlijke trainertransfers na iedere les.
+   *
+   * Een destination charge of andere onverwachte
+   * Connect-configuratie wordt niet automatisch verwerkt.
+   */
+  if (
+    paymentIntent.transfer_data != null ||
+    paymentIntent.application_fee_amount != null ||
+    paymentIntent.on_behalf_of != null
+  ) {
+    throw new Error(
+      `Payment Intent ${paymentIntent.id} gebruikt een onverwachte Connect-geldstroom. Geen automatische pakketbevestiging uitgevoerd.`
+    );
+  }
+
+  /*
+   * Eén databasetransactie:
+   * - één pakketaankoop opslaan;
+   * - alle lesboekingen aanmaken;
+   * - tijdsloten op booked zetten;
+   * - betaalpoging op paid zetten.
+   *
+   * Herhaalde webhookafleveringen retourneren dezelfde aankoop.
+   */
+  const {
+    data: purchaseId,
+    error: confirmationError,
+  } = await supabaseAdmin.rpc(
+    "confirm_paid_package_checkout",
+    {
+      p_attempt_id: attempt.id,
+      p_checkout_session_id: session.id,
+      p_payment_intent_id: paymentIntent.id,
+      p_amount_total: amountTotal,
+      p_currency: currency,
+      p_stripe_livemode: session.livemode,
+    }
+  );
+
+  if (confirmationError) {
+    throw new Error(
+      `Pakketaankoop bevestigen mislukt voor ${session.id}: ${confirmationError.message}`
+    );
+  }
+
+  if (
+    typeof purchaseId !== "string" ||
+    !purchaseId
+  ) {
+    throw new Error(
+      `Geen geldig aankoop-ID ontvangen na bevestiging van ${session.id}.`
+    );
+  }
+
+  console.log("Pakketaankoop bevestigd:", {
+    purchaseId,
+    attemptId: attempt.id,
+    checkoutSessionId: session.id,
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Betalingen: losse lessen en lespakketten                                    */
 /* -------------------------------------------------------------------------- */
 
 async function confirmPaidCheckoutSession(
   session: Stripe.Checkout.Session
 ): Promise<void> {
+  /*
+   * Checkout kan afgerond zijn terwijl een vertraagde
+   * betaling nog niet geslaagd is.
+   *
+   * checkout.session.async_payment_succeeded roept deze
+   * functie later opnieuw aan wanneer de betaling slaagt.
+   */
   if (session.payment_status !== "paid") {
     console.log(
       `Checkout Session ${session.id} is nog niet betaald: ${session.payment_status}`
@@ -126,35 +362,28 @@ async function confirmPaidCheckoutSession(
     return;
   }
 
-  const packageId = session.metadata?.package_id?.trim() || null;
-  const playerId = session.metadata?.player_id?.trim() || null;
+  const packageId =
+    session.metadata?.package_id?.trim() || null;
 
-/* 🎁 1. ALS HET OM EEN LESPAKKET GAAT */
-  if (packageId && playerId) {
-    console.log(`🎁 Stripe Webhook: Lespakket ${packageId} betaald door speler ${playerId}`);
+  const isPackageCheckout =
+    session.metadata?.booking_type === "package" ||
+    packageId !== null;
 
-    const paymentIntentId =
-      typeof session.payment_intent === "string"
-        ? session.payment_intent
-        : session.payment_intent?.id ?? null;
-
-    const { error: rpcError } = await supabaseAdmin.rpc("confirm_package_purchase", {
-      p_package_id: packageId,
-      p_player_id: playerId,
-      p_checkout_session_id: session.id,          // 💡 Doorsturen naar Supabase
-      p_payment_intent_id: paymentIntentId,        // 💡 Doorsturen naar Supabase
-    });
-
-    if (rpcError) {
-      throw new Error(`confirm_package_purchase uitvoeren mislukt: ${rpcError.message}`);
-    }
-
-    console.log(`✅ Alle lessen voor lespakket ${packageId} succesvol aangemaakt in database inclusief Stripe IDs!`);
+  /*
+   * 1. LESPAKKET
+   */
+  if (isPackageCheckout) {
+    await confirmPaidPackageSession(session);
     return;
   }
 
-  /* 🎾 2. ALS HET OM EEN LOSSE LES GAAT */
-  const bookingId = session.metadata?.gowtrain_booking_id?.trim() || null;
+  /*
+   * 2. LOSSE LES
+   *
+   * Bestaande afhandeling behouden.
+   */
+  const bookingId =
+    session.metadata?.gowtrain_booking_id?.trim() || null;
 
   if (!bookingId) {
     console.warn(
@@ -178,7 +407,9 @@ async function confirmPaidCheckoutSession(
   );
 
   if (error) {
-    throw new Error(`Betaling bevestigen mislukt: ${error.message}`);
+    throw new Error(
+      `Betaling bevestigen mislukt: ${error.message}`
+    );
   }
 
   console.log(
@@ -187,7 +418,7 @@ async function confirmPaidCheckoutSession(
 }
 
 /* -------------------------------------------------------------------------- */
-/* Refunds                                                                     */
+/* Refunds: bestaande afhandeling behouden                                     */
 /* -------------------------------------------------------------------------- */
 
 async function findBookingForRefund(
@@ -221,7 +452,8 @@ async function findBookingForRefund(
 async function resolveAdminIssueAfterRefund(
   refund: Stripe.Refund
 ): Promise<void> {
-  const issueId = refund.metadata?.gowtrain_issue_id?.trim() || null;
+  const issueId =
+    refund.metadata?.gowtrain_issue_id?.trim() || null;
 
   if (!issueId) return;
 
@@ -243,10 +475,14 @@ async function resolveAdminIssueAfterRefund(
     );
   }
 
-  console.log(`Admin issue ${issueId} is opgelost na Stripe-refund.`);
+  console.log(
+    `Admin issue ${issueId} is opgelost na Stripe-refund.`
+  );
 }
 
-async function finalizeRefund(refund: Stripe.Refund): Promise<void> {
+async function finalizeRefund(
+  refund: Stripe.Refund
+): Promise<void> {
   if (refund.status !== "succeeded") return;
 
   const booking = await findBookingForRefund(refund);
@@ -281,7 +517,9 @@ async function finalizeRefund(refund: Stripe.Refund): Promise<void> {
   }
 
   if (booking.slot_id) {
-    if (booking.cancellation_policy === "player_timely_refund") {
+    if (
+      booking.cancellation_policy === "player_timely_refund"
+    ) {
       await supabaseAdmin
         .from("availability_slots")
         .update({
@@ -293,7 +531,8 @@ async function finalizeRefund(refund: Stripe.Refund): Promise<void> {
     }
 
     if (
-      booking.cancellation_policy === "trainer_cancelled_refund" ||
+      booking.cancellation_policy ===
+        "trainer_cancelled_refund" ||
       booking.cancellation_policy === "admin_refund"
     ) {
       await supabaseAdmin
@@ -311,10 +550,14 @@ async function finalizeRefund(refund: Stripe.Refund): Promise<void> {
     await resolveAdminIssueAfterRefund(refund);
   }
 
-  console.log(`Stripe refund ${refund.id} verwerkt voor booking ${booking.id}.`);
+  console.log(
+    `Stripe refund ${refund.id} verwerkt voor booking ${booking.id}.`
+  );
 }
 
-async function handleRefundFailure(refund: Stripe.Refund): Promise<void> {
+async function handleRefundFailure(
+  refund: Stripe.Refund
+): Promise<void> {
   const booking = await findBookingForRefund(refund);
   if (!booking) return;
 
@@ -325,16 +568,20 @@ async function handleRefundFailure(refund: Stripe.Refund): Promise<void> {
 
   await supabaseAdmin
     .from("bookings")
-    .update({ refund_last_error: failureReason })
+    .update({
+      refund_last_error: failureReason,
+    })
     .eq("id", booking.id)
     .eq("status", "refund_pending");
 }
 
 /* -------------------------------------------------------------------------- */
-/* Webhook Entry point                                                        */
+/* Webhook entry point                                                        */
 /* -------------------------------------------------------------------------- */
 
-export async function POST(request: NextRequest) {
+export async function POST(
+  request: NextRequest
+): Promise<NextResponse> {
   const signature = request.headers.get("stripe-signature");
 
   if (!signature) {
@@ -347,14 +594,23 @@ export async function POST(request: NextRequest) {
   let event: Stripe.Event;
 
   try {
+    /*
+     * Gebruik de ongewijzigde requestbody voor
+     * de Stripe-handtekeningcontrole.
+     */
     const rawBody = await request.text();
+
     event = stripe.webhooks.constructEvent(
       rawBody,
       signature,
       stripeWebhookSecret
     );
   } catch (error) {
-    console.error("Stripe webhook signature fout:", error);
+    console.error(
+      "Stripe webhook signature fout:",
+      error
+    );
+
     return NextResponse.json(
       { error: "Webhook-signature is ongeldig." },
       { status: 400 }
@@ -364,49 +620,77 @@ export async function POST(request: NextRequest) {
   try {
     switch (event.type) {
       case "account.updated": {
-        const account = event.data.object as Stripe.Account;
+        const account =
+          event.data.object as Stripe.Account;
+
         await syncTrainerStripeStatus(account);
         break;
       }
 
       case "checkout.session.completed":
       case "checkout.session.async_payment_succeeded": {
-        const session = event.data.object as Stripe.Checkout.Session;
+        const session =
+          event.data.object as Stripe.Checkout.Session;
+
         await confirmPaidCheckoutSession(session);
         break;
       }
 
       case "refund.updated": {
-        const refund = event.data.object as Stripe.Refund;
+        const refund =
+          event.data.object as Stripe.Refund;
+
         if (refund.status === "succeeded") {
           await finalizeRefund(refund);
-        } else if (refund.status === "failed" || refund.status === "canceled") {
+        } else if (
+          refund.status === "failed" ||
+          refund.status === "canceled"
+        ) {
           await handleRefundFailure(refund);
         }
+
         break;
       }
 
       case "charge.refunded": {
-        const charge = event.data.object as Stripe.Charge;
+        const charge =
+          event.data.object as Stripe.Charge;
+
         if (charge.refunds?.data) {
           for (const refund of charge.refunds.data) {
             if (refund.status === "succeeded") {
               await finalizeRefund(refund);
-            } else if (refund.status === "failed" || refund.status === "canceled") {
+            } else if (
+              refund.status === "failed" ||
+              refund.status === "canceled"
+            ) {
               await handleRefundFailure(refund);
             }
           }
         }
+
         break;
       }
 
       default:
-        console.log(`Onverwerkt Stripe-event: ${event.type}`);
+        console.log(
+          `Onverwerkt Stripe-event: ${event.type}`
+        );
     }
 
-    return NextResponse.json({ received: true });
+    return NextResponse.json({
+      received: true,
+    });
   } catch (error) {
-    console.error("Stripe webhook verwerking fout:", error);
+    console.error("Stripe webhook verwerking fout:", {
+      eventId: event.id,
+      eventType: event.type,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Onbekende fout.",
+    });
+
     return NextResponse.json(
       { error: "Webhook kon niet worden verwerkt." },
       { status: 500 }
