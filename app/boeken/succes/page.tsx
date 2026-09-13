@@ -68,103 +68,164 @@ function formatTime(value: string): string {
 function BookingSuccesContent() {
   const searchParams = useSearchParams();
   const checkoutSessionId = searchParams.get("session_id");
-  const packageId = searchParams.get("package_id");
 
-  const [booking, setBooking] = useState<Booking | null>();
-  const [isPackage, setIsPackage] = useState<boolean>(false);
+  const [booking, setBooking] = useState<Booking | null>(null);
+  const [isPackage, setIsPackage] = useState(false);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
 
+  const [confirmationState, setConfirmationState] = useState<
+    "pending" | "confirmed" | "changed" | "error"
+  >("pending");
+
+  const [retryCount, setRetryCount] = useState(0);
+
   useEffect(() => {
-    void verifyAndLoadConfirmation();
-  }, [checkoutSessionId, packageId]);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
 
-  async function verifyAndLoadConfirmation(): Promise<void> {
+    const controller = new AbortController();
+    const maxAttempts = 10;
+
     setLoading(true);
+    setBooking(null);
+    setIsPackage(false);
     setErrorMessage("");
+    setConfirmationState("pending");
 
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const userId = session?.user?.id;
+    async function checkConfirmation(): Promise<void> {
+      if (stopped) return;
 
-      if (packageId && userId) {
-        setIsPackage(true);
+      attempts += 1;
 
-        await supabase.rpc("confirm_package_purchase", {
-          p_package_id: packageId,
-          p_player_id: userId,
-        });
-
-        const { data: packageBooking } = await supabase
-          .from("bookings")
-          .select(
-            `
-              id,
-              status,
-              participant_count,
-              total_price_cents,
-              currency,
-              paid_at,
-              trainers ( id, name ),
-              availability_slots!inner (
-                starts_at,
-                ends_at,
-                sport,
-                package_id,
-                venues ( name, city, address_line, postal_code )
-              )
-            `
-          )
-          .eq("player_id", userId)
-          .eq("availability_slots.package_id", packageId)
-          .order("created_at", { ascending: true })
-          .limit(1)
-          .maybeSingle();
-
-        if (packageBooking) {
-          setBooking(packageBooking as unknown as Booking);
-        }
+      if (!checkoutSessionId) {
+        setConfirmationState("error");
+        setErrorMessage(
+          "De verwijzing naar je betaalpagina ontbreekt. Bekijk Mijn boekingen."
+        );
         setLoading(false);
         return;
       }
 
-      if (checkoutSessionId) {
-        const { data, error } = await supabase
-          .from("bookings")
-          .select(
-            `
-              id,
-              status,
-              participant_count,
-              total_price_cents,
-              currency,
-              paid_at,
-              trainers ( id, name ),
-              availability_slots (
-                starts_at,
-                ends_at,
-                sport,
-                venues ( name, city, address_line, postal_code )
-              )
-            `
-          )
-          .eq("stripe_checkout_session_id", checkoutSessionId)
-          .maybeSingle();
+      try {
+        const {
+          data: { session },
+          error: sessionError,
+        } = await supabase.auth.getSession();
 
-        if (error || !data) {
-          setErrorMessage("Je betaling wordt verwerkt.");
+        if (stopped) return;
+
+        if (sessionError || !session?.access_token) {
+          setConfirmationState("error");
+          setErrorMessage(
+            "Log in met het account waarmee je hebt geboekt en bekijk Mijn boekingen."
+          );
+          setLoading(false);
           return;
         }
 
-        setBooking(data as unknown as Booking);
+        const response = await fetch(
+          `/api/stripe/checkout/confirmation?session_id=${
+            encodeURIComponent(checkoutSessionId)
+          }`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            cache: "no-store",
+            signal: controller.signal,
+          }
+        );
+
+        const result = (await response.json()) as {
+          state?: "pending" | "confirmed" | "changed";
+          isPackage?: boolean;
+          booking?: Booking | null;
+          message?: string;
+          error?: string;
+        };
+
+        if (stopped) return;
+
+        if (!response.ok) {
+          const message =
+            result.error ||
+            "Je bevestiging kon tijdelijk niet worden opgehaald.";
+
+          if (response.status >= 500 && attempts < maxAttempts) {
+            setErrorMessage(message);
+            timer = setTimeout(() => {
+              void checkConfirmation();
+            }, 3000);
+            return;
+          }
+
+          setConfirmationState("error");
+          setErrorMessage(message);
+          setLoading(false);
+          return;
+        }
+
+        if (result.state === "confirmed" && result.booking) {
+          setBooking(result.booking);
+          setIsPackage(result.isPackage === true);
+          setConfirmationState("confirmed");
+          setErrorMessage("");
+          setLoading(false);
+          return;
+        }
+
+        if (result.state === "changed") {
+          setConfirmationState("changed");
+          setErrorMessage(
+            result.message ||
+            "De boekingsstatus is gewijzigd. Bekijk Mijn boekingen."
+          );
+          setLoading(false);
+          return;
+        }
+
+        if (attempts < maxAttempts) {
+          timer = setTimeout(() => {
+            void checkConfirmation();
+          }, 3000);
+          return;
+        }
+
+        setConfirmationState("pending");
+        setErrorMessage(
+          "Je boeking is nog niet definitief bevestigd in ons systeem. De betaling kan nog worden verwerkt. Heb je betaald? Betaal dan niet opnieuw. Controleer over even Mijn boekingen."
+        );
+        setLoading(false);
+      } catch {
+        if (stopped) return;
+
+        if (attempts < maxAttempts) {
+          timer = setTimeout(() => {
+            void checkConfirmation();
+          }, 3000);
+          return;
+        }
+
+        setConfirmationState("error");
+        setErrorMessage(
+          "Je bevestiging kon niet worden opgehaald. Controleer je verbinding en probeer opnieuw. Heb je betaald? Betaal dan niet opnieuw."
+        );
+        setLoading(false);
       }
-    } catch (error) {
-      console.error("Onverwachte bevestigingsfout:", error);
-      setErrorMessage("Je boekingsbevestiging kon niet worden geladen.");
-    } finally {
-      setLoading(false);
     }
-  }
+
+    void checkConfirmation();
+
+    return () => {
+      stopped = true;
+      controller.abort();
+
+      if (timer) clearTimeout(timer);
+    };
+  }, [checkoutSessionId, retryCount]);
 
   if (loading) {
     return (
@@ -180,7 +241,14 @@ function BookingSuccesContent() {
     );
   }
 
-  const isConfirmed = isPackage || booking?.status === "confirmed";
+  const isConfirmed =
+  confirmationState === "confirmed" &&
+  booking !== null &&
+  booking.paid_at !== null &&
+  (
+    booking.status === "confirmed" ||
+    booking.status === "completed"
+  );
 
   // Data voor WhatsApp & Agenda
   const slot = booking?.availability_slots;
@@ -215,7 +283,7 @@ function BookingSuccesContent() {
 
                 {slot && (
                   <div className="mt-6 border-y-2 border-[#14171A]/20 py-5">
-                    <p className="font-display text-xs text-[#FF4B3E]">EERSTE LES VAN JOUW TRAJECT</p>
+                    <p className="font-display text-xs text-[#FF4B3E]"> {isPackage ? "EERSTE LES VAN JOUW TRAJECT" : "JOUW TRAINING"}</p>
                     <p className="mt-1 font-display text-xl">{formatDate(slot.starts_at)}</p>
                     <p className="mt-1 font-display text-3xl">
                       {formatTime(slot.starts_at)} – {formatTime(slot.ends_at)}
@@ -293,20 +361,28 @@ function BookingSuccesContent() {
             ) : (
               <div className="border-2 border-white bg-white p-3 text-[#14171A] shadow-[10px_10px_0_0_#FF4B3E]">
                 <div className="bg-[#14171A] p-6 text-white sm:p-8">
-                  <p className="font-display text-lg text-[#FF4B3E]">BETALING WORDT VERWERKT</p>
-                  <h1 className="mt-3 font-display text-5xl leading-[0.83]">NOG HEEL EVEN...</h1>
+                  <p className="font-display text-lg text-[#FF4B3E]">BOEKINGSSTATUS</p>
+                  <h1 className="mt-3 font-display text-5xl leading-[0.83]">{confirmationState === "pending"? "NOG GEEN BEVESTIGING." : "CONTROLEER JE BOEKING."}</h1>
                   <p className="mt-5 max-w-xl text-base leading-relaxed text-[#B9BEC2]">
                     {errorMessage || "Je betaling wordt gecontroleerd. Bekijk je overzicht op Mijn boekingen."}
                   </p>
 
                   <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-                    <Link
-                      href="/mijn-boekingen"
-                      className="inline-flex items-center justify-center bg-[#D6FF3F] px-6 py-4 font-display text-lg !text-[#14171A] font-bold"
-                    >
-                      NAAR MIJN BOEKINGEN →
-                    </Link>
-                  </div>
+  <Link
+    href="/mijn-boekingen"
+    className="inline-flex items-center justify-center bg-[#D6FF3F] px-6 py-4 font-display text-lg font-bold !text-[#14171A]"
+  >
+    NAAR MIJN BOEKINGEN →
+  </Link>
+
+  <button
+    type="button"
+    onClick={() => setRetryCount((value) => value + 1)}
+    className="inline-flex items-center justify-center border-2 border-white px-5 py-4 font-display text-base text-white transition hover:border-[#D6FF3F] hover:text-[#D6FF3F]"
+  >
+    OPNIEUW CONTROLEREN
+  </button>
+</div>
                 </div>
               </div>
             )}

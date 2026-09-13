@@ -1,105 +1,167 @@
 import { NextResponse } from "next/server";
-import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
+import {
+  createOrResumePackageCheckout,
+  PackageCheckoutError,
+} from "@/lib/stripe-package-checkout";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", {
-  apiVersion: "2023-10-16" as any,
-});
+export const runtime = "nodejs";
+
+function getRequiredEnv(name: string): string {
+  const value = process.env[name]?.trim();
+
+  if (!value) {
+    throw new Error(`${name} ontbreekt.`);
+  }
+
+  return value;
+}
 
 const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
+  getRequiredEnv("NEXT_PUBLIC_SUPABASE_URL"),
+  getRequiredEnv("SUPABASE_SERVICE_ROLE_KEY"),
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  }
 );
 
-export async function POST(req: Request) {
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    value
+  );
+}
+
+export async function POST(
+  request: Request
+): Promise<NextResponse> {
+  const headers = {
+    "Cache-Control": "no-store",
+  };
+
   try {
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      return NextResponse.json({ error: "Niet geautoriseerd." }, { status: 401 });
+    const authorization = request.headers.get("authorization");
+
+    if (!authorization?.startsWith("Bearer ")) {
+      return NextResponse.json(
+        { error: "Je bent niet ingelogd." },
+        { status: 401, headers }
+      );
     }
 
-    const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+    const accessToken = authorization.slice(7).trim();
 
-    if (authError || !user) {
-      return NextResponse.json({ error: "Niet geautoriseerd." }, { status: 401 });
+    if (!accessToken) {
+      return NextResponse.json(
+        { error: "Je bent niet ingelogd." },
+        { status: 401, headers }
+      );
     }
 
-    const body = await req.json();
-    const { packageId } = body;
+    const {
+      data: { user },
+      error: userError,
+    } = await supabaseAdmin.auth.getUser(accessToken);
 
-    if (!packageId) {
-      return NextResponse.json({ error: "Geen lespakket ID opgegeven." }, { status: 400 });
+    if (userError || !user) {
+      return NextResponse.json(
+        { error: "Je sessie is verlopen. Log opnieuw in." },
+        { status: 401, headers }
+      );
     }
 
-    // 1. Lespakket ophalen
-    const { data: pkg, error: pkgError } = await supabaseAdmin
-      .from("trainer_packages")
-      .select("*, trainer:trainers(*), venue:venues(*)")
-      .eq("id", packageId)
-      .eq("is_active", true)
-      .single();
-
-    if (pkgError || !pkg) {
-      return NextResponse.json({ error: "Lespakket niet gevonden of niet meer actief." }, { status: 404 });
+    if (!user.email || !user.email_confirmed_at) {
+      return NextResponse.json(
+        { error: "Bevestig eerst je e-mailadres." },
+        { status: 403, headers }
+      );
     }
 
-    const origin = req.headers.get("origin") || "http://localhost:3000";
+    let body: unknown;
 
-    // 2. Stripe Checkout Session opbouwen
-    const sessionParams: Stripe.Checkout.SessionCreateParams = {
-      payment_method_types: ["card", "ideal"],
-      mode: "payment",
-      customer_email: user.email,
-      line_items: [
-        {
-          price_data: {
-            currency: "eur",
-            unit_amount: pkg.price_cents,
-            product_data: {
-              name: pkg.title,
-              description: `${pkg.lesson_count} lessen traject bij ${pkg.trainer?.name || "de trainer"}`,
-            },
-          },
-          quantity: 1,
-        },
-      ],
-      metadata: {
-        package_id: pkg.id,
-        player_id: user.id,
-        trainer_id: pkg.trainer_id,
-        booking_type: "package",
-      },
-      success_url: `${origin}/boeken/succes?session_id={CHECKOUT_SESSION_ID}&package_id=${packageId}`,
-      cancel_url: `${origin}/boeken/pakket/${packageId}?canceled=true`,
-    };
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Ongeldige aanvraag." },
+        { status: 400, headers }
+      );
+    }
 
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body)
+    ) {
+      return NextResponse.json(
+        { error: "Ongeldige aanvraag." },
+        { status: 400, headers }
+      );
+    }
 
-    // De betaling komt op het platform binnen.
-    // Het trainersdeel wordt later per les afzonderlijk overgeboekt.
-    sessionParams.payment_intent_data = {
-      metadata: {
-        package_id: pkg.id,
-        player_id: user.id,
-        trainer_id: pkg.trainer_id,
-        booking_type: "package",
-        gowtrain_funds_flow: "separate_transfers_v1",
-      },
-    };
+    const packageIdValue = (
+      body as Record<string, unknown>
+    ).packageId;
 
-    sessionParams.metadata = {
-      ...sessionParams.metadata,
-      gowtrain_funds_flow: "separate_transfers_v1",
-    };
+    const packageId =
+      typeof packageIdValue === "string"
+        ? packageIdValue.trim().toLowerCase()
+        : "";
 
-    const session = await stripe.checkout.sessions.create(sessionParams);
+    if (!isUuid(packageId)) {
+      return NextResponse.json(
+        { error: "Een geldig lespakket-ID is verplicht." },
+        { status: 400, headers }
+      );
+    }
 
-    return NextResponse.json({ checkoutUrl: session.url });
-  } catch (error: any) {
-    console.error("Stripe Package Checkout error:", error);
+    /*
+     * De helper reserveert het pakket en gebruikt uitsluitend
+     * de vastgelegde prijsgegevens uit de database.
+     *
+     * De koper komt uit de geverifieerde sessie,
+     * niet uit de requestbody.
+     */
+    const checkout = await createOrResumePackageCheckout({
+      packageId,
+      playerId: user.id,
+      playerEmail: user.email,
+      mode: "hosted",
+    });
+
+    if (!checkout.checkoutUrl) {
+      throw new Error("De Checkout-URL ontbreekt.");
+    }
+
     return NextResponse.json(
-      { error: error.message || "Interne fout bij aanmaken betaling." },
-      { status: 500 }
+      {
+        checkoutUrl: checkout.checkoutUrl,
+      },
+      { headers }
+    );
+  } catch (error: unknown) {
+    if (error instanceof PackageCheckoutError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status, headers }
+      );
+    }
+
+    console.error("Pakket-Checkout aanmaken mislukt:", {
+      message:
+        error instanceof Error
+          ? error.message
+          : "Onbekende fout.",
+    });
+
+    return NextResponse.json(
+      {
+        error:
+          "De betaalpagina kon niet worden geopend. Probeer het later opnieuw. Een bestaande betaalpoging blijft gereserveerd totdat de status is gecontroleerd.",
+      },
+      { status: 503, headers }
     );
   }
 }
