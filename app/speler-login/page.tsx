@@ -218,8 +218,8 @@ function SpelerLoginContent() {
       }
 
       setSuccessMessage(
-        "Check je e-mail! We hebben je een link gestuurd om je wachtwoord te herstellen."
-      );
+  "Als er een account bestaat met dit e-mailadres, ontvang je een link om je wachtwoord opnieuw in te stellen. Check ook je spammap."
+);
     } catch {
       showError("De resetlink kon niet worden verstuurd.");
     } finally {

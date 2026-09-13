@@ -27,6 +27,12 @@ export async function POST(req: Request) {
 
     const body = await req.json();
     const { bookingId, packageId } = body;
+    if (bookingId && packageId) {
+  return NextResponse.json(
+    { error: "Geef een bookingId óf een packageId op, niet beide." },
+    { status: 400 },
+  );
+}
 
     const origin = req.headers.get("origin") || "http://localhost:3000";
 
@@ -44,6 +50,12 @@ export async function POST(req: Request) {
         .single();
 
       if (!pkg) return NextResponse.json({ error: "Lespakket niet gevonden." }, { status: 404 });
+      if (pkg.is_active !== true) {
+  return NextResponse.json(
+    { error: "Dit lespakket is niet meer beschikbaar." },
+    { status: 409 },
+  );
+}
 
       title = pkg.title;
       amountCents = pkg.price_cents;
@@ -61,6 +73,38 @@ export async function POST(req: Request) {
         .single();
 
       if (!booking) return NextResponse.json({ error: "Boeking niet gevonden." }, { status: 404 });
+      if (booking.player_id !== user.id) {
+  return NextResponse.json(
+    { error: "Je hebt geen toegang tot deze boeking." },
+    { status: 403 },
+  );
+}
+
+if (
+  booking.status !== "payment_pending" ||
+  booking.paid_at !== null
+) {
+  return NextResponse.json(
+    { error: "Deze boeking kan niet opnieuw worden betaald." },
+    { status: 409 },
+  );
+}
+
+const holdExpiresAt = Date.parse(booking.hold_expires_at ?? "");
+
+if (
+  !Number.isFinite(holdExpiresAt) ||
+  holdExpiresAt <= Date.now() ||
+  booking.availability_slots?.status !== "held"
+) {
+  return NextResponse.json(
+    {
+      error:
+        "De reservering is verlopen of niet meer beschikbaar. Maak een nieuwe reservering.",
+    },
+    { status: 409 },
+  );
+}
 
       title = `GowTrain ${booking.availability_slots?.sport?.toUpperCase() || "Les"}`;
       amountCents = booking.total_price_cents;
@@ -100,29 +144,21 @@ export async function POST(req: Request) {
         : `${origin}/boeken/succes?session_id={CHECKOUT_SESSION_ID}`,
     };
 
-    // C. Stripe Connect Commissie (indien actief)
-    if (trainerId) {
-      const { data: trainer } = await supabaseAdmin
-        .from("trainers")
-        .select("stripe_account_id, stripe_payouts_enabled")
-        .eq("id", trainerId)
-        .single();
+        // De betaling komt op het platform binnen.
+    // Het trainersdeel wordt later per les afzonderlijk overgeboekt.
+    sessionParams.payment_intent_data = {
+      metadata: {
+        ...metadata,
+        trainer_id: trainerId,
+        gowtrain_funds_flow: "separate_transfers_v1",
+      },
+    };
 
-      if (trainer?.stripe_account_id && trainer?.stripe_payouts_enabled) {
-        try {
-          await stripe.accounts.retrieve(trainer.stripe_account_id);
-          const commissionCents = Math.round(amountCents * 0.05); // 5% GowTrain commissie
-          sessionParams.payment_intent_data = {
-            application_fee_amount: commissionCents,
-            transfer_data: {
-              destination: trainer.stripe_account_id,
-            },
-          };
-        } catch {
-          console.warn("Stripe Connect account niet actief in deze omgeving, verwerkt via platform.");
-        }
-      }
-    }
+    sessionParams.metadata = {
+      ...metadata,
+      trainer_id: trainerId,
+      gowtrain_funds_flow: "separate_transfers_v1",
+    };
 
     const session = await stripe.checkout.sessions.create(sessionParams);
 

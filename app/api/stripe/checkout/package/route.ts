@@ -74,26 +74,23 @@ export async function POST(req: Request) {
       cancel_url: `${origin}/boeken/pakket/${packageId}?canceled=true`,
     };
 
-    // 3. 💡 VEILIGE CONTROLE: Bestaat dit Stripe Connect account echt in de huidige omgeving?
-    if (pkg.trainer?.stripe_account_id && pkg.trainer?.stripe_payouts_enabled) {
-      try {
-        // Valideer of het account-id geldig is in deze Stripe API-sleutel
-        await stripe.accounts.retrieve(pkg.trainer.stripe_account_id);
 
-        const commissionCents = Math.round(pkg.price_cents * 0.05); // 5% GowTrain commissie
-        sessionParams.payment_intent_data = {
-          application_fee_amount: commissionCents,
-          transfer_data: {
-            destination: pkg.trainer.stripe_account_id,
-          },
-        };
-      } catch (connectError) {
-        console.warn(
-          `Stripe Connect account ${pkg.trainer.stripe_account_id} niet gevonden in deze Stripe omgeving. Betaling wordt via platform verwerkt.`
-        );
-        // Negeer transfer_data zodat de betaling toch gewoon kan worden afgerond!
-      }
-    }
+    // De betaling komt op het platform binnen.
+    // Het trainersdeel wordt later per les afzonderlijk overgeboekt.
+    sessionParams.payment_intent_data = {
+      metadata: {
+        package_id: pkg.id,
+        player_id: user.id,
+        trainer_id: pkg.trainer_id,
+        booking_type: "package",
+        gowtrain_funds_flow: "separate_transfers_v1",
+      },
+    };
+
+    sessionParams.metadata = {
+      ...sessionParams.metadata,
+      gowtrain_funds_flow: "separate_transfers_v1",
+    };
 
     const session = await stripe.checkout.sessions.create(sessionParams);
 

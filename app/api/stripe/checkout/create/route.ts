@@ -295,16 +295,18 @@ export async function POST(request: NextRequest) {
         ],
 
         metadata: {
+        gowtrain_booking_id: booking.id,
+        gowtrain_trainer_id: booking.trainer_id,
+        gowtrain_funds_flow: "separate_transfers_v1",
+      },
+
+      payment_intent_data: {
+        metadata: {
           gowtrain_booking_id: booking.id,
           gowtrain_trainer_id: booking.trainer_id,
+          gowtrain_funds_flow: "separate_transfers_v1",
         },
-
-        payment_intent_data: {
-          metadata: {
-            gowtrain_booking_id: booking.id,
-            gowtrain_trainer_id: booking.trainer_id,
-          },
-        },
+      },
 
         success_url: `${appUrl}/boeken/succes?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${appUrl}/mijn-boekingen`,

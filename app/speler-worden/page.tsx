@@ -101,15 +101,16 @@ function SpelerWordenContent() {
 
     try {
       const { data, error } = await supabase.auth.signUp({
-        email: email.trim().toLowerCase(),
-        password,
-        options: {
-          data: {
-            role: "player",
-            full_name: name.trim(),
-          },
-        },
-      });
+  email: email.trim().toLowerCase(),
+  password,
+  options: {
+    emailRedirectTo: `${window.location.origin}/auth/bevestigd`,
+    data: {
+      role: "player",
+      full_name: name.trim(),
+    },
+  },
+});
 
       if (error) {
         if (error.message.toLowerCase().includes("already registered")) {
