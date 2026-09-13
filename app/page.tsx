@@ -71,6 +71,10 @@ function formatEuro(cents: number): string {
 }
 
 export default function Home() {
+  // 🟢 ZET OP 'true' OM THUISPAGINA AF TE SCHERMEN MET ONDERHOUDSPAGINA.
+  // 🔴 ZET OP 'false' OM DE ECHTE HOMEPAGE TE TONEN.
+  const isUnderConstruction = true;
+
   const [showcaseItems, setShowcaseItems] = useState<ShowcaseItem[]>([]);
   const [loadingShowcase, setLoadingShowcase] = useState<boolean>(true);
 
@@ -85,8 +89,10 @@ export default function Home() {
   };
 
   useEffect(() => {
-    void loadDynamicShowcase();
-  }, []);
+    if (!isUnderConstruction) {
+      void loadDynamicShowcase();
+    }
+  }, [isUnderConstruction]);
 
   async function loadDynamicShowcase(): Promise<void> {
     setLoadingShowcase(true);
@@ -195,6 +201,41 @@ export default function Home() {
     }
   }
 
+  // 🟡 TIJDELIJKE ONDERHOUDSPAGINA WEERGEVEN ALS ISUNDERCONSTRUCTION TRUE IS
+  if (isUnderConstruction) {
+    return (
+      <main className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden bg-[#14171A] px-6 text-center text-white">
+        {/* Groene gloei-effect */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute h-[30rem] w-[30rem] rounded-full bg-[#D6FF3F] opacity-[0.08] blur-[150px]"
+        />
+
+        {/* Brand label */}
+        <p className="font-display text-xl tracking-widest text-[#FF4B3E]">
+          GOWTRAIN
+        </p>
+
+        {/* Titel */}
+        <h1 className="mt-4 font-display text-5xl leading-[0.9] text-white sm:text-7xl lg:text-8xl">
+          BINNENKORT <br />
+          <span className="text-[#D6FF3F]">BESCHIKBAAR.</span>
+        </h1>
+
+        {/* Beschrijving */}
+        <p className="mt-6 max-w-lg text-lg leading-relaxed text-[#D7D9DA] sm:text-xl">
+          We leggen momenteel de laatste hand aan ons platform. Binnenkort boek je hier direct jouw padel- en tennistrainers.
+        </p>
+
+        {/* Badge */}
+        <div className="mt-8 border-2 border-white bg-white px-6 py-3 font-display text-lg text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E]">
+          WE ZIJN AAN HET TESTEN 🎾
+        </div>
+      </main>
+    );
+  }
+
+  // 🔵 ORIGINELE HOMEPAGE WEERGEVEN
   return (
     <main className="overflow-hidden bg-[#14171A] text-white">
       {/* HERO */}
