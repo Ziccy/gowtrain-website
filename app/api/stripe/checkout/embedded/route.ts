@@ -144,7 +144,7 @@ if (
         : `${origin}/boeken/succes?session_id={CHECKOUT_SESSION_ID}`,
     };
 
-        // De betaling komt op het platform binnen.
+    // De betaling komt op het platform binnen.
     // Het trainersdeel wordt later per les afzonderlijk overgeboekt.
     sessionParams.payment_intent_data = {
       metadata: {
