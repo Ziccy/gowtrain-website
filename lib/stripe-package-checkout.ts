@@ -543,6 +543,29 @@ export async function createOrResumePackageCheckout(
 
   validateStripeSession(session, attempt);
 
+/*
+ * TIJDELIJKE SANDBOXTEST.
+ * Verwijderen zodra de hersteltest is uitgevoerd.
+ *
+ * Simuleert: Stripe heeft de Session aangemaakt,
+ * maar het opslaan van het Session-ID wordt onderbroken.
+ */
+if (
+  !livemode &&
+  session.livemode === false &&
+  input.packageId === "9ffab63d-24b6-4851-9df1-8e5174e3ed55"
+) {
+  console.warn("SANDBOXTEST: opslag Session-ID bewust onderbroken.", {
+    attemptId: attempt.id,
+  });
+
+  throw new PackageCheckoutError(
+    "Sandbox-hersteltest: de betaalpagina is aangemaakt, maar het Session-ID is bewust nog niet opgeslagen.",
+    503
+  );
+}
+
+
   /*
    * 6. Sla het Session-ID op voordat de betaalpagina
    * of client secret aan de speler wordt teruggegeven.
