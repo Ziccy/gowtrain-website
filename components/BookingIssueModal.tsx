@@ -30,39 +30,84 @@ export default function BookingIssueModal({
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    setErrorMessage("");
+  async function handleSubmit(
+  e: React.FormEvent
+): Promise<void> {
+  e.preventDefault();
 
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.user) return;
+  if (submitting) return;
 
-      const reasonObj = ISSUE_REASONS.find((r) => r.id === selectedReason);
-      const fullMessage = `[${reasonObj?.label || selectedReason}] ${details.trim()}`;
+  setErrorMessage("");
 
-      const { error } = await supabase.from("booking_issues").insert({
-        booking_id: bookingId,
-        reported_by_id: session.user.id,
-        reporter_role: "player",
-        issue_type: selectedReason,
-        description: fullMessage,
-        status: "open",
+  if (!ISSUE_REASONS.some((reason) => reason.id === selectedReason)) {
+    setErrorMessage("Kies een geldige reden.");
+    return;
+  }
+
+  if (details.trim().length > 2000) {
+    setErrorMessage(
+      "De toelichting mag maximaal 2000 tekens bevatten."
+    );
+    return;
+  }
+
+  setSubmitting(true);
+
+  try {
+    const {
+      data: { session },
+      error: sessionError,
+    } = await supabase.auth.getSession();
+
+    if (sessionError || !session?.user) {
+      setErrorMessage(
+        "Je sessie is verlopen. Log opnieuw in om je melding te versturen."
+      );
+      return;
+    }
+
+    const { data: issueId, error } = await supabase.rpc(
+      "report_player_booking_issue",
+      {
+        p_booking_id: bookingId,
+        p_reason: selectedReason,
+        p_details: details.trim() || null,
+      }
+    );
+
+    if (error) {
+      console.error("Spelermelding opslaan mislukt:", {
+        code: error.code,
+        message: error.message,
       });
 
-      if (error) {
-        setErrorMessage("Melding kon niet worden opgeslagen. Probeer het opnieuw.");
-        return;
+      if (error.code === "P0001" || error.code === "42501") {
+        setErrorMessage(error.message);
+      } else {
+        setErrorMessage(
+          "Je melding kon niet worden bevestigd. Probeer het opnieuw."
+        );
       }
 
-      onSubmitted();
-    } catch {
-      setErrorMessage("Er ging iets mis met het versturen van je melding.");
-    } finally {
-      setSubmitting(false);
+      return;
     }
+
+    if (typeof issueId !== "string" || !issueId) {
+      setErrorMessage(
+        "Je melding kon niet worden bevestigd. Probeer het opnieuw."
+      );
+      return;
+    }
+
+    onSubmitted();
+  } catch {
+    setErrorMessage(
+      "De verbinding is onderbroken. Je melding kan al opgeslagen zijn. Opnieuw versturen maakt geen tweede open melding aan."
+    );
+  } finally {
+    setSubmitting(false);
   }
+}
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
@@ -85,6 +130,7 @@ export default function BookingIssueModal({
 
             <button
               type="button"
+              disabled={submitting}
               onClick={onClose}
               className="flex h-9 w-9 shrink-0 items-center justify-center border-2 border-white font-display text-lg text-white hover:bg-[#FF4B3E] transition"
             >
@@ -107,6 +153,7 @@ export default function BookingIssueModal({
                   <button
                     key={reason.id}
                     type="button"
+                    disabled={submitting}
                     onClick={() => setSelectedReason(reason.id)}
                     className={`w-full border-2 p-3 text-left font-display text-xs transition select-none flex items-center justify-between ${
                       isSelected
@@ -127,12 +174,14 @@ export default function BookingIssueModal({
               Licht toe wat er precies misging (optioneel)
             </label>
             <textarea
-              value={details}
-              onChange={(e) => setDetails(e.target.value)}
-              placeholder="Bijv: Trainer was niet aanwezig op de club..."
-              rows={3}
-              className="w-full border-2 border-white/25 bg-transparent p-3 text-xs text-white outline-none focus:border-[#D6FF3F]"
-            />
+  value={details}
+  onChange={(e) => setDetails(e.target.value)}
+  placeholder="Bijv: Trainer was niet aanwezig op de club..."
+  rows={3}
+  maxLength={2000}
+  disabled={submitting}
+  className="w-full border-2 border-white/25 bg-transparent p-3 text-xs text-white outline-none focus:border-[#D6FF3F] disabled:opacity-50"
+/>
           </div>
 
           {errorMessage && (
@@ -152,6 +201,7 @@ export default function BookingIssueModal({
             
             <button
               type="button"
+              disabled={submitting}
               onClick={onClose}
               className="border-2 border-white/30 px-4 py-3.5 font-display text-xs text-white hover:border-white"
             >

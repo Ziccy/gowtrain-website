@@ -594,21 +594,6 @@ const filteredBookings = useMemo(() => {
 
       setPlayerProfile(profile);
 
-      /*
-       * Bestaande functionaliteit behouden.
-       * De rechten en interne controles van deze RPC
-       * moeten afzonderlijk worden beoordeeld.
-       */
-      const { error: completionError } = await supabase.rpc(
-        "mark_past_bookings_completed"
-      );
-
-      if (completionError) {
-        console.warn(
-          "Afgeronde boekingen bijwerken niet gelukt:",
-          completionError.message
-        );
-      }
 
       /*
        * Geen confirm_package_purchase vanuit de browser.
@@ -1375,15 +1360,19 @@ const filteredBookings = useMemo(() => {
                       const chat = booking.chat_state;
                       const canPay = canResumePayment(booking, now);
 
-                      const endsAt = slot?.ends_at
-                        ? Date.parse(slot.ends_at)
-                        : NaN;
+                      const startsAt = slot?.starts_at
+  ? Date.parse(slot.starts_at)
+  : NaN;
 
-                      const canReportIssue =
-                        isCompleted &&
-                        Number.isFinite(endsAt) &&
-                        now >= endsAt &&
-                        now - endsAt <= 24 * 60 * 60 * 1000;
+const canReportIssue =
+  (
+    booking.status === "confirmed" ||
+    booking.status === "completed"
+  ) &&
+  Boolean(booking.paid_at) &&
+  Number.isFinite(startsAt) &&
+  now >= startsAt &&
+  now <= startsAt + 24 * 60 * 60 * 1000;
 
                       return (
                         <article
@@ -1479,7 +1468,10 @@ const filteredBookings = useMemo(() => {
                             </div>
 
                             {/* AGENDA, DELEN EN CHAT */}
-                            {booking.status === "confirmed" && slot && (
+                            {booking.status === "confirmed" &&
+                              slot &&
+                              Number.isFinite(Date.parse(slot.ends_at)) &&
+                              Date.parse(slot.ends_at) > now && (
                               <div className="mt-5 space-y-2 border-t border-white/10 pt-2">
                                 <div className="grid grid-cols-2 gap-2">
                                   <button
@@ -1641,33 +1633,37 @@ const filteredBookings = useMemo(() => {
                               </div>
                             )}
 
-                            {/* AFGEROND EN MELDING MAKEN */}
-                            {isCompleted && (
-                              <div className="mt-4 flex flex-col gap-2 border-t border-white/10 pt-3 text-xs sm:flex-row sm:items-center sm:justify-between">
-                                {booking.has_review ? (
-                                  <span className="font-display text-xs text-[#D6FF3F]">
-                                    ✓ JE HEBT DEZE LES AL BEOORDEELD
-                                  </span>
-                                ) : (
-                                  <span className="text-xs text-[#B9BEC2]">
-                                    Les afgerond
-                                  </span>
-                                )}
+                            {/* AFGEROND */}
+{isCompleted && (
+  <div className="mt-4 border-t border-white/10 pt-3 text-xs">
+    {booking.has_review ? (
+      <span className="font-display text-xs text-[#D6FF3F]">
+        ✓ JE HEBT DEZE LES AL BEOORDEELD
+      </span>
+    ) : (
+      <span className="text-xs text-[#B9BEC2]">
+        Les afgerond
+      </span>
+    )}
+  </div>
+)}
 
-                                {canReportIssue && (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      openIssueReport(booking)
-                                    }
-                                    className="text-left text-[11px] font-semibold text-[#B9BEC2] transition hover:text-[#FF4B3E] sm:text-right"
-                                  >
-                                    Iets misgegaan met deze les?
-                                    Meld binnen 24u →
-                                  </button>
-                                )}
-                              </div>
-                            )}
+{/* PROBLEEM MELDEN: VANAF START TOT 24 UUR NA START */}
+{canReportIssue && (
+  <div className="mt-4 border-t border-white/10 pt-3">
+    <button
+      type="button"
+      onClick={() => openIssueReport(booking)}
+      className="text-left text-[11px] font-semibold text-[#B9BEC2] transition hover:text-[#FF4B3E]"
+    >
+      Iets mis met deze training? Meld het hier →
+    </button>
+
+    <p className="mt-1 text-[11px] text-[#8A8F94]">
+      Melden kan vanaf de start van de training tot 24 uur daarna.
+    </p>
+  </div>
+)}
 
                             {/* ALLEEN BETALEN BINNEN DE TERMIJN */}
                             {canPay && (
