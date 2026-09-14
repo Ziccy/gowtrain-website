@@ -296,11 +296,16 @@ export async function GET(
       .eq("stripe_livemode", getStripeLivemode())
       .eq("funds_flow", "separate_transfers_v1")
       .lte(
-        "reservation_expires_at",
-        new Date().toISOString()
-      )
-      .order("reservation_expires_at", { ascending: true })
-      .limit(5);
+  "reservation_expires_at",
+  new Date().toISOString()
+)
+.lte(
+  "next_cleanup_check_at",
+  new Date().toISOString()
+)
+.order("next_cleanup_check_at", { ascending: true })
+.order("reservation_expires_at", { ascending: true })
+.limit(5);
 
     if (error) {
       console.error("Verlopen pakketpogingen ophalen mislukt:", {
@@ -316,9 +321,71 @@ export async function GET(
 
     const attempts = (data ?? []) as PackageAttempt[];
 
-    const results = await Promise.all(
-      attempts.map(inspectAndRelease)
+    const results: CleanupResult[] = await Promise.all(
+  attempts.map(async (attempt): Promise<CleanupResult> => {
+    const checkedAt = new Date();
+    const nextCheckAt = new Date(
+      checkedAt.getTime() + 10 * 60 * 1000
     );
+
+    /*
+     * Verschuif het controlemoment voordat Stripe wordt aangeroepen.
+     *
+     * De voorwaarde voorkomt dat een andere gelijktijdige
+     * uitvoering dezelfde planning direct opnieuw overneemt.
+     *
+     * Bij een uitgevallen uitvoering komt de poging na
+     * tien minuten opnieuw beschikbaar voor controle.
+     */
+    const {
+      data: scheduledAttempt,
+      error: scheduleError,
+    } = await supabaseAdmin
+      .from("checkout_attempts")
+      .update({
+        next_cleanup_check_at: nextCheckAt.toISOString(),
+        updated_at: checkedAt.toISOString(),
+      })
+      .eq("id", attempt.id)
+      .eq("status", "open")
+      .eq(
+        "stripe_checkout_session_id",
+        attempt.stripe_checkout_session_id
+      )
+      .lte(
+        "next_cleanup_check_at",
+        checkedAt.toISOString()
+      )
+      .select("id")
+      .maybeSingle();
+
+    if (scheduleError) {
+      console.error("Volgende pakketcontrole plannen mislukt:", {
+        attemptId: attempt.id,
+        code: scheduleError.code,
+        message: scheduleError.message,
+      });
+
+      return {
+        attemptId: attempt.id,
+        outcome: "error",
+        reason:
+          "De volgende controle kon niet worden gepland. Geen vrijgave uitgevoerd.",
+      };
+    }
+
+    if (!scheduledAttempt) {
+      return {
+        attemptId: attempt.id,
+        outcome: "skipped",
+        reason:
+          "De poging is gewijzigd of een andere uitvoering heeft de controle al ingepland.",
+      };
+    }
+
+    return await inspectAndRelease(attempt);
+  })
+);
 
     const released = results.filter(
       (result) => result.outcome === "released"
