@@ -73,7 +73,7 @@ function formatEuro(cents: number): string {
 export default function Home() {
   // 🟢 ZET OP 'true' OM THUISPAGINA AF TE SCHERMEN MET ONDERHOUDSPAGINA.
   // 🔴 ZET OP 'false' OM DE ECHTE HOMEPAGE TE TONEN.
-  const isUnderConstruction = false;
+  const isUnderConstruction = true;
 
   const [showcaseItems, setShowcaseItems] = useState<ShowcaseItem[]>([]);
   const [loadingShowcase, setLoadingShowcase] = useState<boolean>(true);
