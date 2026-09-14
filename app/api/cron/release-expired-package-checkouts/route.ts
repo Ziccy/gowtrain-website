@@ -87,14 +87,18 @@ function json(
   });
 }
 
+/*
+ * Controleer een bestaande Stripe Checkout Session.
+ *
+ * Deze functie geeft alleen vrij wanneer Stripe bevestigt:
+ * - Session is expired;
+ * - payment_status is unpaid;
+ * - er is geen Payment Intent.
+ */
 async function inspectAndRelease(
   attempt: PackageAttempt
 ): Promise<CleanupResult> {
   try {
-    /*
-     * Controleer Stripe opnieuw bij iedere uitvoering.
-     * We gebruiken niet de uitkomst van een eerdere inspectie.
-     */
     const session = await stripe.checkout.sessions.retrieve(
       attempt.stripe_checkout_session_id
     );
@@ -125,23 +129,21 @@ async function inspectAndRelease(
       session.currency === attempt.currency;
 
     if (!matches) {
-      console.warn("Pakketvrijgave geblokkeerd: Stripe-data wijkt af.", {
-        attemptId: attempt.id,
-      });
+      console.warn(
+        "Pakketvrijgave geblokkeerd: Stripe-data wijkt af.",
+        {
+          attemptId: attempt.id,
+        }
+      );
 
       return {
         attemptId: attempt.id,
         outcome: "skipped",
-        reason: "Stripe-gegevens wijken af. Handmatige controle nodig.",
+        reason:
+          "Stripe-gegevens wijken af. Handmatige controle nodig.",
       };
     }
 
-    /*
-     * Alleen de geteste, eenvoudige situatie automatisch afsluiten.
-     *
-     * Een aanwezige Payment Intent wordt NIET automatisch
-     * geïnterpreteerd als onbetaald of veilig annuleerbaar.
-     */
     if (session.payment_status === "paid") {
       return {
         attemptId: attempt.id,
@@ -183,22 +185,21 @@ async function inspectAndRelease(
     }
 
     /*
-     * Stripe heeft bevestigd:
-     * - Checkout is verlopen;
-     * - betaling is unpaid;
-     * - er is geen Payment Intent.
+     * Stripe heeft de veilige situatie bevestigd.
      *
-     * De databasefunctie vergrendelt vervolgens pakket en poging,
-     * en controleert opnieuw of vrijgave nog is toegestaan.
+     * De databasefunctie vergrendelt vervolgens pakket en poging
+     * en controleert opnieuw of afsluiten nog is toegestaan.
      */
-    const { data: closed, error: closeError } =
-      await supabaseAdmin.rpc(
-        "close_expired_package_checkout",
-        {
-          p_attempt_id: attempt.id,
-          p_checkout_session_id: session.id,
-        }
-      );
+    const {
+      data: closed,
+      error: closeError,
+    } = await supabaseAdmin.rpc(
+      "close_expired_package_checkout",
+      {
+        p_attempt_id: attempt.id,
+        p_checkout_session_id: session.id,
+      }
+    );
 
     if (closeError) {
       console.error("Pakketbetaalpoging afsluiten mislukt:", {
@@ -232,7 +233,8 @@ async function inspectAndRelease(
     return {
       attemptId: attempt.id,
       outcome: "released",
-      reason: "Verlopen, onbetaalde pakketbetaalpoging afgesloten.",
+      reason:
+        "Verlopen, onbetaalde pakketbetaalpoging afgesloten.",
     };
   } catch (error: unknown) {
     console.error("Stripe-controle voor pakketvrijgave mislukt:", {
@@ -252,91 +254,22 @@ async function inspectAndRelease(
   }
 }
 
-export async function GET(
-  request: NextRequest
-): Promise<NextResponse> {
-  if (
-    request.headers.get("authorization") !==
-    `Bearer ${cronSecret}`
-  ) {
-    return json({ error: "Niet geautoriseerd." }, 401);
-  }
-
+/*
+ * Plan de volgende controle voordat Stripe wordt aangeroepen.
+ *
+ * Zo blijven overgeslagen pogingen niet telkens de eerste
+ * plekken van de batch bezet houden.
+ */
+async function scheduleAndInspect(
+  attempt: PackageAttempt
+): Promise<CleanupResult> {
   try {
-    /*
-     * Eerste versie:
-     * alleen open pakketpogingen met een opgeslagen Session-ID.
-     *
-     * Reserved, creating, payment_processing en review_required
-     * krijgen later afzonderlijke afhandeling.
-     */
-    const { data, error } = await supabaseAdmin
-      .from("checkout_attempts")
-      .select(
-        `
-          id,
-          package_id,
-          player_id,
-          trainer_id,
-          checkout_mode,
-          status,
-          amount_cents,
-          currency,
-          stripe_livemode,
-          funds_flow,
-          stripe_checkout_session_id,
-          stripe_payment_intent_id,
-          paid_at,
-          reservation_expires_at
-        `
-      )
-      .not("package_id", "is", null)
-      .not("stripe_checkout_session_id", "is", null)
-      .eq("status", "open")
-      .eq("stripe_livemode", getStripeLivemode())
-      .eq("funds_flow", "separate_transfers_v1")
-      .lte(
-  "reservation_expires_at",
-  new Date().toISOString()
-)
-.lte(
-  "next_cleanup_check_at",
-  new Date().toISOString()
-)
-.order("next_cleanup_check_at", { ascending: true })
-.order("reservation_expires_at", { ascending: true })
-.limit(5);
-
-    if (error) {
-      console.error("Verlopen pakketpogingen ophalen mislukt:", {
-        code: error.code,
-        message: error.message,
-      });
-
-      return json(
-        { error: "Pakketbetaalpogingen konden niet worden opgehaald." },
-        503
-      );
-    }
-
-    const attempts = (data ?? []) as PackageAttempt[];
-
-    const results: CleanupResult[] = await Promise.all(
-  attempts.map(async (attempt): Promise<CleanupResult> => {
     const checkedAt = new Date();
+
     const nextCheckAt = new Date(
       checkedAt.getTime() + 10 * 60 * 1000
     );
 
-    /*
-     * Verschuif het controlemoment voordat Stripe wordt aangeroepen.
-     *
-     * De voorwaarde voorkomt dat een andere gelijktijdige
-     * uitvoering dezelfde planning direct opnieuw overneemt.
-     *
-     * Bij een uitgevallen uitvoering komt de poging na
-     * tien minuten opnieuw beschikbaar voor controle.
-     */
     const {
       data: scheduledAttempt,
       error: scheduleError,
@@ -384,8 +317,162 @@ export async function GET(
     }
 
     return await inspectAndRelease(attempt);
-  })
-);
+  } catch (error: unknown) {
+    console.error("Pakketcontrole voorbereiden mislukt:", {
+      attemptId: attempt.id,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Onbekende fout.",
+    });
+
+    return {
+      attemptId: attempt.id,
+      outcome: "error",
+      reason:
+        "De controle kon niet worden voorbereid. Later opnieuw controleren.",
+    };
+  }
+}
+
+export async function GET(
+  request: NextRequest
+): Promise<NextResponse> {
+  if (
+    request.headers.get("authorization") !==
+    `Bearer ${cronSecret}`
+  ) {
+    return json(
+      { error: "Niet geautoriseerd." },
+      401
+    );
+  }
+
+  let closedBeforeStripe = 0;
+
+  try {
+    const livemode = getStripeLivemode();
+
+    /*
+     * 1. Sluit verlopen reserved-pogingen af waarvoor
+     * nog nooit een Stripe-aanroep is voorbereid.
+     *
+     * De databasefunctie controleert dit opnieuw onder locks.
+     * Creating-pogingen vallen hier nadrukkelijk niet onder.
+     */
+    const {
+      data: unstartedClosed,
+      error: unstartedError,
+    } = await supabaseAdmin.rpc(
+      "close_unstarted_package_checkouts",
+      {
+        p_stripe_livemode: livemode,
+        p_limit: 20,
+      }
+    );
+
+    if (unstartedError) {
+      console.error(
+        "Niet-gestarte pakketpogingen afsluiten mislukt:",
+        {
+          code: unstartedError.code,
+          message: unstartedError.message,
+        }
+      );
+
+      return json(
+        {
+          success: false,
+          error:
+            "Niet-gestarte pakketreserveringen konden niet worden afgesloten.",
+        },
+        503
+      );
+    }
+
+    if (
+      typeof unstartedClosed !== "number" ||
+      !Number.isInteger(unstartedClosed) ||
+      unstartedClosed < 0
+    ) {
+      throw new Error(
+        "De database gaf geen geldig aantal afgesloten reserveringen terug."
+      );
+    }
+
+    closedBeforeStripe = unstartedClosed;
+
+    if (closedBeforeStripe > 0) {
+      console.log("Niet-gestarte pakketreserveringen afgesloten:", {
+        count: closedBeforeStripe,
+      });
+    }
+
+    /*
+     * 2. Selecteer open pogingen met een opgeslagen Session-ID.
+     *
+     * Alleen dezelfde Stripe-omgeving wordt verwerkt.
+     * Creating, payment_processing en review_required
+     * worden nog niet automatisch afgehandeld.
+     */
+    const selectionTime = new Date().toISOString();
+
+    const { data, error } = await supabaseAdmin
+      .from("checkout_attempts")
+      .select(
+        `
+          id,
+          package_id,
+          player_id,
+          trainer_id,
+          checkout_mode,
+          status,
+          amount_cents,
+          currency,
+          stripe_livemode,
+          funds_flow,
+          stripe_checkout_session_id,
+          stripe_payment_intent_id,
+          paid_at,
+          reservation_expires_at
+        `
+      )
+      .not("package_id", "is", null)
+      .not("stripe_checkout_session_id", "is", null)
+      .eq("status", "open")
+      .eq("stripe_livemode", livemode)
+      .eq("funds_flow", "separate_transfers_v1")
+      .lte("reservation_expires_at", selectionTime)
+      .lte("next_cleanup_check_at", selectionTime)
+      .order("next_cleanup_check_at", { ascending: true })
+      .order("reservation_expires_at", { ascending: true })
+      .limit(5);
+
+    if (error) {
+      console.error("Verlopen pakketpogingen ophalen mislukt:", {
+        code: error.code,
+        message: error.message,
+      });
+
+      return json(
+        {
+          success: false,
+          closedBeforeStripe,
+          error:
+            "Pakketbetaalpogingen konden niet worden opgehaald.",
+        },
+        503
+      );
+    }
+
+    const attempts = (data ?? []) as PackageAttempt[];
+
+    /*
+     * 3. Plan en controleer maximaal vijf Stripe Sessions.
+     */
+    const results: CleanupResult[] = await Promise.all(
+      attempts.map(scheduleAndInspect)
+    );
 
     const released = results.filter(
       (result) => result.outcome === "released"
@@ -402,6 +489,7 @@ export async function GET(
     return json(
       {
         success: errors === 0,
+        closedBeforeStripe,
         checked: attempts.length,
         released,
         skipped,
@@ -419,7 +507,11 @@ export async function GET(
     });
 
     return json(
-      { error: "De pakketopruiming kon niet worden afgerond." },
+      {
+        success: false,
+        closedBeforeStripe,
+        error: "De pakketopruiming kon niet worden afgerond.",
+      },
       500
     );
   }
