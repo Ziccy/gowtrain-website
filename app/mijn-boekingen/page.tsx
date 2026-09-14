@@ -5,6 +5,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
+import PlayerPackageReservations from "@/components/PlayerPackageReservations";
 import BookingIssueModal from "@/components/BookingIssueModal";
 import BookingChatModal from "@/components/BookingChatModal";
 import { supabase } from "@/lib/supabase-browser";
@@ -1265,6 +1266,9 @@ const filteredBookings = useMemo(() => {
               onMessagesRead={() => void loadPlayerBookings(false)}
             />
           )}
+
+<PlayerPackageReservations refreshing={refreshing} />
+
 
           {/* FILTERS */}
           <div className="mt-10 flex flex-col gap-4 border-b-2 border-white/20 pb-6 sm:flex-row sm:items-center sm:justify-between">
