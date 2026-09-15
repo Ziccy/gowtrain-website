@@ -602,6 +602,88 @@ async function processRefund(
       );
     }
 
+    /*
+ * Stripe heeft de refund succesvol verwerkt en het resultaat
+ * is opgeslagen in refund_requests.
+ *
+ * Werk nu de betrokken boekingen en tijdsloten bij.
+ * Deze functie maakt GEEN nieuwe Stripe-refund aan.
+ */
+if (refund.status === "succeeded") {
+  try {
+    const {
+      data: applied,
+      error: applyError,
+    } = await supabaseAdmin.rpc(
+      "apply_successful_refund",
+      {
+        p_refund_request_id: request.id,
+      }
+    );
+
+    if (applyError || applied !== true) {
+      console.error(
+        "Refund geslaagd bij Stripe; administratieve afronding nog niet gelukt:",
+        {
+          requestId: request.id,
+          stripeRefundId: refund.id,
+          code: applyError?.code,
+          message:
+            applyError?.message ||
+            "De afrondingsfunctie gaf geen bevestiging terug.",
+        }
+      );
+
+      /*
+       * Laat de refundstatus op succeeded staan.
+       * Niet terugzetten naar queued of opnieuw geld terugvragen.
+       * Alleen de administratieve afronding moet worden herhaald.
+       */
+      return json(
+        {
+          success: false,
+          processed: 1,
+          requestId: request.id,
+          refundId: refund.id,
+          refundStatus: refund.status,
+          amountCents: refund.amount,
+          currency: refund.currency,
+          requiresAdministrativeReconciliation: true,
+          error:
+            "Stripe heeft de refund verwerkt, maar de afronding in Gowtrain kon nog niet worden bevestigd. Vraag geen nieuwe refund aan.",
+        },
+        503
+      );
+    }
+  } catch (error: unknown) {
+    console.error(
+      "Verbinding onderbroken tijdens administratieve refundafronding:",
+      {
+        requestId: request.id,
+        stripeRefundId: refund.id,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Onbekende fout.",
+      }
+    );
+
+    return json(
+      {
+        success: false,
+        processed: 1,
+        requestId: request.id,
+        refundId: refund.id,
+        refundStatus: refund.status,
+        requiresAdministrativeReconciliation: true,
+        error:
+          "De refund is bij Stripe verwerkt. De administratieve afronding moet opnieuw worden gecontroleerd; vraag geen nieuwe refund aan.",
+      },
+      503
+    );
+  }
+}
+
     console.log("Stripe-refundresultaat opgeslagen:", {
       requestId: request.id,
       stripeRefundId: refund.id,
