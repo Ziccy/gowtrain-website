@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
+import { syncStripeRefund } from "@/lib/sync-stripe-refund";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
@@ -535,169 +536,44 @@ async function processRefund(
 
     stripeRefundId = refund.id;
 
-    const paymentIntentId = getPaymentIntentId(refund);
-
-    const allowedStatuses = [
-      "pending",
-      "requires_action",
-      "succeeded",
-      "failed",
-      "canceled",
-    ];
-
-    if (
-      paymentIntentId !== request.stripe_payment_intent_id ||
-      refund.amount !== request.amount_cents ||
-      refund.currency !== request.currency ||
-      refund.metadata?.gowtrain_refund_request_id !== request.id ||
-      !refund.status ||
-      !allowedStatuses.includes(refund.status)
-    ) {
-      throw new Error(
-        "Het Stripe-refundantwoord wijkt af van de verwachte opdracht."
-      );
-    }
-
     /*
-     * 5. Bewaar het eerste Stripe-resultaat.
+     * 5. Synchroniseer via dezelfde helper als de webhook.
      *
-     * De definitieve verwerking van lesstatussen en mails
-     * voegen we daarna toe, ook voor latere Stripe-webhooks.
+     * De helper:
+     * - haalt de bestaande refund opnieuw op bij Stripe;
+     * - controleert de koppeling en het bedrag;
+     * - slaat de actuele refundstatus op;
+     * - rondt bij succeeded de boekingen administratief af.
+     *
+     * De helper vraagt GEEN nieuwe refund aan.
      */
-    const { data: saved, error: saveError } =
-      await supabaseAdmin.rpc(
-        "record_refund_stripe_result",
-        {
-          p_refund_request_id: request.id,
-          p_lock_token: request.lock_token,
-          p_stripe_refund_id: refund.id,
-          p_payment_intent_id: paymentIntentId,
-          p_amount_cents: refund.amount,
-          p_currency: refund.currency,
-          p_stripe_status: refund.status,
-        }
-      );
+    const result = await syncStripeRefund(
+      refund.id,
+      request.id
+    );
 
-    if (saveError) {
+    if (!result.handled) {
       throw new Error(
-        `Stripe-refundresultaat opslaan mislukt: ${saveError.message}`
+        "De Stripe-refund kon niet aan de nieuwe refundadministratie worden gekoppeld."
       );
     }
 
-    if (saved !== true) {
-      console.error("Refund bestaat bij Stripe, claim niet meer geldig:", {
-        requestId: request.id,
-        stripeRefundId: refund.id,
-      });
-
-      return json(
-        {
-          success: false,
-          requestId: request.id,
-          refundId: refund.id,
-          error:
-            "Stripe heeft de refund aangemaakt, maar de opslag is niet bevestigd. Niet opnieuw aanvragen; eerst herstellen.",
-        },
-        409
-      );
-    }
-
-    /*
- * Stripe heeft de refund succesvol verwerkt en het resultaat
- * is opgeslagen in refund_requests.
- *
- * Werk nu de betrokken boekingen en tijdsloten bij.
- * Deze functie maakt GEEN nieuwe Stripe-refund aan.
- */
-if (refund.status === "succeeded") {
-  try {
-    const {
-      data: applied,
-      error: applyError,
-    } = await supabaseAdmin.rpc(
-      "apply_successful_refund",
-      {
-        p_refund_request_id: request.id,
-      }
-    );
-
-    if (applyError || applied !== true) {
-      console.error(
-        "Refund geslaagd bij Stripe; administratieve afronding nog niet gelukt:",
-        {
-          requestId: request.id,
-          stripeRefundId: refund.id,
-          code: applyError?.code,
-          message:
-            applyError?.message ||
-            "De afrondingsfunctie gaf geen bevestiging terug.",
-        }
-      );
-
-      /*
-       * Laat de refundstatus op succeeded staan.
-       * Niet terugzetten naar queued of opnieuw geld terugvragen.
-       * Alleen de administratieve afronding moet worden herhaald.
-       */
-      return json(
-        {
-          success: false,
-          processed: 1,
-          requestId: request.id,
-          refundId: refund.id,
-          refundStatus: refund.status,
-          amountCents: refund.amount,
-          currency: refund.currency,
-          requiresAdministrativeReconciliation: true,
-          error:
-            "Stripe heeft de refund verwerkt, maar de afronding in Gowtrain kon nog niet worden bevestigd. Vraag geen nieuwe refund aan.",
-        },
-        503
-      );
-    }
-  } catch (error: unknown) {
-    console.error(
-      "Verbinding onderbroken tijdens administratieve refundafronding:",
-      {
-        requestId: request.id,
-        stripeRefundId: refund.id,
-        message:
-          error instanceof Error
-            ? error.message
-            : "Onbekende fout.",
-      }
-    );
-
-    return json(
-      {
-        success: false,
-        processed: 1,
-        requestId: request.id,
-        refundId: refund.id,
-        refundStatus: refund.status,
-        requiresAdministrativeReconciliation: true,
-        error:
-          "De refund is bij Stripe verwerkt. De administratieve afronding moet opnieuw worden gecontroleerd; vraag geen nieuwe refund aan.",
-      },
-      503
-    );
-  }
-}
-
-    console.log("Stripe-refundresultaat opgeslagen:", {
-      requestId: request.id,
-      stripeRefundId: refund.id,
-      status: refund.status,
+    console.log("Refundworker heeft Stripe-resultaat verwerkt:", {
+      requestId: result.requestId,
+      refundId: result.refundId,
+      status: result.status,
+      applied: result.applied,
     });
 
     return json({
       success: true,
       processed: 1,
-      requestId: request.id,
-      refundId: refund.id,
-      refundStatus: refund.status,
-      amountCents: refund.amount,
-      currency: refund.currency,
+      requestId: result.requestId,
+      refundId: result.refundId,
+      refundStatus: result.status,
+      applied: result.applied,
+      amountCents: request.amount_cents,
+      currency: request.currency,
     });
   } catch (error: unknown) {
     const message =
@@ -706,7 +582,7 @@ if (refund.status === "succeeded") {
         : "Onbekende fout tijdens refundverwerking.";
 
     const reviewMessage = stripeRefundId
-      ? `Stripe-refund ${stripeRefundId} bestaat mogelijk al. ${message}`
+      ? `Stripe-refund ${stripeRefundId} is aangemaakt. Controleer de status en administratieve afronding. ${message}`
       : message;
 
     console.error("Refundverwerking vereist controle:", {
@@ -715,6 +591,13 @@ if (refund.status === "succeeded") {
       message,
     });
 
+    /*
+     * markForReview wijzigt alleen een opdracht die nog
+     * processing is en waarvoor deze worker een geldige claim heeft.
+     *
+     * Als de webhook of helper al succeeded heeft opgeslagen,
+     * wordt die status hiermee niet teruggezet.
+     */
     const reviewSaved = await markForReview(
       request,
       reviewMessage
@@ -741,7 +624,10 @@ export async function POST(
     request.headers.get("authorization") !==
     `Bearer ${cronSecret}`
   ) {
-    return json({ error: "Niet geautoriseerd." }, 401);
+    return json(
+      { error: "Niet geautoriseerd." },
+      401
+    );
   }
 
   try {
@@ -775,7 +661,10 @@ export async function POST(
       });
 
       return json(
-        { error: "Refundopdrachten konden niet worden opgehaald." },
+        {
+          error:
+            "Refundopdrachten konden niet worden opgehaald.",
+        },
         503
       );
     }
@@ -803,7 +692,10 @@ export async function POST(
     });
 
     return json(
-      { error: "De refundworker kon niet worden afgerond." },
+      {
+        error:
+          "De refundworker kon niet worden afgerond.",
+      },
       503
     );
   }
