@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { supabase } from "@/lib/supabase-browser";
 
 type PackagePurchase = {
@@ -34,6 +35,7 @@ type CancellationResponse = {
 type Props = {
   refreshing?: boolean;
   onChanged: () => void | Promise<void>;
+  renderLessons?: (purchaseId: string) => ReactNode;
 };
 
 function formatMoney(cents: number, currency: string): string {
@@ -112,6 +114,7 @@ function getRefundLabel(
 export default function PlayerPackagePurchases({
   refreshing = false,
   onChanged,
+  renderLessons,
 }: Props) {
   const [purchases, setPurchases] =
     useState<PackagePurchase[]>([]);
@@ -448,6 +451,12 @@ export default function PlayerPackagePurchases({
                     .
                   </p>
                 )}
+
+                {renderLessons && (
+  <div className="mt-5">
+    {renderLessons(purchase.purchaseId)}
+  </div>
+)}
 
                 {canCancel && !confirming && (
                   <button
