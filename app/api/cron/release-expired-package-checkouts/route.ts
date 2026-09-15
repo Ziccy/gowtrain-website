@@ -182,18 +182,86 @@ async function inspectAndRelease(
       };
     }
 
-    if (
-      session.payment_intent != null ||
-      attempt.stripe_payment_intent_id != null ||
-      attempt.paid_at != null
-    ) {
-      return {
-        attemptId: attempt.id,
-        outcome: "skipped",
-        reason:
-          "Er bestaat een Payment Intent of betaalregistratie. Eerst nader controleren.",
-      };
-    }
+    if (attempt.paid_at !== null) {
+  return {
+    attemptId: attempt.id,
+    outcome: "skipped",
+    reason:
+      "Er staat een betaaldatum geregistreerd. Niet vrijgegeven.",
+  };
+}
+
+const paymentIntentId =
+  typeof session.payment_intent === "string"
+    ? session.payment_intent
+    : session.payment_intent?.id ?? null;
+
+let cancelledPaymentIntentId: string | null = null;
+
+if (paymentIntentId) {
+  /*
+   * De Session is hierboven al gecontroleerd op:
+   * - juiste betaalpoging;
+   * - expired;
+   * - unpaid.
+   *
+   * Controleer nu ook de gekoppelde Payment Intent.
+   */
+  const paymentIntent = await stripe.paymentIntents.retrieve(
+    paymentIntentId
+  );
+
+  const paymentIntentMatches =
+    paymentIntent.livemode === attempt.stripe_livemode &&
+    paymentIntent.amount === attempt.amount_cents &&
+    paymentIntent.currency === attempt.currency &&
+    paymentIntent.metadata.gowtrain_checkout_attempt_id ===
+      attempt.id &&
+    paymentIntent.metadata.package_id === attempt.package_id &&
+    paymentIntent.metadata.player_id === attempt.player_id &&
+    paymentIntent.metadata.trainer_id === attempt.trainer_id &&
+    paymentIntent.metadata.booking_type === "package" &&
+    paymentIntent.metadata.gowtrain_funds_flow ===
+      "separate_transfers_v1" &&
+    paymentIntent.transfer_data == null &&
+    paymentIntent.application_fee_amount == null &&
+    paymentIntent.on_behalf_of == null &&
+    (
+      attempt.stripe_payment_intent_id === null ||
+      attempt.stripe_payment_intent_id === paymentIntent.id
+    );
+
+  if (!paymentIntentMatches) {
+    return {
+      attemptId: attempt.id,
+      outcome: "skipped",
+      reason:
+        "De Payment Intent komt niet overeen met deze betaalpoging. Niet vrijgegeven.",
+    };
+  }
+
+  if (
+    paymentIntent.status !== "canceled" ||
+    paymentIntent.amount_received !== 0 ||
+    paymentIntent.canceled_at === null
+  ) {
+    return {
+      attemptId: attempt.id,
+      outcome: "skipped",
+      reason:
+        "De Payment Intent is niet definitief geannuleerd zonder ontvangen bedrag. Niet vrijgegeven.",
+    };
+  }
+
+  cancelledPaymentIntentId = paymentIntent.id;
+} else if (attempt.stripe_payment_intent_id !== null) {
+  return {
+    attemptId: attempt.id,
+    outcome: "skipped",
+    reason:
+      "De database bevat een Payment Intent die ontbreekt bij de Stripe Session. Eerst controleren.",
+  };
+}
 
     /*
      * Stripe heeft de veilige situatie bevestigd.
@@ -201,10 +269,26 @@ async function inspectAndRelease(
      * De databasefunctie vergrendelt vervolgens pakket en poging
      * en controleert opnieuw of afsluiten nog is toegestaan.
      */
-    const {
-      data: closed,
-      error: closeError,
-    } = await supabaseAdmin.rpc(
+    /*
+ * Kies de juiste afsluitfunctie.
+ *
+ * Beide situaties vereisen een verlopen, onbetaalde Session:
+ * 1. Geen Payment Intent.
+ * 2. Geverifieerde canceled Payment Intent met amount_received = 0.
+ */
+const {
+  data: closed,
+  error: closeError,
+} = cancelledPaymentIntentId
+  ? await supabaseAdmin.rpc(
+      "close_cancelled_package_payment",
+      {
+        p_attempt_id: attempt.id,
+        p_checkout_session_id: session.id,
+        p_payment_intent_id: cancelledPaymentIntentId,
+      }
+    )
+  : await supabaseAdmin.rpc(
       "close_expired_package_checkout",
       {
         p_attempt_id: attempt.id,
