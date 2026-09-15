@@ -277,6 +277,40 @@ export async function POST(request: NextRequest) {
       ? "trainer"
       : "player";
 
+/*
+ * Refunds uit de nieuwe administratie mogen niet ook
+ * via deze oude route worden aangevraagd.
+ */
+const {
+  data: registeredRefundItem,
+  error: refundLookupError,
+} = await supabaseAdmin
+  .from("refund_request_items")
+  .select("refund_request_id")
+  .eq("booking_id", booking.id)
+  .maybeSingle();
+
+if (refundLookupError) {
+  return NextResponse.json(
+    {
+      error:
+        "De refundregistratie kon niet worden gecontroleerd. Er is geen nieuwe refund aangevraagd.",
+    },
+    { status: 503 }
+  );
+}
+
+if (registeredRefundItem) {
+  return NextResponse.json(
+    {
+      error:
+        "Deze refund wordt via de nieuwe refundadministratie verwerkt. Start geen afzonderlijke terugbetaling.",
+    },
+    { status: 409 }
+  );
+}
+
+
     const refund = await stripe.refunds.create(
       {
         payment_intent: booking.stripe_payment_intent_id,

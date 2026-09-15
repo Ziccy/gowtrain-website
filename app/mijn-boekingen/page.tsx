@@ -286,7 +286,7 @@ function isTimelyCancellation(
   const startsAt = booking.availability_slots?.starts_at;
   if (!startsAt) return false;
 
-  return new Date(startsAt).getTime() > now + 24 * 60 * 60 * 1000;
+  return new Date(startsAt).getTime() >= now + 24 * 60 * 60 * 1000;
 }
 
 function getSectionOrder(status: BookingStatus): number {
@@ -881,101 +881,78 @@ const filteredBookings = useMemo(() => {
     setSuccessMessage("Je melding is verstuurd naar Gowtrain.");
   }
 
-  async function handleCancellation(
-    booking: PlayerBooking
-  ): Promise<void> {
-    if (cancellingBookingId) return;
+async function handleCancellation(
+  booking: PlayerBooking
+): Promise<void> {
+  if (cancellingBookingId) return;
 
-    if (!canPlayerCancel(booking)) {
+  if (!canPlayerCancel(booking)) {
+    showError(
+      "Deze training kan niet meer via deze actie worden geannuleerd."
+    );
+    setPendingCancellation(null);
+    return;
+  }
+
+  setCancellingBookingId(booking.id);
+  clearMessages();
+
+  try {
+    const { data, error } = await supabase.rpc(
+      "request_player_single_cancellation",
+      {
+        p_booking_id: booking.id,
+      }
+    );
+
+    if (error) {
+      console.error("Training annuleren mislukt:", {
+        code: error.code,
+        message: error.message,
+      });
+
       showError(
-        "Deze training kan niet meer automatisch worden geannuleerd."
+        error.code === "P0001" || error.code === "42501"
+          ? error.message
+          : "De annulering kon niet worden bevestigd. Vernieuw je boekingen voordat je opnieuw probeert."
       );
-      setPendingCancellation(null);
       return;
     }
 
-    setCancellingBookingId(booking.id);
-    clearMessages();
+    const result = data as {
+      booking_id: string;
+      refund_request_id: string | null;
+      refund_required: boolean;
+      refund_amount_cents: number;
+      currency: string;
+      message: string;
+    } | null;
 
-    try {
-      const { data, error } = await supabase.rpc(
-        "request_player_booking_cancellation",
-        { p_booking_id: booking.id }
-      );
-
-      if (error) {
-        showError(
-          error.message || "Je training kon niet worden geannuleerd."
-        );
-        return;
-      }
-
-      const result = (
-        Array.isArray(data) ? data[0] : data
-      ) as CancellationResult | null;
-
-      if (!result) {
-        showError("Je training kon niet worden geannuleerd.");
-        return;
-      }
-
-      if (result.refund_required) {
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-
-        if (!session?.access_token) {
-          router.replace("/speler-login");
-          return;
-        }
-
-        const response = await fetch(
-          "/api/stripe/refunds/create",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${session.access_token}`,
-            },
-            body: JSON.stringify({ bookingId: booking.id }),
-          }
-        );
-
-        const refundResult = (await response.json()) as {
-          error?: string;
-        };
-
-        if (!response.ok) {
-          const message =
-            refundResult.error ||
-            "Terugbetaling kon niet gestart worden.";
-
-          setPendingCancellation(null);
-          await loadPlayerBookings(false);
-          showError(message);
-          return;
-        }
-
-        setSuccessMessage(
-          `Je training is geannuleerd. De terugbetaling van ${formatEuro(
-            result.refund_amount_cents,
-            result.currency
-          )} is aangevraagd.`
-        );
-      } else {
-        setSuccessMessage(result.message);
-      }
-
-      setPendingCancellation(null);
-      await loadPlayerBookings(false);
-    } catch {
+    if (!result || result.booking_id !== booking.id) {
       showError(
-        "De annulering kon niet worden afgerond of gecontroleerd. Vernieuw je boekingen voordat je opnieuw probeert."
+        "De annulering kon niet worden bevestigd. Vernieuw je boekingen."
       );
-    } finally {
-      setCancellingBookingId(null);
+      return;
     }
+
+    setPendingCancellation(null);
+
+    await loadPlayerBookings(false);
+
+    setSuccessMessage(result.message);
+
+    /*
+     * Geen fetch naar /api/stripe/refunds/create meer.
+     * De refundopdracht is samen met de annulering opgeslagen.
+     */
+  } catch {
+    showError(
+      "De verbinding is onderbroken. De annulering kan al geregistreerd zijn. Vernieuw je boekingen voordat je opnieuw probeert."
+    );
+  } finally {
+    setCancellingBookingId(null);
   }
+}
 
   async function handleRefresh(): Promise<void> {
     if (refreshing) return;
