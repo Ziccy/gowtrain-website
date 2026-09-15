@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import PlayerPackageReservations from "@/components/PlayerPackageReservations";
+import PlayerPackagePurchases from "@/components/PlayerPackagePurchases";
 import BookingIssueModal from "@/components/BookingIssueModal";
 import BookingChatModal from "@/components/BookingChatModal";
 import { supabase } from "@/lib/supabase-browser";
@@ -61,6 +62,7 @@ type MessageState = {
 
 type PlayerBooking = {
   id: string;
+  package_purchase_id: string | null;
   status: BookingStatus;
   created_at: string;
   paid_at: string | null;
@@ -271,12 +273,21 @@ function canPlayerCancel(
   booking: PlayerBooking,
   now = Date.now()
 ): boolean {
-  if (booking.status !== "confirmed") return false;
+  if (booking.package_purchase_id !== null) {
+    return false;
+  }
+
+  if (booking.status !== "confirmed") {
+    return false;
+  }
 
   const startsAt = booking.availability_slots?.starts_at;
+
   if (!startsAt) return false;
 
-  return new Date(startsAt).getTime() > now;
+  const startTime = Date.parse(startsAt);
+
+  return Number.isFinite(startTime) && startTime > now;
 }
 
 function isTimelyCancellation(
@@ -605,6 +616,7 @@ const filteredBookings = useMemo(() => {
           .select(
             `
               id,
+              package_purchase_id,
               status,
               created_at,
               paid_at,
@@ -1231,6 +1243,10 @@ async function handleCancellation(
 
 <PlayerPackageReservations refreshing={refreshing} />
 
+<PlayerPackagePurchases
+  refreshing={refreshing}
+  onChanged={() => loadPlayerBookings(false)}
+/>
 
           {/* FILTERS */}
           <div className="mt-10 flex flex-col gap-4 border-b-2 border-white/20 pb-6 sm:flex-row sm:items-center sm:justify-between">
