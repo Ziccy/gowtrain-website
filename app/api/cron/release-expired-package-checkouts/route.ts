@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
+import { confirmPaidPackageSessionById } from "@/lib/confirm-paid-package-session";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
@@ -53,7 +54,7 @@ type PackageAttempt = {
 
 type CleanupResult = {
   attemptId: string;
-  outcome: "released" | "skipped" | "error";
+  outcome: "released" | "confirmed" | "skipped" | "error";
   reason: string;
 };
 
@@ -145,13 +146,23 @@ async function inspectAndRelease(
     }
 
     if (session.payment_status === "paid") {
-      return {
-        attemptId: attempt.id,
-        outcome: "skipped",
-        reason:
-          "Stripe meldt betaald. Betaalbevestiging controleren; niet vrijgegeven.",
-      };
-    }
+  const purchaseId = await confirmPaidPackageSessionById(
+    session.id,
+    attempt.id
+  );
+
+  console.log("Betaalde pakketaankoop hersteld via periodieke controle:", {
+    attemptId: attempt.id,
+    purchaseId,
+  });
+
+  return {
+    attemptId: attempt.id,
+    outcome: "confirmed",
+    reason:
+      "De geslaagde pakketbetaling is bevestigd of was al verwerkt.",
+  };
+}
 
     if (session.status !== "expired") {
       return {
@@ -280,7 +291,7 @@ async function scheduleAndInspect(
         updated_at: checkedAt.toISOString(),
       })
       .eq("id", attempt.id)
-      .eq("status", "open")
+      .in("status", ["open", "payment_processing"])
       .eq(
         "stripe_checkout_session_id",
         attempt.stripe_checkout_session_id
@@ -439,7 +450,7 @@ export async function GET(
       )
       .not("package_id", "is", null)
       .not("stripe_checkout_session_id", "is", null)
-      .eq("status", "open")
+      .in("status", ["open", "payment_processing"])
       .eq("stripe_livemode", livemode)
       .eq("funds_flow", "separate_transfers_v1")
       .lte("reservation_expires_at", selectionTime)
@@ -486,11 +497,16 @@ export async function GET(
       (result) => result.outcome === "error"
     ).length;
 
+    const confirmed = results.filter(
+  (result) => result.outcome === "confirmed"
+).length;
+
     return json(
       {
         success: errors === 0,
         closedBeforeStripe,
         checked: attempts.length,
+        confirmed,
         released,
         skipped,
         errors,

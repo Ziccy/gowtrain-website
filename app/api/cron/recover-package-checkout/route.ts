@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
+import { confirmPaidPackageSessionById } from "@/lib/confirm-paid-package-session";
 import { createClient } from "@supabase/supabase-js";
 import { findPackageCheckoutSession } from "@/lib/find-package-checkout-session";
 
@@ -378,6 +379,24 @@ export async function POST(
           "De poging is ondertussen gewijzigd. Geen gegevens overschreven.",
       });
     }
+
+    if (session.payment_status === "paid") {
+  const purchaseId = await confirmPaidPackageSessionById(
+    session.id,
+    attempt.id
+  );
+
+  return json({
+    success: true,
+    recovered: true,
+    purchaseConfirmed: true,
+    purchaseId,
+    attemptId: attempt.id,
+    checkoutSessionId: session.id,
+    databaseStatus: "paid",
+    needsPaymentReconciliation: false,
+  });
+}
 
     console.log("Stripe Session teruggevonden en gekoppeld:", {
       attemptId: attempt.id,
