@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 import { confirmPaidPackageSessionById } from "@/lib/confirm-paid-package-session";
+import { syncStripeRefund } from "@/lib/sync-stripe-refund";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
@@ -373,6 +374,34 @@ async function handleRefundFailure(
     .eq("status", "refund_pending");
 }
 
+async function processStripeRefundEvent(
+  refund: Stripe.Refund
+): Promise<void> {
+  /*
+   * Nieuwe refundadministratie:
+   * altijd de actuele Stripe-status ophalen,
+   * niet alleen het mogelijk oudere eventobject gebruiken.
+   */
+  const result = await syncStripeRefund(refund.id);
+
+  if (result.handled) {
+    return;
+  }
+
+  /*
+   * Bestaande afhandeling voor oude refunds zonder
+   * gowtrain_refund_request_id.
+   */
+  if (refund.status === "succeeded") {
+    await finalizeRefund(refund);
+  } else if (
+    refund.status === "failed" ||
+    refund.status === "canceled"
+  ) {
+    await handleRefundFailure(refund);
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Webhook entry point                                                        */
 /* -------------------------------------------------------------------------- */
@@ -434,21 +463,30 @@ export async function POST(
         break;
       }
 
-      case "refund.updated": {
-        const refund =
-          event.data.object as Stripe.Refund;
+      case "refund.created":
+case "refund.updated":
+case "refund.failed": {
+  const refund = event.data.object as Stripe.Refund;
 
-        if (refund.status === "succeeded") {
-          await finalizeRefund(refund);
-        } else if (
-          refund.status === "failed" ||
-          refund.status === "canceled"
-        ) {
-          await handleRefundFailure(refund);
-        }
+  await processStripeRefundEvent(refund);
+  break;
+}
 
-        break;
-      }
+case "charge.refunded": {
+  const charge = event.data.object as Stripe.Charge;
+
+  /*
+   * Dit event is aanvullend.
+   * De refund-events zelf blijven de primaire bron,
+   * omdat charge.refunds.data niet noodzakelijk alle
+   * refunds van een betaling bevat.
+   */
+  for (const refund of charge.refunds?.data ?? []) {
+    await processStripeRefundEvent(refund);
+  }
+
+  break;
+}
 
       case "charge.refunded": {
         const charge =
