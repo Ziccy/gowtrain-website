@@ -646,7 +646,7 @@ export default function TrainerSlotsPage() {
                               ANNULEER SLOT
                             </button>
                           </div>
-                        )}
+                        )}                        
                       </div>
                     </article>
                   ))}
