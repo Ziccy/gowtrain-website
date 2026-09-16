@@ -105,8 +105,20 @@ export async function POST(
       return json({ error: "Ongeldige aanvraag." }, 400);
     }
 
-    const suppliedId = (body as Record<string, unknown>)
-      .refundRequestId;
+    const input = body as Record<string, unknown>;
+    const suppliedId = input.refundRequestId;
+
+    if (
+      input.lookupByPayment !== undefined &&
+      typeof input.lookupByPayment !== "boolean"
+    ) {
+      return json(
+        { error: "lookupByPayment moet true of false zijn." },
+        400,
+      );
+    }
+
+    const lookupByPayment = input.lookupByPayment === true;
 
     if (
       typeof suppliedId !== "string" ||
@@ -214,7 +226,15 @@ export async function POST(
       );
     }
 
-    let refundId = refundRequest.stripe_refund_id;
+    /*
+     * Optioneel de zoekroute gebruiken, ook als het ID al is opgeslagen.
+     * Dit wist niets in de database.
+     * De sync-helper controleert daarna dat het gevonden ID overeenkomt
+     * met een eventueel al geregistreerd refund-ID.
+     */
+    let refundId: string | null = lookupByPayment
+      ? null
+      : refundRequest.stripe_refund_id;
 
     if (!refundId) {
       const lookup = await findStripeRefund(stripe, {
