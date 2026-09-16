@@ -590,62 +590,81 @@ export default function TrainerDashboardPage() {
     setSuccessMessage("Je melding is verstuurd naar GowTrain.");
   }
 
-  async function handleTrainerCancellation(booking: Booking): Promise<void> {
-    if (!canTrainerCancelBooking(booking)) {
-      showError("Deze training kan niet meer geannuleerd worden.");
-      setPendingTrainerCancellation(null);
+  async function handleTrainerCancellation(
+  booking: Booking
+): Promise<void> {
+  if (cancellingBookingId) return;
+
+  if (!canTrainerCancelBooking(booking)) {
+    showError("Deze training kan niet meer geannuleerd worden.");
+    setPendingTrainerCancellation(null);
+    return;
+  }
+
+  setCancellingBookingId(booking.id);
+  clearMessages();
+
+  try {
+    const { data, error } = await supabase.rpc(
+      "request_trainer_lesson_cancellation",
+      {
+        p_booking_id: booking.id,
+      }
+    );
+
+    if (error) {
+      console.error("Trainerannulering mislukt:", {
+        code: error.code,
+        message: error.message,
+      });
+
+      showError(
+        error.code === "P0001" || error.code === "42501"
+          ? error.message
+          : "De annulering kon niet worden bevestigd. Vernieuw het overzicht voordat je opnieuw probeert."
+      );
+
       return;
     }
 
-    setCancellingBookingId(booking.id);
-    clearMessages();
+    const result = data as {
+      booking_id: string;
+      refund_request_id: string;
+      refund_status: string;
+      refund_amount_cents: number;
+      currency: string;
+      message: string;
+    } | null;
 
-    try {
-      const { data, error } = await supabase.rpc("request_trainer_booking_cancellation", {
-        p_booking_id: booking.id,
-      });
-
-      if (error) {
-        showError(error.message || "De training kon niet worden geannuleerd.");
-        return;
-      }
-
-      const result = (Array.isArray(data) ? data[0] : data) as TrainerCancellationResult | null;
-      if (!result) {
-        showError("De training kon niet worden geannuleerd.");
-        return;
-      }
-
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        router.replace("/trainer-login");
-        return;
-      }
-
-      const response = await fetch("/api/stripe/refunds/create", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({ bookingId: booking.id }),
-      });
-
-      if (!response.ok) {
-        showError("De annulering is opgeslagen, maar de terugbetaling kon niet worden verwerkt.");
-        await loadDashboard(false);
-        return;
-      }
-
-      setPendingTrainerCancellation(null);
-      setSuccessMessage(`De training met ${booking.player_name} is geannuleerd.`);
-      await loadDashboard(false);
-    } catch {
-      showError("De training kon niet worden geannuleerd.");
-    } finally {
-      setCancellingBookingId(null);
+    if (
+      !result ||
+      result.booking_id !== booking.id ||
+      !result.refund_request_id
+    ) {
+      showError(
+        "Het resultaat kon niet worden bevestigd. Vernieuw het overzicht voordat je opnieuw probeert."
+      );
+      return;
     }
+
+    setPendingTrainerCancellation(null);
+
+    await loadDashboard(false);
+
+    setSuccessMessage(result.message);
+
+    /*
+     * Geen fetch naar /api/stripe/refunds/create.
+     * Annulering en refundopdracht zijn samen opgeslagen.
+     */
+  } catch {
+    showError(
+      "De verbinding is onderbroken. De annulering kan al geregistreerd zijn. Controleer eerst het overzicht."
+    );
+  } finally {
+    setCancellingBookingId(null);
   }
+}
 
   async function handleLogout(): Promise<void> {
     await supabase.auth.signOut();
