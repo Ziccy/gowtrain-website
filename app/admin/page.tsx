@@ -37,7 +37,7 @@ export default function AdminHubPage() {
         return;
       }
 
-      // 1. Controleer admin rol
+      // 1. Controleer adminrol.
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
         .select("role, full_name")
@@ -50,9 +50,13 @@ export default function AdminHubPage() {
         return;
       }
 
-      setAdminName(profile.full_name || session.user.email?.split("@")[0] || "ADMIN");
+      setAdminName(
+        profile.full_name ||
+          session.user.email?.split("@")[0] ||
+          "ADMIN"
+      );
 
-      // 2. Wachtende trainers tellen
+      // 2. Wachtende trainers tellen.
       const { count: pendingCount } = await supabase
         .from("trainers")
         .select("id", { count: "exact", head: true })
@@ -60,7 +64,7 @@ export default function AdminHubPage() {
 
       setPendingTrainersCount(pendingCount ?? 0);
 
-      // 3. Openstaande issues tellen
+      // 3. Openstaande issues tellen.
       const { count: issuesCount } = await supabase
         .from("booking_issues")
         .select("id", { count: "exact", head: true })
@@ -68,7 +72,7 @@ export default function AdminHubPage() {
 
       setOpenIssuesCount(issuesCount ?? 0);
 
-      // 4. Actieve locaties tellen
+      // 4. Actieve locaties tellen.
       const { count: venuesCount } = await supabase
         .from("venues")
         .select("id", { count: "exact", head: true })
@@ -76,7 +80,7 @@ export default function AdminHubPage() {
 
       setActiveVenuesCount(venuesCount ?? 0);
 
-      // 5. Totaal aantal reviews tellen
+      // 5. Totaal aantal reviews tellen.
       const { count: reviewsCount } = await supabase
         .from("trainer_reviews")
         .select("id", { count: "exact", head: true });
@@ -99,6 +103,7 @@ export default function AdminHubPage() {
             </span>
             <span className="h-0 w-0 animate-pulse border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
           </div>
+
           <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">
             ADMIN HUB LADEN...
           </p>
@@ -109,10 +114,8 @@ export default function AdminHubPage() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* 💡 UNIVERSELE DYNAMISCHE SITE HEADER */}
       <SiteHeader />
 
-      {/* CONTENT */}
       <section className="relative flex-1 overflow-hidden py-10 sm:py-14">
         <div
           aria-hidden="true"
@@ -122,43 +125,52 @@ export default function AdminHubPage() {
         </div>
 
         <div className="relative mx-auto max-w-7xl px-5 sm:px-8">
-          
           <div className="flex flex-col justify-between gap-4 border-b-2 border-white/20 pb-8 sm:flex-row sm:items-end">
             <div>
-              <p className="font-display text-lg text-[#FF4B3E]">BEHEERSCENTRUM</p>
+              <p className="font-display text-lg text-[#FF4B3E]">
+                BEHEERSCENTRUM
+              </p>
+
               <h1 className="mt-2 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
                 WELKOM, {adminName.toUpperCase()}.
               </h1>
+
               <p className="mt-4 max-w-2xl text-base leading-relaxed text-[#D7D9DA]">
-                Kies een onderdeel om het GowTrain platform en de kwaliteit te beheren.
+                Kies een onderdeel om het GowTrain platform en de kwaliteit
+                te beheren.
               </p>
             </div>
 
-            <span className="bg-[#FF4B3E] px-3.5 py-1.5 font-display text-xs text-white shrink-0">
+            <span className="shrink-0 bg-[#FF4B3E] px-3.5 py-1.5 font-display text-xs text-white">
               ADMIN CONTROL
             </span>
           </div>
 
           {errorMessage && (
-            <div role="alert" className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] px-5 py-4 font-semibold text-white">
+            <div
+              role="alert"
+              className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] px-5 py-4 font-semibold text-white"
+            >
               {errorMessage}
             </div>
           )}
 
-          {/* HOOFD NAVIGATIE KAARTEN (4 ONDERDELEN IN 2x2 GRID) */}
+          {/* HOOFDNAVIGATIE: VIJF KAARTEN, VANAF MD TWEE KOLOMMEN */}
           <div className="mt-10 grid gap-8 md:grid-cols-2">
-            
             {/* 1. TRAINERS GOEDKEUREN */}
             <Link
               href="/admin/trainers"
               className="group border-2 border-white bg-white p-3 text-[#14171A] transition duration-200 hover:-translate-y-1 hover:shadow-[10px_10px_0_0_#D6FF3F]"
             >
-              <div className="bg-[#14171A] p-6 text-white sm:p-8 flex flex-col justify-between h-full">
+              <div className="flex h-full flex-col justify-between bg-[#14171A] p-6 text-white sm:p-8">
                 <div>
                   <div className="flex items-center justify-between">
-                    <p className="font-display text-xl text-[#D6FF3F]">01 / TRAINERS</p>
+                    <p className="font-display text-xl text-[#D6FF3F]">
+                      01 / TRAINERS
+                    </p>
+
                     {pendingTrainersCount > 0 ? (
-                      <span className="bg-[#FF4B3E] px-3 py-1 font-display text-xs text-white animate-pulse">
+                      <span className="animate-pulse bg-[#FF4B3E] px-3 py-1 font-display text-xs text-white">
                         {pendingTrainersCount} WACHTEND
                       </span>
                     ) : (
@@ -169,17 +181,24 @@ export default function AdminHubPage() {
                   </div>
 
                   <h2 className="mt-6 font-display text-4xl sm:text-5xl">
-                    TRAINER<br />GOEDKEURING.
+                    TRAINER
+                    <br />
+                    GOEDKEURING.
                   </h2>
 
                   <p className="mt-4 text-sm leading-relaxed text-[#B9BEC2]">
-                    Beoordeel ingediende trainerprofielen, bekijk hun uurtarief &amp; specialisaties en keur ze goed of af.
+                    Beoordeel ingediende trainerprofielen, bekijk hun
+                    uurtarief &amp; specialisaties en keur ze goed of af.
                   </p>
                 </div>
 
-                <div className="mt-8 pt-4 border-t border-white/20 flex items-center justify-between">
-                  <span className="font-display text-lg text-[#D6FF3F]">NAAR TRAINERS</span>
-                  <span className="font-display text-2xl group-hover:translate-x-2 transition-transform">→</span>
+                <div className="mt-8 flex items-center justify-between border-t border-white/20 pt-4">
+                  <span className="font-display text-lg text-[#D6FF3F]">
+                    NAAR TRAINERS
+                  </span>
+                  <span className="font-display text-2xl transition-transform group-hover:translate-x-2">
+                    →
+                  </span>
                 </div>
               </div>
             </Link>
@@ -189,10 +208,13 @@ export default function AdminHubPage() {
               href="/admin/issues"
               className="group border-2 border-white bg-white p-3 text-[#14171A] transition duration-200 hover:-translate-y-1 hover:shadow-[10px_10px_0_0_#FF4B3E]"
             >
-              <div className="bg-[#14171A] p-6 text-white sm:p-8 flex flex-col justify-between h-full">
+              <div className="flex h-full flex-col justify-between bg-[#14171A] p-6 text-white sm:p-8">
                 <div>
                   <div className="flex items-center justify-between">
-                    <p className="font-display text-xl text-[#FF4B3E]">02 / MELDINGEN</p>
+                    <p className="font-display text-xl text-[#FF4B3E]">
+                      02 / MELDINGEN
+                    </p>
+
                     {openIssuesCount > 0 ? (
                       <span className="bg-[#FF4B3E] px-3 py-1 font-display text-xs text-white">
                         {openIssuesCount} OPEN
@@ -205,17 +227,24 @@ export default function AdminHubPage() {
                   </div>
 
                   <h2 className="mt-6 font-display text-4xl sm:text-5xl">
-                    ISSUES &amp;<br />PROBLEMEN.
+                    ISSUES &amp;
+                    <br />
+                    PROBLEMEN.
                   </h2>
 
                   <p className="mt-4 text-sm leading-relaxed text-[#B9BEC2]">
-                    Bekijk gemelde problemen van spelers of trainers rondom trainingen, locaties of betalingen.
+                    Bekijk gemelde problemen van spelers of trainers rondom
+                    trainingen, locaties of betalingen.
                   </p>
                 </div>
 
-                <div className="mt-8 pt-4 border-t border-white/20 flex items-center justify-between">
-                  <span className="font-display text-lg text-[#FF4B3E]">NAAR ISSUES</span>
-                  <span className="font-display text-2xl group-hover:translate-x-2 transition-transform">→</span>
+                <div className="mt-8 flex items-center justify-between border-t border-white/20 pt-4">
+                  <span className="font-display text-lg text-[#FF4B3E]">
+                    NAAR ISSUES
+                  </span>
+                  <span className="font-display text-2xl transition-transform group-hover:translate-x-2">
+                    →
+                  </span>
                 </div>
               </div>
             </Link>
@@ -225,27 +254,36 @@ export default function AdminHubPage() {
               href="/admin/venues"
               className="group border-2 border-white bg-white p-3 text-[#14171A] transition duration-200 hover:-translate-y-1 hover:shadow-[10px_10px_0_0_#D6FF3F]"
             >
-              <div className="bg-[#14171A] p-6 text-white sm:p-8 flex flex-col justify-between h-full">
+              <div className="flex h-full flex-col justify-between bg-[#14171A] p-6 text-white sm:p-8">
                 <div>
                   <div className="flex items-center justify-between">
-                    <p className="font-display text-xl text-[#D6FF3F]">03 / LOCATIES</p>
+                    <p className="font-display text-xl text-[#D6FF3F]">
+                      03 / LOCATIES
+                    </p>
                     <span className="bg-[#D6FF3F] px-3 py-1 font-display text-xs text-[#14171A]">
                       {activeVenuesCount} ACTIEF
                     </span>
                   </div>
 
                   <h2 className="mt-6 font-display text-4xl sm:text-5xl">
-                    LOCATIE<br />BEHEER.
+                    LOCATIE
+                    <br />
+                    BEHEER.
                   </h2>
 
                   <p className="mt-4 text-sm leading-relaxed text-[#B9BEC2]">
-                    Voeg verenigingen toe, wijzig adressen en beheer welke padel- en tennisclubs actief zijn.
+                    Voeg verenigingen toe, wijzig adressen en beheer welke
+                    padel- en tennisclubs actief zijn.
                   </p>
                 </div>
 
-                <div className="mt-8 pt-4 border-t border-white/20 flex items-center justify-between">
-                  <span className="font-display text-lg text-[#D6FF3F]">NAAR LOCATIES</span>
-                  <span className="font-display text-2xl group-hover:translate-x-2 transition-transform">→</span>
+                <div className="mt-8 flex items-center justify-between border-t border-white/20 pt-4">
+                  <span className="font-display text-lg text-[#D6FF3F]">
+                    NAAR LOCATIES
+                  </span>
+                  <span className="font-display text-2xl transition-transform group-hover:translate-x-2">
+                    →
+                  </span>
                 </div>
               </div>
             </Link>
@@ -255,33 +293,80 @@ export default function AdminHubPage() {
               href="/admin/reviews"
               className="group border-2 border-white bg-white p-3 text-[#14171A] transition duration-200 hover:-translate-y-1 hover:shadow-[10px_10px_0_0_#FF4B3E]"
             >
-              <div className="bg-[#14171A] p-6 text-white sm:p-8 flex flex-col justify-between h-full">
+              <div className="flex h-full flex-col justify-between bg-[#14171A] p-6 text-white sm:p-8">
                 <div>
                   <div className="flex items-center justify-between">
-                    <p className="font-display text-xl text-[#FF4B3E]">04 / REVIEWS</p>
+                    <p className="font-display text-xl text-[#FF4B3E]">
+                      04 / REVIEWS
+                    </p>
                     <span className="border border-white/30 px-3 py-1 font-display text-xs text-[#B9BEC2]">
                       {totalReviewsCount} REVIEWS
                     </span>
                   </div>
 
                   <h2 className="mt-6 font-display text-4xl sm:text-5xl">
-                    SPELER<br />REVIEWS.
+                    SPELER
+                    <br />
+                    REVIEWS.
                   </h2>
 
                   <p className="mt-4 text-sm leading-relaxed text-[#B9BEC2]">
-                    Beheer geschreven beoordelingen, controleer de kwaliteit en verwijder eventuele ongewenste reviews.
+                    Beheer geschreven beoordelingen, controleer de kwaliteit
+                    en verwijder eventuele ongewenste reviews.
                   </p>
                 </div>
 
-                <div className="mt-8 pt-4 border-t border-white/20 flex items-center justify-between">
-                  <span className="font-display text-lg text-[#FF4B3E]">NAAR REVIEWS</span>
-                  <span className="font-display text-2xl group-hover:translate-x-2 transition-transform">→</span>
+                <div className="mt-8 flex items-center justify-between border-t border-white/20 pt-4">
+                  <span className="font-display text-lg text-[#FF4B3E]">
+                    NAAR REVIEWS
+                  </span>
+                  <span className="font-display text-2xl transition-transform group-hover:translate-x-2">
+                    →
+                  </span>
                 </div>
               </div>
             </Link>
 
-          </div>
+            {/* 5. REFUNDADMINISTRATIE */}
+            <Link
+              href="/admin/refunds"
+              className="group border-2 border-white bg-white p-3 text-[#14171A] transition duration-200 hover:-translate-y-1 hover:shadow-[10px_10px_0_0_#D6FF3F]"
+            >
+              <div className="flex h-full flex-col justify-between bg-[#14171A] p-6 text-white sm:p-8">
+                <div>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="font-display text-xl text-[#D6FF3F]">
+                      05 / REFUNDS
+                    </p>
+                    <span className="border border-white/30 px-3 py-1 font-display text-xs text-[#B9BEC2]">
+                      SANDBOX · ALLEEN LEZEN
+                    </span>
+                  </div>
 
+                  <h2 className="mt-6 font-display text-4xl sm:text-5xl">
+                    REFUND
+                    <br />
+                    CONTROLE.
+                  </h2>
+
+                  <p className="mt-4 text-sm leading-relaxed text-[#B9BEC2]">
+                    Bekijk refunduitzonderingen, gekoppelde lesbedragen en
+                    administratieve afronding. Geen nieuwe terugbetalingen
+                    of financiële statuswijzigingen.
+                  </p>
+                </div>
+
+                <div className="mt-8 flex items-center justify-between border-t border-white/20 pt-4">
+                  <span className="font-display text-lg text-[#D6FF3F]">
+                    NAAR REFUNDS
+                  </span>
+                  <span className="font-display text-2xl transition-transform group-hover:translate-x-2">
+                    →
+                  </span>
+                </div>
+              </div>
+            </Link>
+          </div>
         </div>
       </section>
 

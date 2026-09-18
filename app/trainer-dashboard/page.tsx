@@ -75,6 +75,10 @@ type Booking = {
   created_at: string;
   hold_expires_at: string | null;
   cancellation_policy: string | null;
+  paid_at: string | null;
+  trainer_payout_status: string | null;
+  stripe_transfer_id: string | null;
+  trainer_paid_at: string | null;
   availability_slots: BookingSlot;
   chat_state?: MessageState;
 };
@@ -99,6 +103,7 @@ function formatDate(value?: string): string {
     day: "numeric",
     month: "long",
     year: "numeric",
+    timeZone: "Europe/Amsterdam",
   })
     .format(new Date(value))
     .toUpperCase();
@@ -109,6 +114,7 @@ function formatTime(value?: string): string {
   return new Intl.DateTimeFormat("nl-NL", {
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: "Europe/Amsterdam",
   }).format(new Date(value));
 }
 
@@ -167,7 +173,7 @@ function getStatusExplanation(status: BookingStatus): string {
     case "refunded":
       return "Deze boeking is geannuleerd en volledig terugbetaald aan de speler.";
     case "completed":
-      return "Deze training is succesvol afgerond.";
+      return "De eindtijd is verstreken; deze les is administratief afgerond. Dit bevestigt geen trainertransfer en sluit een tijdige probleemmelding niet uit.";
   }
 }
 
@@ -200,6 +206,37 @@ function canTrainerCancelBooking(booking: Booking): boolean {
   return Boolean(startsAt && new Date(startsAt).getTime() > Date.now());
 }
 
+/*
+ * Alleen UI-controle.
+ * De RPC controleert opnieuw met de actuele databaseklok,
+ * eigenaarschap, locks en bestaande financiële registraties.
+ */
+function canTrainerReportIssue(
+  booking: Booking,
+  nowMs: number,
+): boolean {
+  if (
+    !["confirmed", "completed"].includes(booking.status) ||
+    !booking.paid_at ||
+    booking.stripe_transfer_id ||
+    booking.trainer_paid_at ||
+    ["processing", "paid"].includes(booking.trainer_payout_status ?? "")
+  ) {
+    return false;
+  }
+
+  const startsAt = booking.availability_slots?.starts_at;
+  if (!startsAt) return false;
+
+  const startMs = Date.parse(startsAt);
+
+  return (
+    Number.isFinite(startMs) &&
+    nowMs >= startMs &&
+    nowMs < startMs + 24 * 60 * 60 * 1000
+  );
+}
+
 export default function TrainerDashboardPage() {
   const router = useRouter();
 
@@ -213,6 +250,7 @@ export default function TrainerDashboardPage() {
   const [startDateFilter, setStartDateFilter] = useState<string>("");
   const [endDateFilter, setEndDateFilter] = useState<string>("");
 
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [settingUpStripe, setSettingUpStripe] = useState(false);
@@ -231,7 +269,15 @@ export default function TrainerDashboardPage() {
   const trainerCancellationRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    void loadDashboard();
+    const refreshClock = () => setNowMs(Date.now());
+
+    const interval = window.setInterval(refreshClock, 15_000);
+    window.addEventListener("focus", refreshClock);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshClock);
+    };
   }, []);
 
   const unreadBookings = useMemo(() => {
@@ -436,6 +482,10 @@ export default function TrainerDashboardPage() {
             created_at,
             hold_expires_at,
             cancellation_policy,
+            paid_at,
+            trainer_payout_status,
+            stripe_transfer_id,
+            trainer_paid_at,
             availability_slots (
               starts_at,
               ends_at,
@@ -576,7 +626,17 @@ export default function TrainerDashboardPage() {
   }
 
   function openTrainerIssueReport(booking: Booking): void {
+    if (cancellingBookingId || refreshing) return;
+
     clearMessages();
+
+    if (!canTrainerReportIssue(booking, Date.now())) {
+      showError(
+        "Melden kan alleen bij een betaalde les vanaf de start tot 24 uur daarna, zolang geen trainertransfer is gestart. Vernieuw zo nodig het overzicht.",
+      );
+      return;
+    }
+
     setPendingTrainerCancellation(null);
     setPendingTrainerIssueBooking(booking);
   }
@@ -587,7 +647,12 @@ export default function TrainerDashboardPage() {
 
   function handleTrainerIssueSubmitted(): void {
     setPendingTrainerIssueBooking(null);
-    setSuccessMessage("Je melding is verstuurd naar GowTrain.");
+    setErrorMessage("");
+    setSuccessMessage(
+      "Je melding is geregistreerd, of er stond al een open melding van jou voor deze les. Dit is nog geen besluit over terugbetaling of trainervergoeding.",
+    );
+
+    void loadDashboard(false);
   }
 
   async function handleTrainerCancellation(
@@ -823,7 +888,9 @@ export default function TrainerDashboardPage() {
                   {stripeIsReady ? "STRIPE IS ACTIEF & GEKOPPELD" : stripeHasStarted ? "MAAK JE STRIPE GEGEVENS COMPLEET" : "STEL JE UITBETALINGEN IN"}
                 </h2>
                 <p className="mt-2 text-xs text-[#B9BEC2] leading-relaxed">
-                  {stripeIsReady ? "Je bankrekening is gekoppeld via Stripe. GowTrain kan je automatische uitbetalingen na elke les verwerken." : "Koppel je bankrekening veilig via Stripe om uitbetalingen van geboekte lessen te ontvangen."}
+                  {stripeIsReady
+  ? "Je Stripe-account is gekoppeld. Dit bevestigt geen trainertransfer. Automatische trainertransfers staan tijdens de sandboxfase nog uit."
+  : "Koppel je bankrekening veilig via Stripe. Automatische trainertransfers staan tijdens de sandboxfase nog uit."}
                 </p>
               </div>
 
@@ -893,8 +960,19 @@ export default function TrainerDashboardPage() {
                 Je annuleert de training met <strong>{pendingTrainerCancellation.player_name}</strong> op {formatDate(pendingTrainerCancellation.availability_slots?.starts_at)} om {formatTime(pendingTrainerCancellation.availability_slots?.starts_at)}.
               </p>
               <div className="mt-5 border-l-2 border-white pl-4">
-                <p className="font-display text-lg">SPELER ONTVANGT 100% TERUG</p>
-                <p className="mt-1 text-sm leading-relaxed text-white/90">{formatEuro(pendingTrainerCancellation.total_price_cents, pendingTrainerCancellation.currency)} wordt automatisch teruggestort.</p>
+                <p className="font-display text-lg">
+  VOLLEDIG LESBEDRAG KLAARZETTEN VOOR REFUND
+</p>
+<p className="mt-1 text-sm leading-relaxed text-white/90">
+  Voor deze ene les wordt een refundopdracht van{" "}
+  {formatEuro(
+    pendingTrainerCancellation.total_price_cents,
+    pendingTrainerCancellation.currency,
+  )}{" "}
+  geregistreerd. De speler ontvangt na succesvolle verwerking een
+  afzonderlijke bevestiging. Voor deze les is geen trainersdeel
+  verschuldigd en het slot wordt niet opnieuw aangeboden.
+</p>
               </div>
               <div className="mt-6 flex flex-col gap-3 sm:flex-row">
                 <button type="button" onClick={closeTrainerCancellation} disabled={cancellingBookingId === pendingTrainerCancellation.id} className="border-2 border-white px-5 py-3 font-display text-base text-white hover:bg-white hover:text-[#14171A]">TERUG</button>
@@ -949,7 +1027,7 @@ export default function TrainerDashboardPage() {
           {/* INKOMSTEN BANNER */}
           <div className="mt-12 border-2 border-[#D6FF3F] bg-[#D6FF3F] p-5 text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E] flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
             <div>
-              <p className="font-display text-xs opacity-80">NETTO INKOMSTEN DEZE MAAND</p>
+              <p className="font-display text-xs opacity-80">INDICATIEF TRAINERSDEEL DEZE MAAND — NIET UITBETAALD</p>
               <p className="font-display text-4xl leading-none mt-1">{formatEuro(thisMonthNetEarningsCents)}</p>
             </div>
             <Link href="/trainer-inkomsten" className="inline-flex items-center justify-center bg-[#14171A] px-6 py-4 font-display text-base !text-white hover:bg-white hover:!text-[#14171A] transition shadow-[4px_4px_0_0_#FF4B3E]">
@@ -1040,7 +1118,10 @@ export default function TrainerDashboardPage() {
                       {section.bookings.map((booking) => {
                         const slot = booking.availability_slots;
                         const canCancel = canTrainerCancelBooking(booking);
-                        const isCompleted = booking.status === "completed";
+                        const canReportIssue = canTrainerReportIssue(
+                          booking,
+                          nowMs,
+                        );
                         const chat = booking.chat_state;
 
                         return (
@@ -1069,9 +1150,9 @@ export default function TrainerDashboardPage() {
                                   </div>
 
                                   <div className="text-right">
-                                    <p className="font-display text-[10px] text-[#8A8F94]">INKOMSTEN</p>
+                                    <p className="font-display text-[10px] text-[#8A8F94]">LESBEDRAG</p>
                                     <p className="mt-1 font-display text-3xl text-[#D6FF3F]">{formatEuro(booking.total_price_cents, booking.currency)}</p>
-                                    <p className="mt-0.5 font-display text-[10px] text-[#B9BEC2]">INCL. BAANHUUR</p>
+                                    <p className="mt-0.5 font-display text-[10px] text-[#B9BEC2]">NIET JE NETTO-UITBETALING</p>
                                   </div>
                                 </div>
                               </div>
@@ -1115,20 +1196,25 @@ export default function TrainerDashboardPage() {
                                 </button>
                               )}
 
-                              {/* 💡 SUBTIELE GARANTIE / PROBLEEM MELDEN LINK (ALLEEN BINNEN 24 UUR NA AFGERONDE LES) */}
-                              {isCompleted && (
-                                <div className="mt-4 pt-3 border-t border-white/10 flex items-center justify-between text-xs">
-                                  <span className="text-[#B9BEC2] text-xs">Les afgerond</span>
-
-                                  {slot?.ends_at && new Date().getTime() - new Date(slot.ends_at).getTime() <= 24 * 60 * 60 * 1000 && (
-                                    <button
-                                      type="button"
-                                      onClick={() => openTrainerIssueReport(booking)}
-                                      className="text-[#B9BEC2] hover:text-[#FF4B3E] transition text-right text-[11px] font-semibold"
-                                    >
-                                      Iets misgegaan met deze les? Meld binnen 24u →
-                                    </button>
-                                  )}
+                              {canReportIssue && (
+                                <div className="mt-4 border-t border-white/10 pt-4">
+                                  <button
+                                    type="button"
+                                    disabled={
+                                      refreshing ||
+                                      Boolean(cancellingBookingId) ||
+                                      Boolean(pendingTrainerIssueBooking)
+                                    }
+                                    onClick={() => openTrainerIssueReport(booking)}
+                                    className="w-full border border-white/30 px-4 py-3 text-left text-sm font-semibold text-[#D7D9DA] transition hover:border-[#FF4B3E] hover:text-[#FF4B3E] disabled:opacity-50"
+                                  >
+                                    Probleem met deze les melden →
+                                  </button>
+                                  <p className="mt-2 text-xs leading-relaxed text-[#B9BEC2]">
+                                    Beschikbaar vanaf de start tot 24 uur
+                                    daarna. Een melding is geen automatisch
+                                    refund- of uitbetalingsbesluit.
+                                  </p>
                                 </div>
                               )}
 
