@@ -1,440 +1,55 @@
 import { NextRequest, NextResponse } from "next/server";
-import Stripe from "stripe";
-import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function getRequiredEnv(name: string): string {
-  const value = process.env[name];
+function disabledResponse(request: NextRequest): NextResponse {
+  const secret = process.env.CRON_SECRET?.trim();
 
-  if (!value) {
-    throw new Error(`${name} ontbreekt.`);
+  if (!secret) {
+    return NextResponse.json(
+      { error: "Trainertransfers zijn niet beschikbaar." },
+      {
+        status: 503,
+        headers: { "Cache-Control": "no-store" },
+      },
+    );
   }
 
-  return value;
-}
+  if (
+    request.headers.get("authorization") !== `Bearer ${secret}`
+  ) {
+    return NextResponse.json(
+      { error: "Niet geautoriseerd." },
+      {
+        status: 401,
+        headers: { "Cache-Control": "no-store" },
+      },
+    );
+  }
 
-const stripeSecretKey = getRequiredEnv("STRIPE_SECRET_KEY");
-const supabaseUrl = getRequiredEnv("NEXT_PUBLIC_SUPABASE_URL");
-const supabaseServiceRoleKey = getRequiredEnv(
-  "SUPABASE_SERVICE_ROLE_KEY"
-);
-const cronSecret = getRequiredEnv("CRON_SECRET");
-
-const stripe = new Stripe(stripeSecretKey);
-
-const supabaseAdmin = createClient(
-  supabaseUrl,
-  supabaseServiceRoleKey,
-  {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
+  return NextResponse.json(
+    {
+      success: false,
+      code: "TRAINER_TRANSFERS_DISABLED",
+      message:
+        "Trainertransfers zijn uitgeschakeld tijdens de migratie. Geen claim of Stripe-aanroep uitgevoerd.",
     },
-  }
-);
-
-type ClaimedBooking = {
-  booking_id: string;
-};
-
-type PayoutBooking = {
-  id: string;
-  trainer_id: string;
-  trainer_net_amount_cents: number;
-  currency: string;
-  stripe_transfer_id: string | null;
-  trainer_payout_status: string;
-  trainers: {
-    id: string;
-    name: string;
-    stripe_account_id: string | null;
-    stripe_payouts_enabled: boolean;
-  } | null;
-};
-
-type PayoutResult = {
-  bookingId: string;
-  status: "paid" | "pending";
-  reason?: string;
-};
-
-function isAuthorizedCronRequest(
-  request: NextRequest
-): boolean {
-  const authorizationHeader =
-    request.headers.get("authorization");
-
-  return (
-    authorizationHeader === `Bearer ${cronSecret}`
+    {
+      status: 503,
+      headers: { "Cache-Control": "no-store" },
+    },
   );
 }
 
-async function returnBookingToPayoutQueue(
-  bookingId: string,
-  errorMessage: string
-): Promise<void> {
-  const { error } = await supabaseAdmin
-    .from("bookings")
-    .update({
-      trainer_payout_status: "pending",
-      trainer_payout_last_error: errorMessage,
-    })
-    .eq("id", bookingId)
-    .eq("trainer_payout_status", "processing");
-
-  if (error) {
-    console.error(
-      `Payout-status terugzetten mislukt voor booking ${bookingId}:`,
-      error.message
-    );
-  }
+export async function GET(
+  request: NextRequest,
+): Promise<NextResponse> {
+  return disabledResponse(request);
 }
 
-export async function GET(
-  request: NextRequest
+export async function POST(
+  request: NextRequest,
 ): Promise<NextResponse> {
-  if (!isAuthorizedCronRequest(request)) {
-    return NextResponse.json(
-      {
-        error: "Niet geautoriseerd.",
-      },
-      {
-        status: 401,
-        headers: {
-          "Cache-Control": "no-store",
-        },
-      }
-    );
-  }
-
-  try {
-    /*
-      Claim maximaal 25 eligible bookings.
-
-      De databasefunctie zet deze bookings atomair op
-      trainer_payout_status = processing.
-    */
-    const {
-      data: claimedData,
-      error: claimError,
-    } = await supabaseAdmin.rpc(
-      "claim_eligible_trainer_payouts",
-      {
-        p_limit: 25,
-      }
-    );
-
-    if (claimError) {
-      console.error(
-        "Payouts claimen fout:",
-        claimError.message
-      );
-
-      return NextResponse.json(
-        {
-          error:
-            "Traineruitbetalingen konden niet worden opgehaald.",
-        },
-        {
-          status: 500,
-          headers: {
-            "Cache-Control": "no-store",
-          },
-        }
-      );
-    }
-
-    const claimedBookings =
-      (claimedData ?? []) as ClaimedBooking[];
-
-    if (claimedBookings.length === 0) {
-      return NextResponse.json(
-        {
-          success: true,
-          processed: 0,
-          paid: 0,
-          pending: 0,
-          message:
-            "Geen traineruitbetalingen beschikbaar.",
-          processedAt: new Date().toISOString(),
-        },
-        {
-          status: 200,
-          headers: {
-            "Cache-Control": "no-store",
-          },
-        }
-      );
-    }
-
-    const bookingIds = claimedBookings.map(
-      (item) => item.booking_id
-    );
-
-    const {
-      data: bookingData,
-      error: bookingError,
-    } = await supabaseAdmin
-      .from("bookings")
-      .select(
-        `
-          id,
-          trainer_id,
-          trainer_net_amount_cents,
-          currency,
-          stripe_transfer_id,
-          trainer_payout_status,
-
-          trainers (
-            id,
-            name,
-            stripe_account_id,
-            stripe_payouts_enabled
-          )
-        `
-      )
-      .in("id", bookingIds)
-      .eq("trainer_payout_status", "processing");
-
-    if (bookingError) {
-      console.error(
-        "Claimed bookings ophalen fout:",
-        bookingError.message
-      );
-
-      for (const bookingId of bookingIds) {
-        await returnBookingToPayoutQueue(
-          bookingId,
-          "Bookinggegevens konden niet worden opgehaald."
-        );
-      }
-
-      return NextResponse.json(
-        {
-          error:
-            "Traineruitbetalingen konden niet worden verwerkt.",
-        },
-        {
-          status: 500,
-          headers: {
-            "Cache-Control": "no-store",
-          },
-        }
-      );
-    }
-
-    const payoutBookings =
-      (bookingData ?? []) as unknown as PayoutBooking[];
-
-    let paidCount = 0;
-    let pendingCount = 0;
-
-    const results: PayoutResult[] = [];
-
-    for (const booking of payoutBookings) {
-      const trainer = booking.trainers;
-
-      if (
-        !trainer?.stripe_account_id ||
-        trainer.stripe_payouts_enabled !== true
-      ) {
-        const reason =
-          "Trainer heeft geen actief Stripe-uitbetalingsaccount.";
-
-        await returnBookingToPayoutQueue(
-          booking.id,
-          reason
-        );
-
-        pendingCount += 1;
-
-        results.push({
-          bookingId: booking.id,
-          status: "pending",
-          reason,
-        });
-
-        continue;
-      }
-
-      if (booking.trainer_net_amount_cents <= 0) {
-        const { error } = await supabaseAdmin
-          .from("bookings")
-          .update({
-            trainer_payout_status: "not_applicable",
-            trainer_payout_last_error: null,
-          })
-          .eq("id", booking.id)
-          .eq("trainer_payout_status", "processing");
-
-        if (error) {
-          console.error(
-            `Booking ${booking.id} op not_applicable zetten fout:`,
-            error.message
-          );
-
-          await returnBookingToPayoutQueue(
-            booking.id,
-            "Booking kon niet als not_applicable worden opgeslagen."
-          );
-
-          pendingCount += 1;
-
-          results.push({
-            bookingId: booking.id,
-            status: "pending",
-            reason:
-              "Booking kon niet als not_applicable worden opgeslagen.",
-          });
-
-          continue;
-        }
-
-        results.push({
-          bookingId: booking.id,
-          status: "paid",
-          reason: "Geen uitbetaling nodig.",
-        });
-
-        continue;
-      }
-
-      try {
-        /*
-          De idempotency key is essentieel.
-
-          Als Stripe de transfer wel uitvoert, maar de Supabase-update
-          daarna mislukt, gebruikt een volgende cron-run dezelfde key.
-          Stripe maakt dan geen dubbele transfer aan.
-        */
-        const transfer = await stripe.transfers.create(
-          {
-            amount: booking.trainer_net_amount_cents,
-            currency: booking.currency.toLowerCase(),
-            destination: trainer.stripe_account_id,
-
-            metadata: {
-              gowtrain_booking_id: booking.id,
-              gowtrain_trainer_id: booking.trainer_id,
-              gowtrain_trainer_name: trainer.name,
-            },
-
-            description: `Gowtrain uitbetaling booking ${booking.id}`,
-          },
-          {
-            idempotencyKey: `gowtrain-trainer-payout-${booking.id}`,
-          }
-        );
-
-        const {
-          error: updateError,
-        } = await supabaseAdmin
-          .from("bookings")
-          .update({
-            stripe_transfer_id: transfer.id,
-            trainer_payout_status: "paid",
-            trainer_paid_at: new Date().toISOString(),
-            trainer_payout_last_error: null,
-          })
-          .eq("id", booking.id)
-          .eq("trainer_payout_status", "processing");
-
-        if (updateError) {
-          /*
-            Stripe heeft de transfer mogelijk al uitgevoerd.
-            Zet de booking daarom terug op pending.
-            Dezelfde idempotency key voorkomt een dubbele betaling.
-          */
-          console.error(
-            `Transfer opslaan bij booking ${booking.id} fout:`,
-            updateError.message
-          );
-
-          await returnBookingToPayoutQueue(
-            booking.id,
-            "Stripe-transfer is gemaakt, maar kon niet in Gowtrain worden opgeslagen."
-          );
-
-          pendingCount += 1;
-
-          results.push({
-            bookingId: booking.id,
-            status: "pending",
-            reason:
-              "Transferstatus kon niet worden opgeslagen.",
-          });
-
-          continue;
-        }
-
-        paidCount += 1;
-
-        results.push({
-          bookingId: booking.id,
-          status: "paid",
-        });
-
-        console.log(
-          `Traineruitbetaling voltooid: booking ${booking.id}, transfer ${transfer.id}`
-        );
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "Onbekende Stripe-transferfout.";
-
-        console.error(
-          `Traineruitbetaling fout voor booking ${booking.id}:`,
-          error
-        );
-
-        await returnBookingToPayoutQueue(
-          booking.id,
-          message
-        );
-
-        pendingCount += 1;
-
-        results.push({
-          bookingId: booking.id,
-          status: "pending",
-          reason: message,
-        });
-      }
-    }
-
-    return NextResponse.json(
-      {
-        success: true,
-        processed: payoutBookings.length,
-        paid: paidCount,
-        pending: pendingCount,
-        results,
-        processedAt: new Date().toISOString(),
-      },
-      {
-        status: 200,
-        headers: {
-          "Cache-Control": "no-store",
-        },
-      }
-    );
-  } catch (error) {
-    console.error("Trainer payout cron fout:", error);
-
-    return NextResponse.json(
-      {
-        error:
-          "Traineruitbetalingen konden niet worden verwerkt. Probeer het later opnieuw.",
-      },
-      {
-        status: 500,
-        headers: {
-          "Cache-Control": "no-store",
-        },
-      }
-    );
-  }
+  return disabledResponse(request);
 }
