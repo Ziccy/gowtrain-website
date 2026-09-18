@@ -43,68 +43,80 @@ const supabaseAdmin = createClient(
 /* -------------------------------------------------------------------------- */
 
 async function syncTrainerStripeStatus(
-  account: Stripe.Account
+  eventAccount: Stripe.Account
 ): Promise<void> {
-  const trainerIdFromMetadata =
-    account.metadata?.gowtrain_trainer_id?.trim() || null;
+  /*
+   * Alleen de al vastgelegde accountkoppeling gebruiken.
+   * Metadata is een extra controle, geen toestemming om
+   * stripe_account_id toe te wijzen of te vervangen.
+   */
+  const { data: trainer, error: trainerError } = await supabaseAdmin
+    .from("trainers")
+    .select("id, stripe_account_id")
+    .eq("stripe_account_id", eventAccount.id)
+    .maybeSingle();
 
-  let trainerId: string | null = null;
-
-  if (trainerIdFromMetadata) {
-    const { data, error } = await supabaseAdmin
-      .from("trainers")
-      .select("id")
-      .eq("id", trainerIdFromMetadata)
-      .maybeSingle();
-
-    if (error) {
-      throw new Error(
-        `Trainer zoeken via Stripe metadata mislukt: ${error.message}`
-      );
-    }
-
-    trainerId = data?.id ?? null;
-  }
-
-  if (!trainerId) {
-    const { data, error } = await supabaseAdmin
-      .from("trainers")
-      .select("id")
-      .eq("stripe_account_id", account.id)
-      .maybeSingle();
-
-    if (error) {
-      throw new Error(
-        `Trainer zoeken via Stripe account-ID mislukt: ${error.message}`
-      );
-    }
-
-    trainerId = data?.id ?? null;
-  }
-
-  if (!trainerId) {
-    console.warn(
-      `Geen Gowtrain-trainer gevonden voor Stripe-account ${account.id}.`
+  if (trainerError) {
+    throw new Error(
+      `Trainer zoeken via vastgelegde Stripe-koppeling mislukt: ${trainerError.message}`
     );
+  }
+
+  if (!trainer) {
+    /*
+     * Een event kan aankomen voordat onboarding de koppeling
+     * heeft opgeslagen. Onboarding slaat zelf ook de status op.
+     *
+     * Hier nooit alsnog koppelen via accountmetadata.
+     */
+    console.warn("Connect-event zonder vastgelegde trainerkoppeling:", {
+      accountId: eventAccount.id,
+      reason: "NO_STORED_ACCOUNT_LINK",
+    });
+
     return;
+  }
+
+  /*
+   * Gebruik niet de mogelijk verouderde accountstatus
+   * uit het webhook-event.
+   */
+  const account = await stripe.accounts.retrieve(eventAccount.id);
+
+  if (
+    account.id !== trainer.stripe_account_id ||
+    account.type !== "express" ||
+    account.metadata?.gowtrain_trainer_id !== trainer.id
+  ) {
+    throw new Error(
+      "Het Stripe-account komt niet overeen met de vastgelegde trainerkoppeling."
+    );
   }
 
   const onboardingComplete =
     account.details_submitted === true &&
     account.payouts_enabled === true;
 
-  const { error: updateError } = await supabaseAdmin
+  /*
+   * De webhook schrijft uitsluitend statusvelden.
+   * Stripe-account-ID nooit vanuit dit event overschrijven.
+   *
+   * Controleer bij de update opnieuw dezelfde koppeling.
+   */
+  const { data: updated, error: updateError } = await supabaseAdmin
     .from("trainers")
     .update({
-      stripe_account_id: account.id,
-      stripe_details_submitted: account.details_submitted,
-      stripe_charges_enabled: account.charges_enabled,
-      stripe_payouts_enabled: account.payouts_enabled,
+      stripe_details_submitted: account.details_submitted === true,
+      stripe_charges_enabled: account.charges_enabled === true,
+      stripe_payouts_enabled: account.payouts_enabled === true,
       stripe_onboarding_completed_at: onboardingComplete
         ? new Date().toISOString()
         : null,
     })
-    .eq("id", trainerId);
+    .eq("id", trainer.id)
+    .eq("stripe_account_id", account.id)
+    .select("id")
+    .maybeSingle();
 
   if (updateError) {
     throw new Error(
@@ -112,9 +124,16 @@ async function syncTrainerStripeStatus(
     );
   }
 
-  console.log(
-    `Stripe Connect-account bijgewerkt voor trainer ${trainerId}: ${account.id}`
-  );
+  if (!updated) {
+    throw new Error(
+      "De trainerkoppeling is ondertussen gewijzigd. Stripe-status is niet opgeslagen."
+    );
+  }
+
+  console.log("Status van gekoppeld Connect-account bijgewerkt:", {
+    trainerId: trainer.id,
+    accountId: account.id,
+  });
 }
 
 /* -------------------------------------------------------------------------- */
