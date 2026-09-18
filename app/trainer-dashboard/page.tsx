@@ -833,8 +833,28 @@ async function handleTrainerCancellation(
 
               <div className="mt-5">
                 {stripeIsReady ? (
-                  <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] px-4 py-3 text-[#14171A]">
-                    <p className="font-display text-base">ACTIEF - STRIPE CONNECT GEKOPPELD</p>
+                  <div className="space-y-3">
+                    <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] px-4 py-3 text-[#14171A]">
+                      <p className="font-display text-base">
+                        STRIPE CONNECT GEKOPPELD
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => void handleStripeOnboarding()}
+                      disabled={settingUpStripe}
+                      className="w-full border-2 border-white/40 px-5 py-3.5 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:text-[#D6FF3F] disabled:opacity-60"
+                    >
+                      {settingUpStripe
+                        ? "STRIPE OPENEN..."
+                        : "STRIPE-ONBOARDING OPNIEUW OPENEN →"}
+                    </button>
+
+                    <p className="text-xs leading-relaxed text-[#B9BEC2]">
+                      Open de onboarding van je bestaande Stripe-account.
+                      Dit start geen trainertransfer of bankuitbetaling.
+                    </p>
                   </div>
                 ) : (
                   <button type="button" onClick={() => void handleStripeOnboarding()} disabled={settingUpStripe} className="w-full bg-[#D6FF3F] px-5 py-3.5 font-display text-sm text-[#14171A] hover:bg-white transition disabled:opacity-60">
