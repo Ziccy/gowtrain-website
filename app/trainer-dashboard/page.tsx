@@ -268,6 +268,12 @@ export default function TrainerDashboardPage() {
 
   const trainerCancellationRef = useRef<HTMLElement | null>(null);
 
+  // Dashboardgegevens ophalen bij het openen van de pagina.
+  useEffect(() => {
+    void loadDashboard();
+  }, []);
+
+  // Tijdgebonden knoppen bijwerken zonder opnieuw data op te halen.
   useEffect(() => {
     const refreshClock = () => setNowMs(Date.now());
 
