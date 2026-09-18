@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isDeepStrictEqual } from "node:util";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
+import { retrieveVerifiedTrainerConnectV2Account } from "@/lib/stripe-connect-v2";
+import {
+  buildConnectV2AccountPayload,
+  type ConnectV2AccountCreateParams,
+} from "@/lib/stripe-connect-v2-payload";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,18 +15,15 @@ export const maxDuration = 90;
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
 
-  if (!value) {
-    throw new Error(`${name} ontbreekt.`);
-  }
+  if (!value) throw new Error(`${name} ontbreekt.`);
 
   return value;
 }
 
 const stripeKey = requiredEnv("STRIPE_SECRET_KEY");
 const supabaseUrl = requiredEnv("NEXT_PUBLIC_SUPABASE_URL");
-const supabaseAnonKey = requiredEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
+const anonKey = requiredEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
 const serviceRoleKey = requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
-
 const appBaseUrl = new URL(requiredEnv("NEXT_PUBLIC_APP_URL"));
 
 if (
@@ -56,7 +59,9 @@ type Reservation = {
 type PreparedAttempt = {
   attempt_id: string;
   trainer_id: string;
-  stripe_payload: Stripe.AccountCreateParams;
+  account_api: string;
+  stripe_livemode: boolean;
+  stripe_payload: unknown;
   idempotency_key: string;
 };
 
@@ -66,141 +71,243 @@ function json(
 ): NextResponse {
   return NextResponse.json(body, {
     status,
-    headers: {
-      "Cache-Control": "no-store",
-    },
+    headers: { "Cache-Control": "no-store" },
   });
 }
 
-function isSandboxKey(): boolean {
+function isObject(value: unknown): value is Record<string, unknown> {
   return (
-    stripeKey.startsWith("sk_test_") ||
-    stripeKey.startsWith("rk_test_")
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
   );
 }
 
-async function retrieveTrainerAccount(
-  accountId: string,
+/*
+ * Controleer de volledige opgeslagen payload tegen onze
+ * ondersteunde configuratie. Verstuur daarna het opgeslagen object,
+ * niet een opnieuw opgebouwde aanvraag.
+ */
+function validateStoredPayload(
+  value: unknown,
   trainerId: string,
-): Promise<Stripe.Account> {
-  const account = await stripe.accounts.retrieve(accountId);
-
-  if (account.id !== accountId) {
-    throw new Error("CONNECT_ACCOUNT_ID_MISMATCH");
+  attemptId: string,
+): {
+  payload: ConnectV2AccountCreateParams;
+  country: "NL" | "BE";
+} {
+  if (!isObject(value) || !isObject(value.identity)) {
+    throw new Error("CONNECT_V2_PAYLOAD_INVALID");
   }
 
-  if (account.type !== "express") {
-    throw new Error("CONNECT_ACCOUNT_NOT_EXPRESS");
+  const country = value.identity.country;
+  const contactEmail = value.contact_email;
+  const displayName = value.display_name;
+
+  if (
+    (country !== "NL" && country !== "BE") ||
+    typeof contactEmail !== "string" ||
+    typeof displayName !== "string"
+  ) {
+    throw new Error("CONNECT_V2_PAYLOAD_INVALID");
   }
 
-  const metadataTrainerId =
-    account.metadata?.gowtrain_trainer_id?.trim();
+  const expected = buildConnectV2AccountPayload({
+    trainerId,
+    attemptId,
+    country,
+    contactEmail,
+    displayName,
+  });
 
-  if (!metadataTrainerId) {
-    throw new Error("CONNECT_TRAINER_METADATA_MISSING");
+  if (!isDeepStrictEqual(value, expected)) {
+    throw new Error("CONNECT_V2_PAYLOAD_MISMATCH");
   }
 
-  if (metadataTrainerId !== trainerId) {
-    throw new Error("CONNECT_TRAINER_METADATA_MISMATCH");
-  }
-
-  return account;
+  return {
+    payload: value as ConnectV2AccountCreateParams,
+    country,
+  };
 }
 
-/*
- * Bestaande koppeling behouden.
- * Alleen statusvelden bijwerken, nooit het account-ID vervangen.
- */
-async function syncLinkedAccount(
+async function verifyAndStoreAccount(
   trainerId: string,
   userId: string,
-  account: Stripe.Account,
+  attemptId: string,
+  accountId: string,
+  country: "NL" | "BE",
 ): Promise<void> {
-  const { data, error } = await supabaseAdmin
-    .from("trainers")
-    .update({
-      stripe_details_submitted: account.details_submitted === true,
-      stripe_charges_enabled: account.charges_enabled === true,
-      stripe_payouts_enabled: account.payouts_enabled === true,
-      stripe_onboarding_completed_at:
-        account.details_submitted && account.payouts_enabled
-          ? new Date().toISOString()
-          : null,
-    })
-    .eq("id", trainerId)
-    .eq("user_id", userId)
-    .eq("approval_status", "approved")
-    .eq("is_active", true)
-    .eq("stripe_account_id", account.id)
-    .select("id")
-    .maybeSingle();
+  const verified = await retrieveVerifiedTrainerConnectV2Account(
+    stripe,
+    {
+      accountId,
+      trainerId,
+      attemptId,
+      country,
+    },
+  );
 
-  if (error || !data) {
-    throw new Error(
-      "De status van de bestaande accountkoppeling kon niet worden bevestigd.",
-    );
+  const { data, error } = await supabaseAdmin.rpc(
+    "link_verified_trainer_connect_v2_account",
+    {
+      p_attempt_id: attemptId,
+      p_user_id: userId,
+      p_account_id: verified.accountId,
+      p_transfers_status: verified.transfersStatus,
+      p_payouts_status: verified.payoutsStatus,
+      p_checked_at: verified.checkedAt,
+    },
+  );
+
+  if (error || data !== true) {
+    console.error("V2-accountkoppeling opslaan niet bevestigd:", {
+      attemptId,
+      code: error?.code,
+    });
+
+    throw new Error("CONNECT_V2_LINK_NOT_CONFIRMED");
   }
 }
 
-/*
- * Geen reset naar reserved.
- * Een creating-opdracht kan al een Stripe-account hebben.
- */
+async function verifyExistingLink(
+  trainerId: string,
+  userId: string,
+  accountId: string,
+): Promise<void> {
+  const { data: attempt, error } = await supabaseAdmin
+    .from("trainer_connect_attempts")
+    .select(
+      "id, trainer_user_id, status, account_api, stripe_livemode, stripe_account_id, stripe_request_payload",
+    )
+    .eq("trainer_id", trainerId)
+    .eq("stripe_account_id", accountId)
+    .eq("account_api", "accounts_v2")
+    .eq("status", "linked")
+    .maybeSingle();
+
+  if (error) throw new Error("CONNECT_V2_ATTEMPT_LOOKUP_FAILED");
+
+  if (
+    !attempt ||
+    attempt.trainer_user_id !== userId ||
+    attempt.stripe_livemode !== false
+  ) {
+    throw new Error("CONNECT_V2_LINKED_ATTEMPT_MISSING");
+  }
+
+  const { country } = validateStoredPayload(
+    attempt.stripe_request_payload,
+    trainerId,
+    attempt.id,
+  );
+
+  await verifyAndStoreAccount(
+    trainerId,
+    userId,
+    attempt.id,
+    accountId,
+    country,
+  );
+}
+
 async function markAttemptForReview(
   attemptId: string,
+  stage: string,
   message: string,
   accountId: string | null,
 ): Promise<void> {
-  const { data, error } = await supabaseAdmin
+  const { error } = await supabaseAdmin
     .from("trainer_connect_attempts")
     .update({
       status: "review_required",
-      last_error: message.slice(0, 2000),
+      last_error: `${stage}: ${message}`.slice(0, 2000),
       ...(accountId ? { stripe_account_id: accountId } : {}),
       updated_at: new Date().toISOString(),
     })
     .eq("id", attemptId)
+    .eq("account_api", "accounts_v2")
     .eq("status", "creating")
-    .select("id")
-    .maybeSingle();
+    .is("stripe_account_id", null);
 
   if (error) {
-    console.error("Connect-aanmaak markeren voor controle mislukt:", {
+    console.error("V2-accountaanmaak markeren voor controle mislukt:", {
       attemptId,
       accountId,
       code: error.code,
     });
-  } else if (!data) {
-    console.warn("Connect-poging niet op review gezet; status al gewijzigd:", {
-      attemptId,
-      accountId,
-    });
   }
+}
+
+function diagnosticCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+
+  const knownCodes = new Set([
+    "CONNECT_V2_PAYLOAD_INPUT_INVALID",
+    "CONNECT_V2_PAYLOAD_INVALID",
+    "CONNECT_V2_PAYLOAD_MISMATCH",
+    "CONNECT_V2_EXPECTED_CONTEXT_INVALID",
+    "CONNECT_V2_ACCOUNT_ID_MISMATCH",
+    "CONNECT_V2_LIVE_ACCOUNT_NOT_ALLOWED",
+    "CONNECT_V2_ACCOUNT_CLOSED",
+    "CONNECT_V2_DASHBOARD_MISMATCH",
+    "CONNECT_V2_TRAINER_METADATA_MISMATCH",
+    "CONNECT_V2_ATTEMPT_METADATA_MISMATCH",
+    "CONNECT_V2_COUNTRY_MISMATCH",
+    "CONNECT_V2_RECIPIENT_NOT_APPLIED",
+    "CONNECT_V2_LINK_NOT_CONFIRMED",
+    "CONNECT_V2_ATTEMPT_LOOKUP_FAILED",
+    "CONNECT_V2_LINKED_ATTEMPT_MISSING",
+    "CONNECT_V2_PREPARATION_NOT_CONFIRMED",
+    "CONNECT_V2_PREPARATION_INVALID",
+    "CONNECT_V2_RESERVATION_INVALID",
+    "CONNECT_V2_ACCOUNT_LINK_INVALID",
+  ]);
+
+  if (knownCodes.has(message)) return message;
+
+  if (error instanceof Stripe.errors.StripeError) {
+    if (error.code === "resource_missing") {
+      return "STRIPE_RESOURCE_MISSING";
+    }
+
+    if (error.type === "StripeAuthenticationError") {
+      return "STRIPE_AUTHENTICATION_ERROR";
+    }
+
+    if (error.type === "StripePermissionError") {
+      return "STRIPE_PERMISSION_ERROR";
+    }
+
+    if (error.type === "StripeConnectionError") {
+      return "STRIPE_CONNECTION_ERROR";
+    }
+
+    return "STRIPE_REQUEST_ERROR";
+  }
+
+  return "CONNECT_OPERATION_NOT_CONFIRMED";
 }
 
 export async function POST(
   request: NextRequest,
 ): Promise<NextResponse> {
+  let stage = "authentication";
   let attemptId: string | null = null;
   let creationReleased = false;
   let linked = false;
   let createdAccountId: string | null = null;
-  let stage = "authentication";
 
   try {
     const authorization = request.headers.get("authorization");
-
-    if (!authorization?.startsWith("Bearer ")) {
-      return json({ error: "Je bent niet ingelogd." }, 401);
-    }
-
-    const token = authorization.slice("Bearer ".length).trim();
+    const token = authorization?.startsWith("Bearer ")
+      ? authorization.slice(7).trim()
+      : "";
 
     if (!token) {
       return json({ error: "Je bent niet ingelogd." }, 401);
     }
 
-    const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
+    const supabaseAuth = createClient(supabaseUrl, anonKey, {
       auth: {
         autoRefreshToken: false,
         persistSession: false,
@@ -219,17 +326,12 @@ export async function POST(
       );
     }
 
-    /*
-     * Tijdelijke omgevingsgrens.
-     * Ook bestaande accounts worden via deze route voorlopig
-     * uitsluitend met een sandboxkey benaderd.
-     */
-    if (!isSandboxKey()) {
+    if (
+      !stripeKey.startsWith("sk_test_") &&
+      !stripeKey.startsWith("rk_test_")
+    ) {
       return json(
-        {
-          error:
-            "Deze Connect-onboarding is tijdens de bouw uitsluitend beschikbaar in de sandbox.",
-        },
+        { error: "Deze onboarding is voorlopig uitsluitend voor testaccounts." },
         403,
       );
     }
@@ -238,7 +340,9 @@ export async function POST(
 
     const { data: trainer, error: trainerError } = await supabaseAdmin
       .from("trainers")
-      .select("id, stripe_account_id")
+      .select(
+        "id, stripe_account_id, stripe_account_api, stripe_account_livemode",
+      )
       .eq("user_id", user.id)
       .eq("approval_status", "approved")
       .eq("is_active", true)
@@ -246,14 +350,14 @@ export async function POST(
 
     if (trainerError) {
       return json(
-        { error: "Je trainerprofiel kon tijdelijk niet worden geladen." },
+        { error: "Je trainerprofiel kon niet worden geladen." },
         503,
       );
     }
 
     if (!trainer) {
       return json(
-        { error: "Er is geen actief en goedgekeurd trainerprofiel gevonden." },
+        { error: "Geen actief en goedgekeurd trainerprofiel gevonden." },
         403,
       );
     }
@@ -261,62 +365,84 @@ export async function POST(
     let accountId: string;
 
     if (trainer.stripe_account_id) {
-      stage = "existing_account";
-
-      const account = await retrieveTrainerAccount(
-        trainer.stripe_account_id,
-        trainer.id,
-      );
-
-      await syncLinkedAccount(trainer.id, user.id, account);
-      accountId = account.id;
-    } else {
-      stage = "reserve_attempt";
-
-      const { data: reservationData, error: reservationError } =
-        await supabaseAdmin.rpc("reserve_trainer_connect_attempt", {
-          p_trainer_id: trainer.id,
-          p_user_id: user.id,
-          p_stripe_livemode: false,
-        });
-
-      if (reservationError) {
+      if (
+        trainer.stripe_account_api !== "accounts_v2" ||
+        trainer.stripe_account_livemode !== false
+      ) {
         return json(
           {
+            code: "CONNECT_EXISTING_LINK_REQUIRES_REVIEW",
             error:
-              reservationError.code === "P0001" ||
-              reservationError.code === "42501"
-                ? reservationError.message
-                : "De accountaanmaak kon niet worden gereserveerd.",
+              "Deze bestaande testkoppeling is niet via de nieuwe v2-flow geregistreerd. Er wordt geen ander account aangemaakt of gekoppeld.",
           },
-          reservationError.code === "42501" ? 403 : 409,
+          409,
         );
       }
 
-      const reservation = reservationData as Reservation | null;
+      stage = "verify_existing_v2_account";
+
+      await verifyExistingLink(
+        trainer.id,
+        user.id,
+        trainer.stripe_account_id,
+      );
+
+      accountId = trainer.stripe_account_id;
+    } else {
+      stage = "reserve_v2_attempt";
+
+      const { data, error } = await supabaseAdmin.rpc(
+        "reserve_trainer_connect_v2_attempt",
+        {
+          p_trainer_id: trainer.id,
+          p_user_id: user.id,
+        },
+      );
+
+      if (error) {
+        return json(
+          {
+            code: "CONNECT_V2_RESERVATION_NOT_CONFIRMED",
+            stage,
+            error:
+              error.code === "P0001" || error.code === "42501"
+                ? error.message
+                : "De accountaanmaak kon niet worden gereserveerd.",
+          },
+          error.code === "42501"
+            ? 403
+            : error.code === "P0001"
+              ? 409
+              : 503,
+        );
+      }
+
+      const reservation = data as Reservation | null;
 
       if (!reservation) {
-        throw new Error("Geen geldige reserveringsbevestiging ontvangen.");
+        throw new Error("CONNECT_V2_RESERVATION_INVALID");
       }
 
       if (reservation.result === "already_linked") {
         if (!reservation.account_id) {
-          throw new Error("De bevestigde accountkoppeling ontbreekt.");
+          throw new Error("CONNECT_V2_RESERVATION_INVALID");
         }
 
-        const account = await retrieveTrainerAccount(
-          reservation.account_id,
+        stage = "verify_existing_v2_account";
+
+        await verifyExistingLink(
           trainer.id,
+          user.id,
+          reservation.account_id,
         );
 
-        await syncLinkedAccount(trainer.id, user.id, account);
-        accountId = account.id;
+        accountId = reservation.account_id;
       } else {
         if (
           !["reserved", "existing_attempt"].includes(reservation.result) ||
           !reservation.attempt_id
         ) {
-          throw new Error("De accountaanmaakpoging is ongeldig.");
+          throw new Error("CONNECT_V2_RESERVATION_INVALID");
         }
 
         attemptId = reservation.attempt_id;
@@ -327,28 +453,22 @@ export async function POST(
               code: "CONNECT_ATTEMPT_REQUIRES_CHECK",
               attemptId,
               error:
-                "Er is al een accountaanmaak gestart of deze vereist controle. Er wordt geen nieuw Stripe-account aangemaakt. Vernieuw het dashboard; blijft dit zo, neem contact op met Gowtrain.",
+                "Er is al een accountaanmaak gestart of deze vereist controle. Er wordt geen nieuw account aangemaakt.",
             },
             409,
           );
         }
 
-        stage = "prepare_attempt";
+        stage = "prepare_v2_attempt";
 
         const { data: preparedData, error: prepareError } =
-          await supabaseAdmin.rpc("prepare_trainer_connect_attempt", {
+          await supabaseAdmin.rpc("prepare_trainer_connect_v2_attempt", {
             p_attempt_id: attemptId,
             p_user_id: user.id,
           });
 
         if (prepareError) {
-          /*
-           * De RPC kan bij een verbindingsprobleem al gecommit zijn.
-           * Geen accounts.create zonder bevestigde voorbereiding.
-           */
-          throw new Error(
-            "De voorbereiding kon niet worden bevestigd. Controleer de bestaande poging.",
-          );
+          throw new Error("CONNECT_V2_PREPARATION_NOT_CONFIRMED");
         }
 
         if (!preparedData) {
@@ -357,7 +477,7 @@ export async function POST(
               code: "CONNECT_ATTEMPT_ALREADY_STARTED",
               attemptId,
               error:
-                "Deze accountaanmaak is al gestart of de trainer is inmiddels gekoppeld. Vernieuw het dashboard. Er is door deze aanroep geen nieuw account aangemaakt.",
+                "De accountaanmaak is al gestart of de trainer is inmiddels gekoppeld. Vernieuw het dashboard.",
             },
             409,
           );
@@ -366,132 +486,104 @@ export async function POST(
         creationReleased = true;
 
         const prepared = preparedData as PreparedAttempt;
-        const payload = prepared.stripe_payload;
-        const metadata = payload?.metadata;
 
         if (
           prepared.attempt_id !== attemptId ||
           prepared.trainer_id !== trainer.id ||
-          !prepared.idempotency_key ||
-          !payload ||
-          payload.type !== "express" ||
-          !["NL", "BE"].includes(payload.country ?? "") ||
-          payload.business_type !== "individual" ||
-          payload.capabilities?.transfers?.requested !== true ||
-          !metadata ||
-          typeof metadata !== "object" ||
-          Array.isArray(metadata) ||
-          metadata.gowtrain_trainer_id !== trainer.id ||
-          metadata.gowtrain_connect_attempt_id !== attemptId
+          prepared.account_api !== "accounts_v2" ||
+          prepared.stripe_livemode !== false ||
+          prepared.idempotency_key !== `gowtrain-connect-v2/${attemptId}`
         ) {
-          throw new Error("De voorbereide accountaanvraag is inconsistent.");
+          throw new Error("CONNECT_V2_PREPARATION_INVALID");
         }
 
-        stage = "create_account";
+        const { payload, country } = validateStoredPayload(
+          prepared.stripe_payload,
+          trainer.id,
+          attemptId,
+        );
 
-        /*
-         * Uitsluitend de exact opgeslagen aanvraag gebruiken.
-         * Geen automatische retry na een onzekere uitkomst.
-         */
-        const created = await stripe.accounts.create(payload, {
+        stage = "create_v2_account";
+
+        const created = await stripe.v2.core.accounts.create(payload, {
           idempotencyKey: prepared.idempotency_key,
         });
 
         createdAccountId = created.id;
+        stage = "verify_and_link_v2_account";
 
-        stage = "verify_created_account";
-
-        const verified = await retrieveTrainerAccount(
-          created.id,
+        await verifyAndStoreAccount(
           trainer.id,
+          user.id,
+          attemptId,
+          created.id,
+          country,
         );
 
-        if (
-          verified.metadata?.gowtrain_connect_attempt_id !== attemptId ||
-          verified.country !== payload.country ||
-          verified.business_type !== payload.business_type
-        ) {
-          throw new Error(
-            "Het aangemaakte account wijkt af van de opgeslagen aanvraag.",
-          );
-        }
-
-        stage = "link_account";
-
-        const { data: linkResult, error: linkError } =
-          await supabaseAdmin.rpc(
-            "link_verified_trainer_connect_account",
-            {
-              p_attempt_id: attemptId,
-              p_user_id: user.id,
-              p_account_id: verified.id,
-              p_details_submitted: verified.details_submitted === true,
-              p_charges_enabled: verified.charges_enabled === true,
-              p_payouts_enabled: verified.payouts_enabled === true,
-            },
-          );
-
-        if (linkError || linkResult !== true) {
-          throw new Error(
-            "Het Stripe-account bestaat, maar de koppeling kon niet worden bevestigd.",
-          );
-        }
-
         linked = true;
-        accountId = verified.id;
+        accountId = created.id;
       }
     }
 
-    /*
-     * Nogmaals de actuele eigenaar en opgeslagen bestemming controleren
-     * voordat een onboardinglink wordt gemaakt.
-     */
     stage = "check_link_access";
 
-    const { data: currentTrainer, error: accessError } =
-      await supabaseAdmin
-        .from("trainers")
-        .select("id")
-        .eq("id", trainer.id)
-        .eq("user_id", user.id)
-        .eq("approval_status", "approved")
-        .eq("is_active", true)
-        .eq("stripe_account_id", accountId)
-        .maybeSingle();
+    const { data: currentTrainer, error: accessError } = await supabaseAdmin
+      .from("trainers")
+      .select("id")
+      .eq("id", trainer.id)
+      .eq("user_id", user.id)
+      .eq("approval_status", "approved")
+      .eq("is_active", true)
+      .eq("stripe_account_id", accountId)
+      .eq("stripe_account_api", "accounts_v2")
+      .eq("stripe_account_livemode", false)
+      .eq("stripe_account_closed", false)
+      .maybeSingle();
 
     if (accessError || !currentTrainer) {
       return json(
         {
           error:
-            "De huidige toegang tot het gekoppelde Stripe-account kon niet worden bevestigd.",
+            "De toegang tot de actuele v2-accountkoppeling kon niet worden bevestigd.",
         },
         accessError ? 503 : 403,
       );
     }
 
-    stage = "create_onboarding_link";
+    stage = "create_v2_onboarding_link";
 
-    const accountLink = await stripe.accountLinks.create({
+    const accountLink = await stripe.v2.core.accountLinks.create({
       account: accountId,
-      refresh_url: new URL(
-        "/trainer-dashboard?stripe=refresh",
-        appBaseUrl,
-      ).toString(),
-      return_url: new URL(
-        "/trainer-dashboard?stripe=return",
-        appBaseUrl,
-      ).toString(),
-      type: "account_onboarding",
+      use_case: {
+        type: "account_onboarding",
+        account_onboarding: {
+          configurations: ["recipient"],
+          refresh_url: new URL(
+            "/trainer-dashboard?stripe=refresh",
+            appBaseUrl,
+          ).toString(),
+          return_url: new URL(
+            "/trainer-dashboard?stripe=return",
+            appBaseUrl,
+          ).toString(),
+        },
+      },
     });
 
-    return json({
-      onboardingUrl: accountLink.url,
-    });
+    if (
+      accountLink.account !== accountId ||
+      accountLink.livemode !== false ||
+      !accountLink.url
+    ) {
+      throw new Error("CONNECT_V2_ACCOUNT_LINK_INVALID");
+    }
+
+    return json({ onboardingUrl: accountLink.url });
   } catch (error: unknown) {
     const message =
       error instanceof Error ? error.message : "Onbekende Connect-fout.";
 
-    console.error("Connect-onboarding kon niet worden afgerond:", {
+    console.error("Connect v2-onboarding niet bevestigd:", {
       stage,
       attemptId,
       accountId: createdAccountId,
@@ -502,43 +594,15 @@ export async function POST(
       try {
         await markAttemptForReview(
           attemptId,
-          `${stage}: ${message}`,
+          stage,
+          message,
           createdAccountId,
         );
       } catch {
-        console.error("Connect-herstelregistratie niet bevestigd:", {
+        console.error("V2-herstelregistratie niet bevestigd:", {
           attemptId,
           accountId: createdAccountId,
         });
-      }
-    }
-
-    /*
-     * Als alleen de onboardinglink mislukt, blijft het al gekoppelde
-     * account behouden. Een volgende klik gebruikt datzelfde account.
-     */
-const safeValidationCodes = new Set([
-      "CONNECT_ACCOUNT_ID_MISMATCH",
-      "CONNECT_ACCOUNT_NOT_EXPRESS",
-      "CONNECT_TRAINER_METADATA_MISSING",
-      "CONNECT_TRAINER_METADATA_MISMATCH",
-    ]);
-
-    let diagnosticCode = "CONNECT_OPERATION_NOT_CONFIRMED";
-
-    if (safeValidationCodes.has(message)) {
-      diagnosticCode = message;
-    } else if (error instanceof Stripe.errors.StripeError) {
-      if (error.code === "resource_missing") {
-        diagnosticCode = "STRIPE_RESOURCE_MISSING";
-      } else if (error.type === "StripeAuthenticationError") {
-        diagnosticCode = "STRIPE_AUTHENTICATION_ERROR";
-      } else if (error.type === "StripePermissionError") {
-        diagnosticCode = "STRIPE_PERMISSION_ERROR";
-      } else if (error.type === "StripeConnectionError") {
-        diagnosticCode = "STRIPE_CONNECTION_ERROR";
-      } else {
-        diagnosticCode = "STRIPE_REQUEST_ERROR";
       }
     }
 
@@ -546,11 +610,11 @@ const safeValidationCodes = new Set([
       {
         code: "CONNECT_ONBOARDING_NOT_CONFIRMED",
         stage,
-        diagnosticCode,
+        diagnosticCode: diagnosticCode(error),
         ...(attemptId ? { attemptId } : {}),
         error:
-          stage === "create_onboarding_link"
-            ? "Het account is gekoppeld, maar de onboardinglink kon niet worden gemaakt. Je kunt de onboarding opnieuw openen zonder een nieuw account aan te maken."
+          stage === "create_v2_onboarding_link"
+            ? "De accountkoppeling is bevestigd, maar de onboardinglink niet. Je kunt de onboarding opnieuw openen zonder een nieuw account aan te maken."
             : "De onboarding kon niet volledig worden bevestigd. Controle van de bestaande koppeling of aanmaakpoging is nodig.",
       },
       503,
