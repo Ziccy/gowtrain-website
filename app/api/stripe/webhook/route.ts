@@ -52,7 +52,7 @@ async function syncTrainerStripeStatus(
    */
   const { data: trainer, error: trainerError } = await supabaseAdmin
     .from("trainers")
-    .select("id, stripe_account_id")
+    .select("id, stripe_account_id, stripe_account_api")
     .eq("stripe_account_id", eventAccount.id)
     .maybeSingle();
 
@@ -72,6 +72,20 @@ async function syncTrainerStripeStatus(
     console.warn("Connect-event zonder vastgelegde trainerkoppeling:", {
       accountId: eventAccount.id,
       reason: "NO_STORED_ACCOUNT_LINK",
+    });
+
+    return;
+  }
+
+/*
+   * Accounts v2 krijgen een eigen accountsynchronisatie.
+   * Een v1 account.updated-event mag hun statusvelden
+   * niet via de oude interpretatie bijwerken.
+   */
+  if (trainer.stripe_account_api === "accounts_v2") {
+    console.log("V1-accountstatus niet toegepast op v2-koppeling:", {
+      trainerId: trainer.id,
+      accountId: eventAccount.id,
     });
 
     return;
@@ -115,6 +129,9 @@ async function syncTrainerStripeStatus(
     })
     .eq("id", trainer.id)
     .eq("stripe_account_id", account.id)
+    .or(
+      "stripe_account_api.is.null,stripe_account_api.eq.accounts_v1"
+    )
     .select("id")
     .maybeSingle();
 
