@@ -37,12 +37,6 @@ const supabaseAdmin = createClient(
   }
 );
 
-type RefundBooking = {
-  id: string;
-  slot_id: string | null;
-  status: string;
-  cancellation_policy: string | null;
-};
 
 /* -------------------------------------------------------------------------- */
 /* Stripe Connect                                                             */
@@ -217,170 +211,17 @@ async function confirmPaidCheckoutSession(
 }
 
 /* -------------------------------------------------------------------------- */
-/* Refunds: bestaande afhandeling behouden                                     */
+/* Refunds: uitsluitend gecontroleerde refundadministratie                     */
 /* -------------------------------------------------------------------------- */
-
-async function findBookingForRefund(
-  refund: Stripe.Refund
-): Promise<RefundBooking | null> {
-  const bookingIdFromMetadata =
-    refund.metadata?.gowtrain_booking_id?.trim() || null;
-
-  let query = supabaseAdmin
-    .from("bookings")
-    .select("id, slot_id, status, cancellation_policy")
-    .limit(1);
-
-  if (bookingIdFromMetadata) {
-    query = query.eq("id", bookingIdFromMetadata);
-  } else {
-    query = query.eq("stripe_refund_id", refund.id);
-  }
-
-  const { data, error } = await query.maybeSingle();
-
-  if (error) {
-    throw new Error(
-      `Booking zoeken voor Stripe-refund mislukt: ${error.message}`
-    );
-  }
-
-  return (data as RefundBooking | null) ?? null;
-}
-
-async function resolveAdminIssueAfterRefund(
-  refund: Stripe.Refund
-): Promise<void> {
-  const issueId =
-    refund.metadata?.gowtrain_issue_id?.trim() || null;
-
-  if (!issueId) return;
-
-  const { error } = await supabaseAdmin
-    .from("booking_issues")
-    .update({
-      status: "resolved",
-      resolution_type: "full_refund",
-      resolution_note:
-        "Volledige Stripe-refund is succesvol verwerkt door Gowtrain.",
-      resolved_at: new Date().toISOString(),
-    })
-    .eq("id", issueId)
-    .in("status", ["open", "in_review"]);
-
-  if (error) {
-    throw new Error(
-      `Admin issue ${issueId} als opgelost markeren mislukt: ${error.message}`
-    );
-  }
-
-  console.log(
-    `Admin issue ${issueId} is opgelost na Stripe-refund.`
-  );
-}
-
-async function finalizeRefund(
-  refund: Stripe.Refund
-): Promise<void> {
-  if (refund.status !== "succeeded") return;
-
-  const booking = await findBookingForRefund(refund);
-  if (!booking) return;
-
-  if (booking.status === "refunded") return;
-
-  if (booking.status !== "refund_pending") {
-    console.warn(
-      `Booking ${booking.id} heeft status ${booking.status}; refund ${refund.id} wordt niet opnieuw verwerkt.`
-    );
-    return;
-  }
-
-  const { error: bookingUpdateError } = await supabaseAdmin
-    .from("bookings")
-    .update({
-      status: "refunded",
-      refunded_at: new Date().toISOString(),
-      stripe_refund_id: refund.id,
-      refund_last_error: null,
-      trainer_payout_status: "not_applicable",
-      trainer_payout_last_error: null,
-    })
-    .eq("id", booking.id)
-    .eq("status", "refund_pending");
-
-  if (bookingUpdateError) {
-    throw new Error(
-      `Booking ${booking.id} als refunded opslaan mislukt: ${bookingUpdateError.message}`
-    );
-  }
-
-  if (booking.slot_id) {
-    if (
-      booking.cancellation_policy === "player_timely_refund"
-    ) {
-      await supabaseAdmin
-        .from("availability_slots")
-        .update({
-          status: "available",
-          hold_expires_at: null,
-        })
-        .eq("id", booking.slot_id)
-        .eq("status", "booked");
-    }
-
-    if (
-      booking.cancellation_policy ===
-        "trainer_cancelled_refund" ||
-      booking.cancellation_policy === "admin_refund"
-    ) {
-      await supabaseAdmin
-        .from("availability_slots")
-        .update({
-          status: "cancelled",
-          hold_expires_at: null,
-        })
-        .eq("id", booking.slot_id)
-        .eq("status", "booked");
-    }
-  }
-
-  if (booking.cancellation_policy === "admin_refund") {
-    await resolveAdminIssueAfterRefund(refund);
-  }
-
-  console.log(
-    `Stripe refund ${refund.id} verwerkt voor booking ${booking.id}.`
-  );
-}
-
-async function handleRefundFailure(
-  refund: Stripe.Refund
-): Promise<void> {
-  const booking = await findBookingForRefund(refund);
-  if (!booking) return;
-
-  const failureReason =
-    refund.failure_reason ||
-    refund.status ||
-    "Stripe-refund kon niet worden verwerkt.";
-
-  await supabaseAdmin
-    .from("bookings")
-    .update({
-      refund_last_error: failureReason,
-    })
-    .eq("id", booking.id)
-    .eq("status", "refund_pending");
-}
 
 async function processStripeRefundEvent(
   refund: Stripe.Refund
 ): Promise<void> {
   /*
-   * Nieuwe refundadministratie:
-   * altijd de actuele Stripe-status ophalen,
-   * niet alleen het mogelijk oudere eventobject gebruiken.
+   * Haal de bestaande refund opnieuw op en verifieer
+   * opdracht, betaling, bedrag, valuta en omgeving.
+   *
+   * Deze helper maakt geen refund aan.
    */
   const result = await syncStripeRefund(refund.id);
 
@@ -389,22 +230,18 @@ async function processStripeRefundEvent(
   }
 
   /*
-   * Bestaande afhandeling voor oude refunds zonder
-   * gowtrain_refund_request_id.
+   * Geen metadata voor de nieuwe administratie:
+   * geen boeking zoeken via oude metadata en geen directe
+   * wijziging van boeking, slot, melding of trainerstatus.
+   *
+   * Dit kan een oude sandboxrefund of een externe refund zijn.
+   * Het event wordt geaccepteerd, maar niet administratief toegepast.
    */
-  if (refund.status === "succeeded") {
-    await finalizeRefund(refund);
-  } else if (
-    refund.status === "failed" ||
-    refund.status === "canceled"
-  ) {
-    await handleRefundFailure(refund);
-  }
+  console.warn("Refund niet automatisch administratief verwerkt:", {
+    refundId: refund.id,
+    reason: "NO_GOWTRAIN_REFUND_REQUEST_METADATA",
+  });
 }
-
-/* -------------------------------------------------------------------------- */
-/* Webhook entry point                                                        */
-/* -------------------------------------------------------------------------- */
 
 export async function POST(
   request: NextRequest
@@ -463,46 +300,25 @@ export async function POST(
         break;
       }
 
-      case "refund.created":
-case "refund.updated":
-case "refund.failed": {
-  const refund = event.data.object as Stripe.Refund;
+case "refund.created":
+      case "refund.updated":
+      case "refund.failed": {
+        const refund = event.data.object as Stripe.Refund;
 
-  await processStripeRefundEvent(refund);
-  break;
-}
-
-case "charge.refunded": {
-  const charge = event.data.object as Stripe.Charge;
-
-  /*
-   * Dit event is aanvullend.
-   * De refund-events zelf blijven de primaire bron,
-   * omdat charge.refunds.data niet noodzakelijk alle
-   * refunds van een betaling bevat.
-   */
-  for (const refund of charge.refunds?.data ?? []) {
-    await processStripeRefundEvent(refund);
-  }
-
-  break;
-}
+        await processStripeRefundEvent(refund);
+        break;
+      }
 
       case "charge.refunded": {
-        const charge =
-          event.data.object as Stripe.Charge;
+        const charge = event.data.object as Stripe.Charge;
 
-        if (charge.refunds?.data) {
-          for (const refund of charge.refunds.data) {
-            if (refund.status === "succeeded") {
-              await finalizeRefund(refund);
-            } else if (
-              refund.status === "failed" ||
-              refund.status === "canceled"
-            ) {
-              await handleRefundFailure(refund);
-            }
-          }
+        /*
+         * Aanvullende verwerking.
+         * Deze embedded lijst hoeft niet alle refunds te bevatten.
+         * De individuele refund-events blijven de primaire bron.
+         */
+        for (const refund of charge.refunds?.data ?? []) {
+          await processStripeRefundEvent(refund);
         }
 
         break;
