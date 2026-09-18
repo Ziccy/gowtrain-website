@@ -5,7 +5,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
-import TrainerBookingIssueModal from "@/components/TrainerBookingIssueModal";
 import BookingChatModal from "@/components/BookingChatModal";
 import { supabase } from "@/lib/supabase-browser";
 
@@ -211,31 +210,7 @@ function canTrainerCancelBooking(booking: Booking): boolean {
  * De RPC controleert opnieuw met de actuele databaseklok,
  * eigenaarschap, locks en bestaande financiële registraties.
  */
-function canTrainerReportIssue(
-  booking: Booking,
-  nowMs: number,
-): boolean {
-  if (
-    !["confirmed", "completed"].includes(booking.status) ||
-    !booking.paid_at ||
-    booking.stripe_transfer_id ||
-    booking.trainer_paid_at ||
-    ["processing", "paid"].includes(booking.trainer_payout_status ?? "")
-  ) {
-    return false;
-  }
 
-  const startsAt = booking.availability_slots?.starts_at;
-  if (!startsAt) return false;
-
-  const startMs = Date.parse(startsAt);
-
-  return (
-    Number.isFinite(startMs) &&
-    nowMs >= startMs &&
-    nowMs < startMs + 24 * 60 * 60 * 1000
-  );
-}
 
 export default function TrainerDashboardPage() {
   const router = useRouter();
@@ -250,7 +225,6 @@ export default function TrainerDashboardPage() {
   const [startDateFilter, setStartDateFilter] = useState<string>("");
   const [endDateFilter, setEndDateFilter] = useState<string>("");
 
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [settingUpStripe, setSettingUpStripe] = useState(false);
@@ -260,7 +234,6 @@ export default function TrainerDashboardPage() {
   const [chatBooking, setChatBooking] = useState<Booking | null>(null);
 
   const [pendingTrainerCancellation, setPendingTrainerCancellation] = useState<Booking | null>();
-  const [pendingTrainerIssueBooking, setPendingTrainerIssueBooking] = useState<Booking | null>();
   const [cancellingBookingId, setCancellingBookingId] = useState<string | null>();
 
   const [errorMessage, setErrorMessage] = useState("");
@@ -274,17 +247,6 @@ export default function TrainerDashboardPage() {
   }, []);
 
   // Tijdgebonden knoppen bijwerken zonder opnieuw data op te halen.
-  useEffect(() => {
-    const refreshClock = () => setNowMs(Date.now());
-
-    const interval = window.setInterval(refreshClock, 15_000);
-    window.addEventListener("focus", refreshClock);
-
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener("focus", refreshClock);
-    };
-  }, []);
 
   const unreadBookings = useMemo(() => {
     return bookings.filter(
@@ -618,7 +580,6 @@ export default function TrainerDashboardPage() {
 
   function openTrainerCancellation(booking: Booking): void {
     clearMessages();
-    setPendingTrainerIssueBooking(null);
     setPendingTrainerCancellation(booking);
 
     window.setTimeout(() => {
@@ -631,37 +592,7 @@ export default function TrainerDashboardPage() {
     setPendingTrainerCancellation(null);
   }
 
-  function openTrainerIssueReport(booking: Booking): void {
-    if (cancellingBookingId || refreshing) return;
-
-    clearMessages();
-
-    if (!canTrainerReportIssue(booking, Date.now())) {
-      showError(
-        "Melden kan alleen bij een betaalde les vanaf de start tot 24 uur daarna, zolang geen trainertransfer is gestart. Vernieuw zo nodig het overzicht.",
-      );
-      return;
-    }
-
-    setPendingTrainerCancellation(null);
-    setPendingTrainerIssueBooking(booking);
-  }
-
-  function closeTrainerIssueReport(): void {
-    setPendingTrainerIssueBooking(null);
-  }
-
-  function handleTrainerIssueSubmitted(): void {
-    setPendingTrainerIssueBooking(null);
-    setErrorMessage("");
-    setSuccessMessage(
-      "Je melding is geregistreerd, of er stond al een open melding van jou voor deze les. Dit is nog geen besluit over terugbetaling of trainervergoeding.",
-    );
-
-    void loadDashboard(false);
-  }
-
-  async function handleTrainerCancellation(
+async function handleTrainerCancellation(
   booking: Booking
 ): Promise<void> {
   if (cancellingBookingId) return;
@@ -989,18 +920,7 @@ export default function TrainerDashboardPage() {
             </section>
           )}
 
-          {/* ISSUE REPORT MODAL (POP-UP) */}
-          {pendingTrainerIssueBooking && (
-            <TrainerBookingIssueModal
-              bookingId={pendingTrainerIssueBooking.id}
-              playerName={pendingTrainerIssueBooking.player_name}
-              trainingLabel={`${formatDate(pendingTrainerIssueBooking.availability_slots?.starts_at)} · ${formatTime(pendingTrainerIssueBooking.availability_slots?.starts_at)} – ${formatTime(pendingTrainerIssueBooking.availability_slots?.ends_at)}`}
-              onClose={closeTrainerIssueReport}
-              onSubmitted={handleTrainerIssueSubmitted}
-            />
-          )}
-
-          {/* QUICK LINKS */}
+                   {/* QUICK LINKS */}
           <div className="mt-12">
             <p className="font-display text-lg text-[#FF4B3E]">SNEL BEHEREN</p>
             <div className="mt-4 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
@@ -1124,10 +1044,7 @@ export default function TrainerDashboardPage() {
                       {section.bookings.map((booking) => {
                         const slot = booking.availability_slots;
                         const canCancel = canTrainerCancelBooking(booking);
-                        const canReportIssue = canTrainerReportIssue(
-                          booking,
-                          nowMs,
-                        );
+                        
                         const chat = booking.chat_state;
 
                         return (
@@ -1202,28 +1119,7 @@ export default function TrainerDashboardPage() {
                                 </button>
                               )}
 
-                              {canReportIssue && (
-                                <div className="mt-4 border-t border-white/10 pt-4">
-                                  <button
-                                    type="button"
-                                    disabled={
-                                      refreshing ||
-                                      Boolean(cancellingBookingId) ||
-                                      Boolean(pendingTrainerIssueBooking)
-                                    }
-                                    onClick={() => openTrainerIssueReport(booking)}
-                                    className="w-full border border-white/30 px-4 py-3 text-left text-sm font-semibold text-[#D7D9DA] transition hover:border-[#FF4B3E] hover:text-[#FF4B3E] disabled:opacity-50"
-                                  >
-                                    Probleem met deze les melden →
-                                  </button>
-                                  <p className="mt-2 text-xs leading-relaxed text-[#B9BEC2]">
-                                    Beschikbaar vanaf de start tot 24 uur
-                                    daarna. Een melding is geen automatisch
-                                    refund- of uitbetalingsbesluit.
-                                  </p>
-                                </div>
-                              )}
-
+                             
                             </div>
                           </article>
                         );
