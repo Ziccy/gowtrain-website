@@ -85,14 +85,23 @@ async function retrieveTrainerAccount(
 ): Promise<Stripe.Account> {
   const account = await stripe.accounts.retrieve(accountId);
 
-  if (
-    account.id !== accountId ||
-    account.type !== "express" ||
-    account.metadata?.gowtrain_trainer_id !== trainerId
-  ) {
-    throw new Error(
-      "Het Stripe-account komt niet overeen met de trainerkoppeling.",
-    );
+  if (account.id !== accountId) {
+    throw new Error("CONNECT_ACCOUNT_ID_MISMATCH");
+  }
+
+  if (account.type !== "express") {
+    throw new Error("CONNECT_ACCOUNT_NOT_EXPRESS");
+  }
+
+  const metadataTrainerId =
+    account.metadata?.gowtrain_trainer_id?.trim();
+
+  if (!metadataTrainerId) {
+    throw new Error("CONNECT_TRAINER_METADATA_MISSING");
+  }
+
+  if (metadataTrainerId !== trainerId) {
+    throw new Error("CONNECT_TRAINER_METADATA_MISMATCH");
   }
 
   return account;
@@ -508,14 +517,41 @@ export async function POST(
      * Als alleen de onboardinglink mislukt, blijft het al gekoppelde
      * account behouden. Een volgende klik gebruikt datzelfde account.
      */
+const safeValidationCodes = new Set([
+      "CONNECT_ACCOUNT_ID_MISMATCH",
+      "CONNECT_ACCOUNT_NOT_EXPRESS",
+      "CONNECT_TRAINER_METADATA_MISSING",
+      "CONNECT_TRAINER_METADATA_MISMATCH",
+    ]);
+
+    let diagnosticCode = "CONNECT_OPERATION_NOT_CONFIRMED";
+
+    if (safeValidationCodes.has(message)) {
+      diagnosticCode = message;
+    } else if (error instanceof Stripe.errors.StripeError) {
+      if (error.code === "resource_missing") {
+        diagnosticCode = "STRIPE_RESOURCE_MISSING";
+      } else if (error.type === "StripeAuthenticationError") {
+        diagnosticCode = "STRIPE_AUTHENTICATION_ERROR";
+      } else if (error.type === "StripePermissionError") {
+        diagnosticCode = "STRIPE_PERMISSION_ERROR";
+      } else if (error.type === "StripeConnectionError") {
+        diagnosticCode = "STRIPE_CONNECTION_ERROR";
+      } else {
+        diagnosticCode = "STRIPE_REQUEST_ERROR";
+      }
+    }
+
     return json(
       {
         code: "CONNECT_ONBOARDING_NOT_CONFIRMED",
+        stage,
+        diagnosticCode,
         ...(attemptId ? { attemptId } : {}),
         error:
           stage === "create_onboarding_link"
             ? "Het account is gekoppeld, maar de onboardinglink kon niet worden gemaakt. Je kunt de onboarding opnieuw openen zonder een nieuw account aan te maken."
-            : "De onboarding kon niet volledig worden bevestigd. Een account kan al bestaan. Vernieuw het dashboard; blijft dit probleem bestaan, laat Gowtrain de bestaande koppeling of aanmaakpoging controleren.",
+            : "De onboarding kon niet volledig worden bevestigd. Controle van de bestaande koppeling of aanmaakpoging is nodig.",
       },
       503,
     );
