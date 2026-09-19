@@ -68,6 +68,10 @@ export async function retrieveVerifiedTrainerConnectV2Account(
     throw new Error("CONNECT_V2_EXPECTED_CONTEXT_INVALID");
   }
 
+  // Gebruik het startmoment, niet het moment waarop de response aankomt.
+  // De link-RPC weigert controles ouder dan de opgeslagen checked_at.
+  const checkedAt = new Date().toISOString();
+
   const account = await stripe.v2.core.accounts.retrieve(
     expected.accountId,
     {
@@ -140,6 +144,6 @@ export async function retrieveVerifiedTrainerConnectV2Account(
     payoutsStatus: readCapabilityStatus(
       balanceCapabilities?.payouts?.status,
     ),
-    checkedAt: new Date().toISOString(),
+    checkedAt,
   };
 }

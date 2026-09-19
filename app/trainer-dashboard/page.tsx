@@ -237,6 +237,9 @@ export default function TrainerDashboardPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [settingUpStripe, setSettingUpStripe] = useState(false);
+  const [checkingStripeStatus, setCheckingStripeStatus] = useState(false);
+  const stripeStatusCheckInFlight = useRef(false);
+  const dashboardInitializationStarted = useRef(false);
   const [profileMissing, setProfileMissing] = useState(false);
 
   // CHAT MODAL
@@ -250,9 +253,38 @@ export default function TrainerDashboardPage() {
 
   const trainerCancellationRef = useRef<HTMLElement | null>(null);
 
-  // Dashboardgegevens ophalen bij het openen van de pagina.
+// Eerst dashboardgegevens laden.
+  // Alleen bij terugkeer van Stripe eenmaal de statusroute aanroepen.
   useEffect(() => {
-    void loadDashboard();
+    // Voorkom een dubbele initialisatie binnen dezelfde mount,
+    // onder meer bij de extra effectuitvoering in React Strict Mode.
+    if (dashboardInitializationStarted.current) return;
+    dashboardInitializationStarted.current = true;
+
+    async function initializeDashboard(): Promise<void> {
+      const url = new URL(window.location.href);
+      const returnedFromStripe = url.searchParams.get("stripe") === "return";
+
+      if (returnedFromStripe) {
+        // Consumeer de returnmarkering. Een gewone paginaverversing
+        // mag niet telkens opnieuw een Stripe-controle starten.
+        url.searchParams.delete("stripe");
+
+        window.history.replaceState(
+          window.history.state,
+          "",
+          `${url.pathname}${url.search}${url.hash}`
+        );
+      }
+
+      await loadDashboard();
+
+      if (returnedFromStripe) {
+        await handleStripeStatusRefresh();
+      }
+    }
+
+    void initializeDashboard();
   }, []);
 
   // Tijdgebonden knoppen bijwerken zonder opnieuw data op te halen.
@@ -605,6 +637,69 @@ export default function TrainerDashboardPage() {
     setRefreshing(false);
   }
 
+async function handleStripeStatusRefresh(): Promise<void> {
+    if (stripeStatusCheckInFlight.current) return;
+
+    stripeStatusCheckInFlight.current = true;
+    setCheckingStripeStatus(true);
+    clearMessages();
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        router.replace("/trainer-login");
+        return;
+      }
+
+      const response = await fetch("/api/stripe/connect/status", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        cache: "no-store",
+      });
+
+      const result = (await response.json()) as {
+        statusChecked?: boolean;
+        checkedAt?: string;
+        error?: string;
+      };
+
+      if (!response.ok) {
+        showError(
+          result.error ||
+            "De Stripe-status kon niet worden vernieuwd. De getoonde status kan verouderd zijn."
+        );
+        return;
+      }
+
+      if (
+        result.statusChecked !== true ||
+        typeof result.checkedAt !== "string" ||
+        !Number.isFinite(Date.parse(result.checkedAt))
+      ) {
+        showError(
+          "Het resultaat van de Stripe-controle kon niet worden bevestigd. De getoonde status kan verouderd zijn."
+        );
+        return;
+      }
+
+      // Lees na bevestigde opslag de dashboardgegevens opnieuw.
+      // Geen client-side wijziging van financiële databasevelden.
+      await loadDashboard(false);
+    } catch {
+      showError(
+        "De verbinding tijdens de Stripe-controle is onderbroken. Controle en opslag kunnen al hebben plaatsgevonden. Er wordt niet automatisch opnieuw geprobeerd; de getoonde status kan verouderd zijn."
+      );
+    } finally {
+      stripeStatusCheckInFlight.current = false;
+      setCheckingStripeStatus(false);
+    }
+  }
+
   async function handleStripeOnboarding(): Promise<void> {
     setSettingUpStripe(true);
     clearMessages();
@@ -944,11 +1039,24 @@ async function handleTrainerCancellation(
                   </div>
                 )}
 
+                {stripeHasVerifiedContext && (
+                  <button
+                    type="button"
+                    onClick={() => void handleStripeStatusRefresh()}
+                    disabled={checkingStripeStatus || settingUpStripe}
+                    className="w-full border-2 border-white/40 px-5 py-3.5 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:text-[#D6FF3F] disabled:opacity-60"
+                  >
+                    {checkingStripeStatus
+                      ? "STRIPE-STATUS CONTROLEREN..."
+                      : "STRIPE-STATUS VERNIEUWEN"}
+                  </button>
+                )}
+
                 {!stripeLinkRequiresReview && (
                   <button
                     type="button"
                     onClick={() => void handleStripeOnboarding()}
-                    disabled={settingUpStripe}
+                    disabled={settingUpStripe || checkingStripeStatus}
                     className="w-full bg-[#D6FF3F] px-5 py-3.5 font-display text-sm text-[#14171A] hover:bg-white transition disabled:opacity-60"
                   >
                     {settingUpStripe
@@ -968,9 +1076,11 @@ async function handleTrainerCancellation(
                 )}
 
                 <p className="text-xs leading-relaxed text-[#B9BEC2]">
-                  ‘Ververs’ leest alleen de opgeslagen dashboardgegevens.
-                  De Stripe-status wordt na terugkeer uit de onboarding
-                  nog niet automatisch opnieuw opgehaald.
+                  ‘Ververs’ bovenaan leest alleen de opgeslagen
+                  dashboardgegevens. ‘Stripe-status vernieuwen’ controleert
+                  je bestaande account bij Stripe, zonder onboarding te
+                  openen. Na terugkeer uit de onboarding wordt die controle
+                  eenmaal automatisch uitgevoerd.
                 </p>
               </div>
             </section>
