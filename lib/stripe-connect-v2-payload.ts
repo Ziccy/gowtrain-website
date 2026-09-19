@@ -62,6 +62,10 @@ export function buildConnectV2AccountPayload(
     defaults: {
       currency: "eur",
       locales: ["nl"],
+      responsibilities: {
+        fees_collector: "application",
+        losses_collector: "application",
+      },
     },
 
     configuration: {
