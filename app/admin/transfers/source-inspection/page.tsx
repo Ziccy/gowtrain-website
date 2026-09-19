@@ -136,10 +136,10 @@ export default function AdminSourceInspectionPage() {
 
         <div className="mt-6 space-y-3 border-2 border-white/30 p-5">
           <p>
-            Alleen-lezen controle van de afgesproken aankoop van €380:
+            Alleen-lezen controle van de afgesproken aankoop van €100:
           </p>
           <p className="break-all font-mono text-sm">
-            d328e28a-30c8-4c93-a3ea-7a66b52025b3
+            4e54c469-299a-4fa6-a61f-3f8a61bc2f57
           </p>
           <p className="text-sm leading-relaxed text-[#B9BEC2]">
             De server controleert je adminrechten en leest daarna de
@@ -147,9 +147,10 @@ export default function AdminSourceInspectionPage() {
             Er wordt geen transfer geregistreerd, geclaimd of uitgevoerd.
           </p>
           <p className="text-sm leading-relaxed text-[#B9BEC2]">
-            Deze aankoop hoort bij de oude trainer en blijft uitgesloten
-            van de nieuwe transferuitvoering. Een geslaagde broncontrole
-            verandert dat niet.
+            Deze aankoop hoort bij de nieuwe v2-testtrainer. Een
+            geslaagde broncontrole geeft nog geen toestemming voor een
+            transfer. Lesmoment, bestemming, eerdere transfers en
+            financiële blokkades moeten afzonderlijk worden gecontroleerd.
           </p>
         </div>
 

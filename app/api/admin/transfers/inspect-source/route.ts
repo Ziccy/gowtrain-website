@@ -8,10 +8,10 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 90;
 
 /*
- * Tijdelijk expliciet afgebakende broninspectie.
- * Deze oude aankoop wordt NIET voor transferuitvoering vrijgegeven.
+ * Expliciet afgebakende broninspectie van de nieuwe v2-testaankoop.
+ * Dit geeft geen toestemming voor transferuitvoering.
  */
-const TEST_PURCHASE_ID = "d328e28a-30c8-4c93-a3ea-7a66b52025b3";
+const TEST_PURCHASE_ID = "4e54c469-299a-4fa6-a61f-3f8a61bc2f57";
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
