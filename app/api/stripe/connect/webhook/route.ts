@@ -88,6 +88,78 @@ function verifyStoredPayload(
   return country;
 }
 
+async function recordConnectIncident(input: {
+  accountId: string;
+  eventId: string;
+  category: "event_processing_error" | "account_configuration_review";
+  stage: string;
+  errorCode: string;
+  reviewReasons?: string[];
+}): Promise<void> {
+  const { data, error } = await supabaseAdmin.rpc(
+    "record_connect_attention_incident",
+    {
+      p_account_id: input.accountId,
+      p_category: input.category,
+      p_event_id: input.eventId,
+      p_stage: input.stage,
+      p_error_code: input.errorCode,
+      p_review_reasons: input.reviewReasons ?? [],
+    },
+  );
+
+  if (
+    error ||
+    typeof data !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      data,
+    )
+  ) {
+    console.error("Connect-probleemregistratie niet bevestigd:", {
+      eventId: input.eventId,
+      accountId: input.accountId,
+      category: input.category,
+      databaseCode: error?.code,
+    });
+
+    throw new Error("CONNECT_V2_INCIDENT_RECORD_NOT_CONFIRMED");
+  }
+}
+
+function connectIncidentErrorCode(error: unknown): string {
+  if (error instanceof Stripe.errors.StripeError) {
+    if (error.type === "StripeConnectionError") {
+      return "STRIPE_CONNECTION_ERROR";
+    }
+
+    if (error.type === "StripeAuthenticationError") {
+      return "STRIPE_AUTHENTICATION_ERROR";
+    }
+
+    if (error.type === "StripePermissionError") {
+      return "STRIPE_PERMISSION_ERROR";
+    }
+
+    if (error.code === "resource_missing") {
+      return "STRIPE_RESOURCE_MISSING";
+    }
+
+    return "STRIPE_REQUEST_ERROR";
+  }
+
+  const message = error instanceof Error ? error.message : "";
+
+  // Alleen onze diagnostische codes opslaan, geen vrije foutteksten.
+  if (
+    /^CONNECT_V2_[A-Z0-9_]+$/.test(message) &&
+    message.length <= 150
+  ) {
+    return message;
+  }
+
+  return "CONNECT_V2_PROCESSING_NOT_CONFIRMED";
+}
+
 export async function POST(
   request: NextRequest,
 ): Promise<NextResponse> {
@@ -283,6 +355,38 @@ export async function POST(
       attempt.id,
     );
 
+    stage = "read_open_incidents";
+
+    /*
+     * Lees probleemversies vóór de nieuwe Stripe-accountcontrole.
+     * Alleen problemen waarvan het laatst geregistreerde event
+     * deze aflevering is, komen voor automatisch herstel in aanmerking.
+     */
+    const {
+      data: openIncidents,
+      error: incidentsError,
+    } = await supabaseAdmin
+      .from("connect_attention_incidents")
+      .select("id, occurrence_count")
+      .eq("stripe_account_id", parsed.accountId)
+      .eq("stripe_livemode", false)
+      .eq("status", "open")
+      .eq("last_event_id", parsed.eventId);
+
+    if (incidentsError) {
+      throw new Error("CONNECT_V2_INCIDENT_LOOKUP_FAILED");
+    }
+
+    for (const incident of openIncidents ?? []) {
+      if (
+        typeof incident.id !== "string" ||
+        !Number.isSafeInteger(incident.occurrence_count) ||
+        incident.occurrence_count < 1
+      ) {
+        throw new Error("CONNECT_V2_INCIDENT_VERSION_INVALID");
+      }
+    }
+
     stage = "retrieve_current_account";
 
     const snapshot = await retrieveTrainerConnectV2StatusSnapshot(
@@ -356,6 +460,15 @@ export async function POST(
         reviewReasons: snapshot.reviewReasons,
       });
 
+      await recordConnectIncident({
+        accountId: parsed.accountId,
+        eventId: parsed.eventId,
+        category: "account_configuration_review",
+        stage: "verify_account_configuration",
+        errorCode: "CONNECT_V2_ACCOUNT_REQUIRES_REVIEW",
+        reviewReasons: snapshot.reviewReasons,
+      });
+
       return json(
         {
           error: "De accountconfiguratie vereist controle.",
@@ -363,6 +476,60 @@ export async function POST(
         },
         503,
       );
+    }
+
+    /*
+     * Alleen een daadwerkelijk toegepaste, schone controle
+     * gebruiken voor automatisch herstel.
+     *
+     * stale_ignored en closed_preserved zijn geen bewijs dat
+     * deze nieuwe snapshot zelf is opgeslagen.
+     */
+    if (result.result === "applied") {
+      stage = "resolve_incidents";
+
+      for (const incident of openIncidents ?? []) {
+        const {
+          data: resolved,
+          error: resolveError,
+        } = await supabaseAdmin.rpc(
+          "resolve_connect_attention_incident",
+          {
+            p_incident_id: incident.id,
+            p_trainer_id: trainer.id,
+            p_attempt_id: attempt.id,
+            p_account_id: snapshot.accountId,
+            p_event_id: parsed.eventId,
+            p_expected_occurrence_count: incident.occurrence_count,
+            p_checked_at: snapshot.checkedAt,
+          },
+        );
+
+        if (
+          resolveError ||
+          (resolved !== true && resolved !== false)
+        ) {
+          console.error("Connect-probleemherstel niet bevestigd:", {
+            eventId: parsed.eventId,
+            incidentId: incident.id,
+            databaseCode: resolveError?.code,
+          });
+
+          throw new Error("CONNECT_V2_INCIDENT_RESOLUTION_FAILED");
+        }
+
+        console.log("Connect-probleemherstel gecontroleerd:", {
+          eventId: parsed.eventId,
+          incidentId: incident.id,
+          resolved,
+        });
+
+        /*
+         * false is een veilige weigering, bijvoorbeeld doordat
+         * een nieuwere fout of accountcontrole is geregistreerd.
+         * Het probleem blijft dan open; niet geforceerd afsluiten.
+         */
+      }
     }
 
     console.log("Connect v2-statusverwerking bevestigd:", {
@@ -396,6 +563,38 @@ export async function POST(
       stripeStatusCode: stripeError?.statusCode,
       stripeCode: stripeError?.code,
     });
+
+    /*
+     * Dit punt is alleen bereikbaar voor een reeds geverifieerde
+     * testnotificatie met een geldige accountverwijzing.
+     *
+     * Ongeldige handtekeningen en pings maken geen incidenten.
+     */
+    try {
+      await recordConnectIncident({
+        accountId: parsed.accountId,
+        eventId: parsed.eventId,
+        category: "event_processing_error",
+        stage,
+        errorCode: connectIncidentErrorCode(error),
+      });
+    } catch {
+      /*
+       * Bij bijvoorbeeld een database-uitval kan ook de
+       * probleemregistratie mislukken. Dat niet verbergen:
+       * HTTP 503 behouden zodat Stripe opnieuw kan afleveren.
+       *
+       * Onafhankelijke monitoring blijft hiervoor nodig.
+       */
+      console.error(
+        "Connect-event mislukt én duurzame probleemregistratie niet bevestigd:",
+        {
+          eventId: parsed.eventId,
+          accountId: parsed.accountId,
+          stage,
+        },
+      );
+    }
 
     return json(
       {
