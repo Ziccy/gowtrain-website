@@ -27,15 +27,24 @@ type BookingFilter =
   | "refunded"
   | "completed";
 
+type StripeCapabilityStatus =
+  | "active"
+  | "pending"
+  | "restricted"
+  | "unsupported";
+
 type TrainerAccount = {
   id: string;
   name: string;
   is_active: boolean;
   approval_status: ApprovalStatus;
   stripe_account_id: string | null;
-  stripe_details_submitted: boolean;
-  stripe_charges_enabled: boolean;
-  stripe_payouts_enabled: boolean;
+  stripe_account_api: "accounts_v1" | "accounts_v2" | null;
+  stripe_account_livemode: boolean | null;
+  stripe_account_closed: boolean | null;
+  stripe_transfers_status: StripeCapabilityStatus | null;
+  stripe_payouts_status: StripeCapabilityStatus | null;
+  stripe_account_checked_at: string | null;
   calendar_feed_token: string | null;
 };
 
@@ -283,11 +292,57 @@ export default function TrainerDashboardPage() {
     return totalCents;
   }, [bookings]);
 
-  const stripeIsReady =
-    trainerAccount?.stripe_details_submitted === true &&
-    trainerAccount?.stripe_payouts_enabled === true;
-
   const stripeHasStarted = Boolean(trainerAccount?.stripe_account_id);
+
+  const stripeCheckedAt = trainerAccount?.stripe_account_checked_at;
+  const stripeHasValidCheck = Boolean(
+    stripeCheckedAt && Number.isFinite(Date.parse(stripeCheckedAt))
+  );
+
+  // Alleen de opgeslagen, geverifieerde v2-testcontext weergeven.
+  // Dit is geen actuele Stripe-aanroep of financiële uitvoerautorisatie.
+  const stripeHasVerifiedContext =
+    stripeHasStarted &&
+    trainerAccount?.stripe_account_api === "accounts_v2" &&
+    trainerAccount?.stripe_account_livemode === false &&
+    trainerAccount?.stripe_account_closed === false &&
+    stripeHasValidCheck;
+
+  const stripeCapabilitiesActive =
+    stripeHasVerifiedContext &&
+    trainerAccount?.stripe_transfers_status === "active" &&
+    trainerAccount?.stripe_payouts_status === "active";
+
+  // Oude, gesloten of onvolledig vastgelegde koppelingen niet
+  // presenteren als een gewone onboarding die nog afgemaakt moet worden.
+  const stripeLinkRequiresReview =
+    stripeHasStarted && !stripeHasVerifiedContext;
+
+  const stripeCheckedAtLabel =
+    stripeHasValidCheck && stripeCheckedAt
+      ? new Intl.DateTimeFormat("nl-NL", {
+          dateStyle: "medium",
+          timeStyle: "short",
+          timeZone: "Europe/Amsterdam",
+        }).format(new Date(stripeCheckedAt))
+      : null;
+
+  function stripeCapabilityLabel(
+    status: StripeCapabilityStatus | null | undefined
+  ): string {
+    switch (status) {
+      case "active":
+        return "Actief";
+      case "pending":
+        return "In afwachting";
+      case "restricted":
+        return "Beperkt";
+      case "unsupported":
+        return "Niet ondersteund";
+      default:
+        return "Onbekend";
+    }
+  }
 
   // 💡 GEFILERDE BOEKINGEN MET GEFIXTE DATUM-VERGELIJKING
   const bookingSections = useMemo((): BookingSection[] => {
@@ -412,7 +467,9 @@ export default function TrainerDashboardPage() {
 
       const { data: trainerData, error: trainerError } = await supabase
         .from("trainers")
-        .select("id, name, is_active, approval_status, stripe_account_id, stripe_details_submitted, stripe_charges_enabled, stripe_payouts_enabled, calendar_feed_token")
+        .select(
+          "id, name, is_active, approval_status, stripe_account_id, stripe_account_api, stripe_account_livemode, stripe_account_closed, stripe_transfers_status, stripe_payouts_status, stripe_account_checked_at, calendar_feed_token"
+        )
         .eq("user_id", user.id)
         .maybeSingle();
 
@@ -820,47 +877,101 @@ async function handleTrainerCancellation(
           <div className="mt-8 grid gap-6 lg:grid-cols-2">
             <section className="border-2 border-[#FF4B3E] bg-white/5 p-5 sm:p-6 shadow-[6px_6px_0_0_#FF4B3E] flex flex-col justify-between h-full">
               <div>
-                <p className="font-display text-sm text-[#FF4B3E]">UITBETALINGEN &amp; STRIPE</p>
+                <p className="font-display text-sm text-[#FF4B3E]">
+                  STRIPE CONNECT — TESTOMGEVING
+                </p>
+
                 <h2 className="mt-1 font-display text-2xl text-white">
-                  {stripeIsReady ? "STRIPE IS ACTIEF & GEKOPPELD" : stripeHasStarted ? "MAAK JE STRIPE GEGEVENS COMPLEET" : "STEL JE UITBETALINGEN IN"}
+                  {stripeLinkRequiresReview
+                    ? "STRIPE-KOPPELING VEREIST CONTROLE"
+                    : stripeCapabilitiesActive
+                      ? "STRIPE-CAPABILITIES ACTIEF"
+                      : stripeHasStarted
+                        ? "STRIPE-STATUS CONTROLEREN"
+                        : "KOPPEL JE STRIPE-TESTACCOUNT"}
                 </h2>
+
                 <p className="mt-2 text-xs text-[#B9BEC2] leading-relaxed">
-                  {stripeIsReady
-  ? "Je Stripe-account is gekoppeld. Dit bevestigt geen trainertransfer. Automatische trainertransfers staan tijdens de sandboxfase nog uit."
-  : "Koppel je bankrekening veilig via Stripe. Automatische trainertransfers staan tijdens de sandboxfase nog uit."}
+                  {stripeLinkRequiresReview
+                    ? "Deze bestaande koppeling is niet bevestigd als een open v2-testaccount. Er wordt vanuit dit dashboard geen vervangend account aangemaakt. Neem contact op met Gowtrain."
+                    : stripeCapabilitiesActive
+                      ? "Bij de laatst opgeslagen Stripe-controle waren transfers en bankpayouts actief. Dit bewijst geen uitgevoerde transfer of bankuitbetaling."
+                      : stripeHasStarted
+                        ? "De laatst opgeslagen controle bevestigt nog niet dat beide capabilities actief zijn. Stripe kan nog gegevens verwerken of aanvullende informatie vragen."
+                        : "Open de beveiligde Stripe-hosted onboarding om je testaccount te koppelen. De onboarding opent buiten Gowtrain."}
+                </p>
+
+                {stripeHasVerifiedContext && (
+                  <div className="mt-4 space-y-2 border-l-2 border-[#D6FF3F] pl-4 text-xs text-[#B9BEC2]">
+                    <p>
+                      Transfers naar Stripe-account:{" "}
+                      <strong className="text-white">
+                        {stripeCapabilityLabel(
+                          trainerAccount.stripe_transfers_status
+                        )}
+                      </strong>
+                    </p>
+
+                    <p>
+                      Bankpayout-capability:{" "}
+                      <strong className="text-white">
+                        {stripeCapabilityLabel(
+                          trainerAccount.stripe_payouts_status
+                        )}
+                      </strong>
+                    </p>
+
+                    <p>
+                      Laatste opgeslagen Stripe-controle:{" "}
+                      {stripeCheckedAtLabel} (Amsterdam).
+                    </p>
+                  </div>
+                )}
+
+                <p className="mt-3 text-xs text-[#B9BEC2] leading-relaxed">
+                  Automatische trainertransfers staan tijdens deze testfase
+                  uit. Een transfer naar het Stripe-account is niet hetzelfde
+                  als een uitbetaling naar de bank.
                 </p>
               </div>
 
-              <div className="mt-5">
-                {stripeIsReady ? (
-                  <div className="space-y-3">
-                    <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] px-4 py-3 text-[#14171A]">
-                      <p className="font-display text-base">
-                        STRIPE CONNECT GEKOPPELD
-                      </p>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => void handleStripeOnboarding()}
-                      disabled={settingUpStripe}
-                      className="w-full border-2 border-white/40 px-5 py-3.5 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:text-[#D6FF3F] disabled:opacity-60"
-                    >
-                      {settingUpStripe
-                        ? "STRIPE OPENEN..."
-                        : "STRIPE-ONBOARDING OPNIEUW OPENEN →"}
-                    </button>
-
-                    <p className="text-xs leading-relaxed text-[#B9BEC2]">
-                      Open de onboarding van je bestaande Stripe-account.
-                      Dit start geen trainertransfer of bankuitbetaling.
+              <div className="mt-5 space-y-3">
+                {stripeCapabilitiesActive && (
+                  <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] px-4 py-3 text-[#14171A]">
+                    <p className="font-display text-base">
+                      V2-TESTACCOUNT GEKOPPELD
                     </p>
                   </div>
-                ) : (
-                  <button type="button" onClick={() => void handleStripeOnboarding()} disabled={settingUpStripe} className="w-full bg-[#D6FF3F] px-5 py-3.5 font-display text-sm text-[#14171A] hover:bg-white transition disabled:opacity-60">
-                    {settingUpStripe ? "STRIPE OPENEN..." : stripeHasStarted ? "ONBOARDING AFRONDEN →" : "KOPPEL STRIPE. GOW! →"}
+                )}
+
+                {!stripeLinkRequiresReview && (
+                  <button
+                    type="button"
+                    onClick={() => void handleStripeOnboarding()}
+                    disabled={settingUpStripe}
+                    className="w-full bg-[#D6FF3F] px-5 py-3.5 font-display text-sm text-[#14171A] hover:bg-white transition disabled:opacity-60"
+                  >
+                    {settingUpStripe
+                      ? "STRIPE OPENEN..."
+                      : stripeHasStarted
+                        ? "BESTAANDE STRIPE-ONBOARDING OPENEN →"
+                        : "KOPPEL STRIPE. GOW! →"}
                   </button>
                 )}
+
+                {stripeHasVerifiedContext && (
+                  <p className="text-xs leading-relaxed text-[#B9BEC2]">
+                    Opnieuw openen controleert eerst je bestaande
+                    Stripe-account en opent daarna de Stripe-hosted
+                    onboarding. Dit start geen transfer of bankuitbetaling.
+                  </p>
+                )}
+
+                <p className="text-xs leading-relaxed text-[#B9BEC2]">
+                  ‘Ververs’ leest alleen de opgeslagen dashboardgegevens.
+                  De Stripe-status wordt na terugkeer uit de onboarding
+                  nog niet automatisch opnieuw opgehaald.
+                </p>
               </div>
             </section>
 
