@@ -7,6 +7,12 @@ import Link from "next/link";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
+import {
+  addCalendarDays,
+  createAmsterdamDateFromInputs,
+  formatAmsterdamDate,
+  getAmsterdamDateInputs,
+} from "@/lib/amsterdam-date-time";
 
 type ApprovalStatus = "pending" | "approved" | "rejected";
 type Sport = "padel" | "tennis";
@@ -54,79 +60,18 @@ const participantOptions = [1, 2, 3, 4];
 
 const hoursOptions = Array.from(
   { length: 17 },
-  (_, index) => String(index + 7).padStart(2, "0")
+  (_, index) => String(index + 7).padStart(2, "0"),
 );
 
 const minuteOptions = ["00", "15", "30", "45"];
 
-function toDateInputValue(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-
-  return `${year}-${month}-${day}`;
-}
-
-function createDateFromInputs(
-  dateValue: string,
-  timeValue: string
-): Date | null {
-  if (
-    !/^\d{4}-\d{2}-\d{2}$/.test(dateValue) ||
-    !/^\d{2}:\d{2}$/.test(timeValue)
-  ) {
-    return null;
-  }
-
-  const [year, month, day] = dateValue.split("-").map(Number);
-  const [hours, minutes] = timeValue.split(":").map(Number);
-
-  if (
-    !Number.isInteger(year) ||
-    !Number.isInteger(month) ||
-    !Number.isInteger(day) ||
-    hours < 0 ||
-    hours > 23 ||
-    minutes < 0 ||
-    minutes > 59
-  ) {
-    return null;
-  }
-
-  // Deze pagina gebruikt de lokale tijdzone van de browser.
-  const result = new Date(
-    year,
-    month - 1,
-    day,
-    hours,
-    minutes,
-    0,
-    0
+function isUuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      value,
+    )
   );
-
-  if (
-    !Number.isFinite(result.getTime()) ||
-    result.getFullYear() !== year ||
-    result.getMonth() !== month - 1 ||
-    result.getDate() !== day ||
-    result.getHours() !== hours ||
-    result.getMinutes() !== minutes
-  ) {
-    return null;
-  }
-
-  return result;
-}
-
-function formatDate(value: Date): string {
-  return new Intl.DateTimeFormat("nl-NL", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  })
-    .format(value)
-    .toUpperCase();
 }
 
 function formatMoney(value: number): string {
@@ -165,6 +110,7 @@ export default function TrainerPakketWijzigenPage() {
   const [selectedSport, setSelectedSport] = useState<Sport>("padel");
   const [lessonCount, setLessonCount] = useState(10);
   const [selectedDuration, setSelectedDuration] = useState(60);
+
   const [startDateValue, setStartDateValue] = useState("");
   const [selectedHour, setSelectedHour] = useState("19");
   const [selectedMinute, setSelectedMinute] = useState("00");
@@ -186,32 +132,38 @@ export default function TrainerPakketWijzigenPage() {
 
   const timeValue = `${selectedHour}:${selectedMinute}`;
 
+  /*
+   * Formulierinvoer betekent altijd Europe/Amsterdam.
+   * De tijdzone van de browser is niet bepalend.
+   */
   const startDateTime = useMemo(() => {
-    if (!startDateValue) return null;
-
-    return createDateFromInputs(startDateValue, timeValue);
+    return createAmsterdamDateFromInputs(startDateValue, timeValue);
   }, [startDateValue, timeValue]);
 
+  /*
+   * Kalenderweken optellen aan de lokale datum.
+   * Daarna de laatste les afzonderlijk naar een tijdstip omzetten.
+   */
   const lastLessonDate = useMemo(() => {
-    if (!startDateTime) return null;
+    const lastDateValue = addCalendarDays(
+      startDateValue,
+      (lessonCount - 1) * 7,
+    );
 
-    const lastDate = new Date(startDateTime);
-    lastDate.setDate(lastDate.getDate() + (lessonCount - 1) * 7);
-
-    return lastDate;
-  }, [startDateTime, lessonCount]);
+    return lastDateValue
+      ? createAmsterdamDateFromInputs(lastDateValue, timeValue)
+      : null;
+  }, [startDateValue, timeValue, lessonCount]);
 
   const selectedVenue = useMemo(
     () => venues.find((venue) => venue.id === selectedVenueId) ?? null,
-    [venues, selectedVenueId]
+    [venues, selectedVenueId],
   );
 
   const priceNumber = Number(price.replace(",", "."));
 
   const previewPrice =
-    Number.isFinite(priceNumber) && priceNumber > 0
-      ? priceNumber
-      : 0;
+    Number.isFinite(priceNumber) && priceNumber > 0 ? priceNumber : 0;
 
   const averagePricePerLesson = previewPrice / lessonCount;
 
@@ -321,8 +273,8 @@ export default function TrainerPakketWijzigenPage() {
       setTrainerAccount(null);
 
       try {
-        if (!packageId) {
-          throw new Error("Lespakket niet gevonden.");
+        if (!isUuid(packageId)) {
+          throw new Error("Geen geldig lespakket-ID opgegeven.");
         }
 
         const {
@@ -337,13 +289,10 @@ export default function TrainerPakketWijzigenPage() {
           return;
         }
 
-        const {
-          data: trainerData,
-          error: trainerError,
-        } = await supabase
+        const { data: trainerData, error: trainerError } = await supabase
           .from("trainers")
           .select(
-            "id, is_active, approval_status, city, province, radius_km, latitude, longitude"
+            "id, is_active, approval_status, city, province, radius_km, latitude, longitude",
           )
           .eq("user_id", user.id)
           .maybeSingle();
@@ -358,14 +307,12 @@ export default function TrainerPakketWijzigenPage() {
 
         if (
           trainer.approval_status !== "approved" ||
-          !trainer.is_active
+          trainer.is_active !== true
         ) {
           throw new Error(
-            "Je trainerprofiel moet goedgekeurd en actief zijn om pakketten te wijzigen."
+            "Je trainerprofiel moet goedgekeurd en actief zijn om pakketten te wijzigen.",
           );
         }
-
-        setTrainerAccount(trainer);
 
         const { data: packageData, error: packageError } = await supabase
           .from("trainer_packages")
@@ -383,7 +330,7 @@ export default function TrainerPakketWijzigenPage() {
               price_cents,
               currency,
               is_active
-            `
+            `,
           )
           .eq("id", packageId)
           .eq("trainer_id", trainer.id)
@@ -393,7 +340,7 @@ export default function TrainerPakketWijzigenPage() {
 
         if (packageError || !packageData) {
           throw new Error(
-            "Dit lespakket bestaat niet of je hebt geen toegang."
+            "Dit lespakket bestaat niet of je hebt geen toegang.",
           );
         }
 
@@ -404,30 +351,42 @@ export default function TrainerPakketWijzigenPage() {
           throw new Error("Het pakket bevat een ongeldige startdatum.");
         }
 
+        if (pkg.currency !== "eur") {
+          throw new Error(
+            "Deze wijzigingspagina ondersteunt alleen pakketten in EUR.",
+          );
+        }
+
+        /*
+         * Bestaande UTC-starttijd expliciet als Amsterdamse
+         * kalenderdatum en kloktijd in het formulier tonen.
+         */
+        const localStart = getAmsterdamDateInputs(start);
+
+        setTrainerAccount(trainer);
         setOriginalPackage(pkg);
         setTitle(pkg.title);
         setSelectedSport(pkg.sport);
         setLessonCount(pkg.lesson_count);
         setSelectedDuration(pkg.duration_minutes);
-        setStartDateValue(toDateInputValue(start));
-        setSelectedHour(String(start.getHours()).padStart(2, "0"));
-        setSelectedMinute(String(start.getMinutes()).padStart(2, "0"));
+        setStartDateValue(localStart.date);
+        setSelectedHour(localStart.hour);
+        setSelectedMinute(localStart.minute);
         setMaxParticipants(pkg.max_participants);
         setPrice((pkg.price_cents / 100).toFixed(2));
         setSelectedVenueId(pkg.location_id);
         setVenueSearch("");
+        setVenuePickerOpen(false);
       } catch (error: unknown) {
         if (!cancelled) {
           setErrorMessage(
             error instanceof Error
               ? error.message
-              : "Het lespakket kon niet worden geladen."
+              : "Het lespakket kon niet worden geladen.",
           );
         }
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     }
 
@@ -451,7 +410,7 @@ export default function TrainerPakketWijzigenPage() {
         const { data, error } = await supabase
           .from("venues")
           .select(
-            "id, name, address_line, postal_code, city, province, sports, court_environment"
+            "id, name, address_line, postal_code, city, province, sports, court_environment",
           )
           .eq("is_active", true)
           .in("country_code", ["NL", "BE"])
@@ -459,9 +418,7 @@ export default function TrainerPakketWijzigenPage() {
           .order("city", { ascending: true })
           .order("name", { ascending: true });
 
-        if (error) {
-          throw error;
-        }
+        if (error) throw error;
 
         if (!cancelled) {
           setVenues((data ?? []) as Venue[]);
@@ -469,13 +426,11 @@ export default function TrainerPakketWijzigenPage() {
       } catch {
         if (!cancelled) {
           setVenuesError(
-            "Locaties konden niet worden geladen. Vernieuw de pagina om opnieuw te proberen."
+            "Locaties konden niet worden geladen. Vernieuw de pagina om opnieuw te proberen.",
           );
         }
       } finally {
-        if (!cancelled) {
-          setVenuesLoading(false);
-        }
+        if (!cancelled) setVenuesLoading(false);
       }
     }
 
@@ -514,7 +469,7 @@ export default function TrainerPakketWijzigenPage() {
   }
 
   async function handleSave(
-    event: FormEvent<HTMLFormElement>
+    event: FormEvent<HTMLFormElement>,
   ): Promise<void> {
     event.preventDefault();
 
@@ -525,13 +480,13 @@ export default function TrainerPakketWijzigenPage() {
     if (
       !trainerAccount ||
       trainerAccount.approval_status !== "approved" ||
-      !trainerAccount.is_active
+      trainerAccount.is_active !== true
     ) {
       showError("Je profiel is niet geautoriseerd.");
       return;
     }
 
-    if (!packageId || !originalPackage) {
+    if (!isUuid(packageId) || !originalPackage) {
       showError("Het lespakket is niet geladen.");
       return;
     }
@@ -550,7 +505,20 @@ export default function TrainerPakketWijzigenPage() {
       return;
     }
 
-    if (venuesLoading || !selectedVenueId || !selectedVenue) {
+    if (
+      !hoursOptions.includes(selectedHour) ||
+      !minuteOptions.includes(selectedMinute)
+    ) {
+      showError("Kies een geldig begintijdstip op een kwartier.");
+      return;
+    }
+
+    if (
+      venuesLoading ||
+      venuesError ||
+      !selectedVenueId ||
+      !selectedVenue
+    ) {
       showError("Kies een geldige vaste trainingslocatie.");
       return;
     }
@@ -558,9 +526,16 @@ export default function TrainerPakketWijzigenPage() {
     if (
       !startDateTime ||
       !Number.isFinite(startDateTime.getTime()) ||
-      startDateTime <= new Date()
+      startDateTime.getTime() <= Date.now()
     ) {
-      showError("Kies een geldige startdatum in de toekomst.");
+      showError(
+        "Kies een geldige toekomstige startdatum en tijd in Europe/Amsterdam.",
+      );
+      return;
+    }
+
+    if (!lastLessonDate) {
+      showError("De wekelijkse planning kon niet worden berekend.");
       return;
     }
 
@@ -581,6 +556,15 @@ export default function TrainerPakketWijzigenPage() {
     setSaving(true);
 
     try {
+      /*
+       * De browser stuurt de eerste Amsterdamse starttijd
+       * als UTC-tijdstip door.
+       *
+       * De bestaande SQL-functie:
+       * - controleert eigenaar en trainerstatus;
+       * - blokkeert gereserveerde/verkochte pakketten;
+       * - bouwt de wekelijkse lessen op in Europe/Amsterdam.
+       */
       const { data, error } = await supabase.rpc(
         "update_trainer_package",
         {
@@ -593,41 +577,47 @@ export default function TrainerPakketWijzigenPage() {
           p_location_id: selectedVenueId,
           p_max_participants: maxParticipants,
           p_price_cents: priceCents,
-        }
+        },
       );
 
       if (error) {
-        console.error("Lespakket wijzigen mislukt:", error);
+        console.error("Lespakket wijzigen mislukt:", {
+          code: error.code,
+          message: error.message,
+        });
 
         if (error.code === "P0001") {
           showError(error.message);
         } else if (error.code === "42501") {
-          showError(
-            "Je hebt geen toestemming om dit pakket te wijzigen."
-          );
+          showError("Je hebt geen toestemming om dit pakket te wijzigen.");
         } else {
           showError(
-            "Het lespakket kon niet worden gewijzigd. Vernieuw de pagina en controleer de gegevens voordat je opnieuw probeert."
+            "Het lespakket kon niet worden gewijzigd. Vernieuw de pagina en controleer de gegevens voordat je opnieuw probeert.",
           );
         }
 
         return;
       }
 
-      if (!data) {
+      if (
+        typeof data !== "string" ||
+        data.toLowerCase() !== packageId.toLowerCase()
+      ) {
         showError(
-          "De wijziging kon niet worden bevestigd. Vernieuw de pagina en controleer het pakket."
+          "De wijziging kon niet worden bevestigd. Vernieuw de pagina en controleer het pakket voordat je opnieuw probeert.",
         );
         return;
       }
 
       setPrice((priceCents / 100).toFixed(2));
+      setVenuePickerOpen(false);
       setSuccessMessage(
-        `LESPAKKET '${title.trim().toUpperCase()}' IS GEWIJZIGD!`
+        `LESPAKKET '${title.trim().toUpperCase()}' IS GEWIJZIGD. ` +
+          `Het gekozen wekelijkse begintijdstip is ${timeValue} uur in Europe/Amsterdam.`,
       );
     } catch {
       showError(
-        "De verbinding is onderbroken. Vernieuw de pagina om te controleren of de wijziging is opgeslagen."
+        "De verbinding is onderbroken. De wijziging kan al zijn opgeslagen. Vernieuw de pagina en controleer het pakket voordat je opnieuw probeert.",
       );
     } finally {
       saveInProgressRef.current = false;
@@ -699,7 +689,7 @@ export default function TrainerPakketWijzigenPage() {
               href="/trainer-slots"
               className="inline-flex shrink-0 border-2 border-white px-4 py-2.5 font-display text-xs text-white transition hover:border-[#D6FF3F] hover:text-[#D6FF3F]"
             >
-              ← MIJN SLOTS &amp; PAKKETEN
+              ← MIJN SLOTS &amp; PAKKETTEN
             </Link>
           </div>
 
@@ -719,7 +709,7 @@ export default function TrainerPakketWijzigenPage() {
               ref={successMessageRef}
               tabIndex={-1}
               role="status"
-              className="mt-8 border-2 border-[#D6FF3F] bg-[#D6FF3F] px-5 py-6 text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E]"
+              className="mt-8 border-2 border-[#D6FF3F] bg-[#D6FF3F] px-5 py-6 text-[#14171A] outline-none shadow-[8px_8px_0_0_#FF4B3E]"
             >
               <p className="font-display text-3xl">
                 LESPAKKET AANGEPAST!
@@ -838,6 +828,8 @@ export default function TrainerPakketWijzigenPage() {
                         id="startDate"
                         type="date"
                         value={startDateValue}
+                        min="2000-01-01"
+                        max="2100-12-31"
                         required
                         onChange={(event) => {
                           clearMessages();
@@ -900,12 +892,20 @@ export default function TrainerPakketWijzigenPage() {
                       </div>
                     </div>
 
-                    <p className="text-xs text-[#B9BEC2] sm:col-span-2">
-                      Gekozen wekelijks tijdstip:{" "}
-                      <span className="font-display text-sm text-[#D6FF3F]">
-                        {selectedHour}:{selectedMinute} UUR
-                      </span>
-                    </p>
+                    <div className="text-xs leading-relaxed text-[#B9BEC2] sm:col-span-2">
+                      <p>
+                        Gekozen wekelijks tijdstip (Europe/Amsterdam):{" "}
+                        <span className="font-display text-sm text-[#D6FF3F]">
+                          {selectedHour}:{selectedMinute} UUR
+                        </span>
+                      </p>
+
+                      <p className="mt-1">
+                        Dit is de lokale tijd in Nederland en België.
+                        Bij de zomer- en wintertijdwisseling blijft het
+                        gekozen lokale begintijdstip gelijk.
+                      </p>
+                    </div>
                   </div>
 
                   {/* Lesduur */}
@@ -1003,6 +1003,7 @@ export default function TrainerPakketWijzigenPage() {
                                     <p className="bg-white/5 px-4 py-2 font-display text-xs text-[#D6FF3F]">
                                       IN JOUW STAD
                                     </p>
+
                                     {cityVenues.map(renderVenueOption)}
                                   </>
                                 )}
@@ -1012,6 +1013,7 @@ export default function TrainerPakketWijzigenPage() {
                                     <p className="bg-white/5 px-4 py-2 font-display text-xs text-[#D6FF3F]">
                                       ANDERE LOCATIES
                                     </p>
+
                                     {otherVenues.map(renderVenueOption)}
                                   </>
                                 )}
@@ -1128,6 +1130,10 @@ export default function TrainerPakketWijzigenPage() {
                           {lessonCount} lessen · {selectedDuration} min per
                           les · Max. {maxParticipants} spelers
                         </p>
+
+                        <p className="mt-1 text-xs text-[#B9BEC2]">
+                          Wekelijks om {timeValue} uur — Europe/Amsterdam
+                        </p>
                       </div>
 
                       <div className="text-right">
@@ -1145,8 +1151,8 @@ export default function TrainerPakketWijzigenPage() {
                       <div className="mt-4 text-xs text-[#B9BEC2]">
                         <p>
                           🗓️ <strong>Looptijd:</strong>{" "}
-                          {formatDate(startDateTime)} t/m{" "}
-                          {formatDate(lastLessonDate)}
+                          {formatAmsterdamDate(startDateTime)} t/m{" "}
+                          {formatAmsterdamDate(lastLessonDate)}
                         </p>
 
                         <p className="mt-1">
