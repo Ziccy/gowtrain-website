@@ -40,7 +40,9 @@ export default function AdminSourceInspectionPage() {
     };
   }, []);
 
-  async function inspectSource(): Promise<void> {
+  async function inspectSource(
+    mode: "source" | "disabled" = "source",
+  ): Promise<void> {
     if (inFlightRef.current) return;
 
     inFlightRef.current = true;
@@ -68,7 +70,9 @@ export default function AdminSourceInspectionPage() {
       }
 
       const response = await fetch(
-        "/api/admin/transfers/inspect-source",
+        mode === "disabled"
+          ? "/api/admin/transfers/test-disabled"
+          : "/api/admin/transfers/inspect-source",
         {
           method: "POST",
           headers: {
@@ -168,6 +172,27 @@ export default function AdminSourceInspectionPage() {
           welke aankoop wordt geïnspecteerd.
         </p>
 
+        <div className="mt-6 border-2 border-white/30 p-5">
+          <h2 className="font-display text-xl">
+            UITGESCHAKELDE UITVOERDER TESTEN
+          </h2>
+
+          <p className="mt-3 text-sm leading-relaxed text-[#B9BEC2]">
+            Controleert uitsluitend dat de uitvoerder stopt voordat hij
+            een transferopdracht leest of claimt. Geen Stripe-aanroep.
+            Als uitvoering is ingeschakeld, weigert deze testroute.
+          </p>
+
+          <button
+            type="button"
+            onClick={() => void inspectSource("disabled")}
+            disabled={loading}
+            className="mt-4 border-2 border-[#D6FF3F] px-5 py-3 font-display text-base text-[#D6FF3F] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {loading ? "CONTROLEREN..." : "TEST UITVOERDER UITGESCHAKELD"}
+          </button>
+        </div>
+
         {errorMessage && (
           <div role="alert" className="mt-6 border-2 border-[#FF4B3E] p-4">
             {errorMessage}
@@ -177,9 +202,14 @@ export default function AdminSourceInspectionPage() {
         {result && (
           <section className="mt-8 border-2 border-white/30 p-5">
             <h2 className="font-display text-xl">
-              {confirmed
-                ? "BRONCONTROLE GESLAAGD — GEEN TRANSFERGOEDKEURING"
-                : "BRONCONTROLE NIET BEVESTIGD"}
+              {result.httpStatus === 200 &&
+              result.body.testPassed === true &&
+              result.body.executionResult === "disabled" &&
+              result.body.transferExecuted === false
+                ? "BLOKKADETEST GESLAAGD — UITVOERDER STAAT UIT"
+                : confirmed
+                  ? "BRONCONTROLE GESLAAGD — GEEN TRANSFERGOEDKEURING"
+                  : "CONTROLE NIET BEVESTIGD"}
             </h2>
 
             <p className="mt-3">HTTP-status: {result.httpStatus}</p>
