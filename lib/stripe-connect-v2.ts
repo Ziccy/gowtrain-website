@@ -1,6 +1,7 @@
 import "server-only";
 
-import Stripe from "stripe";
+import type Stripe from "stripe";
+import { retrieveTrainerConnectV2StatusSnapshot } from "@/lib/stripe-connect-v2-status";
 
 type CapabilityStatus =
   | "active"
@@ -27,31 +28,14 @@ type ExpectedTrainerAccount = {
   country: "NL" | "BE";
 };
 
-function readCapabilityStatus(
-  value: unknown,
-): CapabilityStatus | null {
-  switch (value) {
-    case "active":
-    case "pending":
-    case "restricted":
-    case "unsupported":
-      return value;
-
-    default:
-      /*
-       * Ontbrekende of onbekende status is geen toestemming
-       * voor een transfer of payout.
-       */
-      return null;
-  }
-}
-
 /*
- * Uitsluitend verificatie van een nieuw, via onze v2-flow
- * aangemaakt traineraccount.
+ * Strikte verificatie voor onboarding en de bestaande statusroute.
+ *
+ * Gebruikt dezelfde accountcontroles als de nieuwe synchronisatiehelper.
+ * Een gesloten account of configuratieafwijking mag hier nooit als
+ * geverifieerde open koppeling aan de link-RPC worden doorgegeven.
  *
  * Geen accountaanmaak.
- * Geen koppeling op basis van uitsluitend metadata.
  * Geen databasewijziging.
  * Geen transfer of bankuitbetaling.
  */
@@ -59,91 +43,35 @@ export async function retrieveVerifiedTrainerConnectV2Account(
   stripe: Stripe,
   expected: ExpectedTrainerAccount,
 ): Promise<VerifiedTrainerConnectAccount> {
-  if (
-    !expected.accountId ||
-    !expected.trainerId ||
-    !expected.attemptId ||
-    !["NL", "BE"].includes(expected.country)
-  ) {
-    throw new Error("CONNECT_V2_EXPECTED_CONTEXT_INVALID");
-  }
-
-  // Gebruik het startmoment, niet het moment waarop de response aankomt.
-  // De link-RPC weigert controles ouder dan de opgeslagen checked_at.
-  const checkedAt = new Date().toISOString();
-
-  const account = await stripe.v2.core.accounts.retrieve(
-    expected.accountId,
-    {
-      include: [
-        "configuration.recipient",
-        "identity",
-      ],
-    },
+  const snapshot = await retrieveTrainerConnectV2StatusSnapshot(
+    stripe,
+    expected,
   );
 
-  if (
-    account.object !== "v2.core.account" ||
-    account.id !== expected.accountId
-  ) {
-    throw new Error("CONNECT_V2_ACCOUNT_ID_MISMATCH");
-  }
-
-  if (account.livemode !== false) {
-    throw new Error("CONNECT_V2_LIVE_ACCOUNT_NOT_ALLOWED");
-  }
-
-  if (account.closed === true) {
+  if (snapshot.closed) {
     throw new Error("CONNECT_V2_ACCOUNT_CLOSED");
   }
 
-  if (account.dashboard !== "express") {
-    throw new Error("CONNECT_V2_DASHBOARD_MISMATCH");
+  if (snapshot.reviewReasons.length > 0) {
+    console.error("Connect v2-accountconfiguratie vereist controle:", {
+      accountId: snapshot.accountId,
+      trainerId: snapshot.trainerId,
+      attemptId: snapshot.attemptId,
+      reviewReasons: snapshot.reviewReasons,
+    });
+
+    throw new Error("CONNECT_V2_ACCOUNT_REQUIRES_REVIEW");
   }
-
-  if (
-    account.metadata?.gowtrain_trainer_id !==
-    expected.trainerId
-  ) {
-    throw new Error("CONNECT_V2_TRAINER_METADATA_MISMATCH");
-  }
-
-  if (
-    account.metadata?.gowtrain_connect_attempt_id !==
-    expected.attemptId
-  ) {
-    throw new Error("CONNECT_V2_ATTEMPT_METADATA_MISMATCH");
-  }
-
-  if (account.identity?.country !== expected.country) {
-    throw new Error("CONNECT_V2_COUNTRY_MISMATCH");
-  }
-
-  const recipient = account.configuration?.recipient;
-
-  if (
-    !account.applied_configurations.includes("recipient") ||
-    recipient?.applied !== true
-  ) {
-    throw new Error("CONNECT_V2_RECIPIENT_NOT_APPLIED");
-  }
-
-  const balanceCapabilities =
-    recipient.capabilities?.stripe_balance;
 
   return {
-    accountId: account.id,
-    trainerId: expected.trainerId,
-    attemptId: expected.attemptId,
+    accountId: snapshot.accountId,
+    trainerId: snapshot.trainerId,
+    attemptId: snapshot.attemptId,
     livemode: false,
     country: expected.country,
     dashboard: "express",
-    transfersStatus: readCapabilityStatus(
-      balanceCapabilities?.stripe_transfers?.status,
-    ),
-    payoutsStatus: readCapabilityStatus(
-      balanceCapabilities?.payouts?.status,
-    ),
-    checkedAt,
+    transfersStatus: snapshot.transfersStatus,
+    payoutsStatus: snapshot.payoutsStatus,
+    checkedAt: snapshot.checkedAt,
   };
 }
