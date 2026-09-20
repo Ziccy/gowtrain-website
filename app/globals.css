@@ -1,19 +1,40 @@
 @import "tailwindcss";
 
 /* ==========================================
-   GOWTRAIN BRAND TOKENS
+   1. KLEUREN & THEMA'S
 ========================================== */
 
+/* Dark Mode (Standaard / GowTrain Brandbook) */
 :root {
-  --ink-black: #14171a;
+  /* Brand-kleuren (blijven op beide thema's hetzelfde) */
   --volt-green: #d6ff3f;
   --action-red: #ff4b3e;
   --stone-grey: #8a8f94;
+
+  /* Dynamische kleuren voor DARK MODE */
+  --bg-main: #14171a;        /* Hoofdachtergrond (Inktzwart) */
+  --bg-card: #1f2328;        /* Achtergrond van kaarten/blokken */
+  --text-main: #ffffff;      /* Hoofdtekst (Wit) */
+  --text-muted: #8a8f94;     /* Subtekst (Steengrijs) */
+  --border-color: #2a2e33;   /* Randen */
+
+  /* Vaste helpers */
+  --ink-black: #14171a;
   --white: #ffffff;
 }
 
+/* Light Mode (schakelt in bij data-theme="light") */
+[data-theme="light"] {
+  /* Dynamische kleuren voor LIGHT MODE */
+  --bg-main: #ffffff;        /* Hoofdachtergrond (Wit) */
+  --bg-card: #f4f5f7;        /* Achtergrond van kaarten/blokken */
+  --text-main: #14171a;      /* Hoofdtekst (Inktzwart) */
+  --text-muted: #5a6065;     /* Subtekst */
+  --border-color: #e2e8f0;   /* Randen */
+}
+
 /* ==========================================
-   RESET
+   2. RESET & BODY
 ========================================== */
 
 *,
@@ -34,45 +55,32 @@ body {
   overflow-x: hidden;
 }
 
-/* ==========================================
-   BODY
-========================================== */
-
 body {
-  background-color: var(--white);
-  color: var(--ink-black);
+  /* Dit zorgt voor de automatische kleurwissel */
+  background-color: var(--bg-main);
+  color: var(--text-main);
   font-family: var(--font-inter), Arial, sans-serif;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 /* ==========================================
-   TYPOGRAPHY
+   3. TYPOGRAFIE
 ========================================== */
 
-/* Voor Anton: headings, labels en knoppen */
 .font-display {
   font-family: var(--font-anton), Impact, sans-serif;
   line-height: 0.95;
   text-transform: uppercase;
 }
 
-/* Voor Inter: normale bodytekst */
 .font-body {
   font-family: var(--font-inter), Arial, sans-serif;
 }
 
-/* ==========================================
-   DEFAULT ELEMENTS
-========================================== */
-
-h1,
-h2,
-h3,
-h4,
-h5,
-h6 {
+h1, h2, h3, h4, h5, h6 {
   margin: 0;
   font-family: var(--font-anton), Impact, sans-serif;
   line-height: 0.95;
@@ -104,11 +112,11 @@ button:disabled {
 }
 
 /* ==========================================
-   GOWTRAIN TEKST HELPERS
+   4. TEKST & ACHTERGROND HELPERS
 ========================================== */
 
 .text-gow-black {
-  color: var(--ink-black);
+  color: var(--text-main);
 }
 
 .text-gow-green {
@@ -120,15 +128,11 @@ button:disabled {
 }
 
 .text-gow-grey {
-  color: var(--stone-grey);
+  color: var(--text-muted);
 }
 
-/* ==========================================
-   GOWTRAIN BACKGROUND HELPERS
-========================================== */
-
 .bg-gow-black {
-  background-color: var(--ink-black);
+  background-color: var(--bg-main);
 }
 
 .bg-gow-green {
@@ -139,12 +143,12 @@ button:disabled {
   background-color: var(--action-red);
 }
 
-.bg-gow-white {
-  background-color: var(--white);
+.bg-gow-card {
+  background-color: var(--bg-card);
 }
 
 /* ==========================================
-   BUTTONS
+   5. BUTTONS
 ========================================== */
 
 .btn-gow {
@@ -153,22 +157,19 @@ button:disabled {
   justify-content: center;
   border: none;
   background-color: var(--action-red);
-  color: var(--white);
+  color: #ffffff;
   padding: 14px 28px;
   font-family: var(--font-anton), Impact, sans-serif;
   font-size: 1rem;
   line-height: 1;
   text-transform: uppercase;
-  transition:
-    transform 0.2s ease,
-    background-color 0.2s ease,
-    color 0.2s ease;
+  transition: transform 0.2s ease, background-color 0.2s ease, color 0.2s ease;
 }
 
 .btn-gow:hover {
   transform: translateY(-2px);
   background-color: var(--volt-green);
-  color: var(--ink-black);
+  color: #14171a;
 }
 
 .btn-dark {
@@ -176,75 +177,45 @@ button:disabled {
   align-items: center;
   justify-content: center;
   border: none;
-  background-color: var(--ink-black);
-  color: var(--volt-green);
+  background-color: var(--text-main);
+  color: var(--bg-main);
   padding: 14px 28px;
   font-family: var(--font-anton), Impact, sans-serif;
   font-size: 1rem;
   line-height: 1;
   text-transform: uppercase;
-  transition:
-    transform 0.2s ease,
-    background-color 0.2s ease,
-    color 0.2s ease;
+  transition: transform 0.2s ease, background-color 0.2s ease, color 0.2s ease;
 }
 
 .btn-dark:hover {
   transform: translateY(-2px);
   background-color: var(--volt-green);
-  color: var(--ink-black);
+  color: #14171a;
 }
 
 .btn-outline {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 2px solid var(--ink-black);
+  border: 2px solid var(--text-main);
   background-color: transparent;
-  color: var(--ink-black);
+  color: var(--text-main);
   padding: 12px 26px;
   font-family: var(--font-anton), Impact, sans-serif;
   font-size: 1rem;
   line-height: 1;
   text-transform: uppercase;
-  transition:
-    transform 0.2s ease,
-    background-color 0.2s ease,
-    color 0.2s ease;
+  transition: transform 0.2s ease, background-color 0.2s ease, color 0.2s ease;
 }
 
 .btn-outline:hover {
   transform: translateY(-2px);
-  background-color: var(--ink-black);
-  color: var(--white);
-}
-
-.btn-outline-light {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 2px solid var(--white);
-  background-color: transparent;
-  color: var(--white);
-  padding: 12px 26px;
-  font-family: var(--font-anton), Impact, sans-serif;
-  font-size: 1rem;
-  line-height: 1;
-  text-transform: uppercase;
-  transition:
-    transform 0.2s ease,
-    background-color 0.2s ease,
-    color 0.2s ease;
-}
-
-.btn-outline-light:hover {
-  transform: translateY(-2px);
-  background-color: var(--white);
-  color: var(--ink-black);
+  background-color: var(--text-main);
+  color: var(--bg-main);
 }
 
 /* ==========================================
-   SECTION HELPER
+   6. SECTIES & ACCESSIBILITY
 ========================================== */
 
 .section {
@@ -252,22 +223,60 @@ button:disabled {
   padding-bottom: 100px;
 }
 
-/* ==========================================
-   ACCESSIBILITY
-========================================== */
-
 :focus-visible {
   outline: 3px solid var(--volt-green);
   outline-offset: 4px;
 }
-
-/* ==========================================
-   MOBILE
-========================================== */
 
 @media (max-width: 768px) {
   .section {
     padding-top: 72px;
     padding-bottom: 72px;
   }
+
+/* ==========================================
+   SLIMME LIGHT MODE OVERRIDES 
+   (Zorgt dat hardcoded Tailwind-klassen meeveranderen)
+========================================== */
+
+[data-theme="light"] {
+  --bg-main: #ffffff;
+  --bg-card: #f4f5f7;
+  --text-main: #14171a;
+  --text-muted: #5a6065;
+  --border-color: #e2e8f0;
+}
+
+/* 1. Maak alle hardcoded donkere achtergronden wit */
+[data-theme="light"] .bg-\[\#14171A\],
+[data-theme="light"] .bg-\[\#14171a\],
+[data-theme="light"] .bg-black,
+[data-theme="light"] .bg-zinc-900,
+[data-theme="light"] .bg-neutral-900,
+[data-theme="light"] main {
+  background-color: var(--bg-main) !important;
+}
+
+/* 2. Maak kaart- en blokachtergronden lichtgrijs */
+[data-theme="light"] .bg-\[\#1f2328\],
+[data-theme="light"] .bg-\[\#1F2328\],
+[data-theme="light"] .bg-zinc-800 {
+  background-color: var(--bg-card) !important;
+}
+
+/* 3. Maak alle hardcoded witte/lichte teksten donker */
+[data-theme="light"] .text-white,
+[data-theme="light"] .text-\[\#D7D9DA\] {
+  color: var(--text-main) !important;
+}
+
+/* 4. Maak lichte subteksten iets donkerder voor betere leesbaarheid */
+[data-theme="light"] .text-\[\#8A8F94\] {
+  color: var(--text-muted) !important;
+}
+
+/* 5. Maak witte randjes lichtgrijs */
+[data-theme="light"] [class*="border-white"] {
+  border-color: var(--border-color) !important;
+}  
 }
