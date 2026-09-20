@@ -115,6 +115,7 @@ const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey, {
 
 type RequestBody = {
   bookingId?: string;
+  returnTarget?: string;
 };
 
 type BookingForCheckout = {
@@ -197,7 +198,36 @@ async function handleCheckoutRequest(
     }
 
     const body = (await request.json()) as RequestBody;
-    const bookingId = body.bookingId?.trim();
+const bookingId = body.bookingId?.trim();
+
+if (
+  body.returnTarget !== undefined &&
+  body.returnTarget !== "expo-web-local"
+) {
+  return NextResponse.json(
+    { error: "Ongeldige terugkeerbestemming." },
+    { status: 400 }
+  );
+}
+
+const returnToLocalApp = body.returnTarget === "expo-web-local";
+
+/*
+ * Lokale terugkeer uitsluitend voor Stripe-testbetalingen.
+ * De client mag geen willekeurige terugkeer-URL opgeven.
+ */
+if (
+  returnToLocalApp &&
+  !(
+    stripeSecretKey.startsWith("sk_test_") ||
+    stripeSecretKey.startsWith("rk_test_")
+  )
+) {
+  return NextResponse.json(
+    { error: "Lokale app-terugkeer is alleen toegestaan in testmodus." },
+    { status: 403 }
+  );
+}
 
     if (!bookingId) {
       return NextResponse.json(
@@ -347,7 +377,17 @@ async function handleCheckoutRequest(
     const expiresAt = Math.max(holdExpiresInSeconds, nowInSeconds + 1805);
 
     const appUrl = getAppUrl();
+    const localReturnUrl =
+  "http://localhost:8081/checkout-return" +
+  `?bookingId=${encodeURIComponent(booking.id)}`;
 
+const successUrl = returnToLocalApp
+  ? localReturnUrl
+  : `${appUrl}/boeken/succes?session_id={CHECKOUT_SESSION_ID}`;
+
+const cancelUrl = returnToLocalApp
+  ? `${localReturnUrl}&cancelled=1`
+  : `${appUrl}/mijn-boekingen`;
     const session = await stripe.checkout.sessions.create(
       {
         mode: "payment",
@@ -383,8 +423,8 @@ async function handleCheckoutRequest(
         },
       },
 
-        success_url: `${appUrl}/boeken/succes?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${appUrl}/mijn-boekingen`,
+        success_url: successUrl,
+        cancel_url: cancelUrl,
 
         expires_at: expiresAt,
       },
