@@ -3,7 +3,80 @@ import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
+const ALLOWED_ORIGINS = new Set([
+  "https://www.gowtrain.com",
+  "https://gowtrain.com",
+  "http://localhost:8081",
+]);
 
+function applyCors(
+  response: NextResponse,
+  origin: string | null
+): NextResponse {
+  response.headers.append("Vary", "Origin");
+  response.headers.set("Cache-Control", "no-store");
+
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    response.headers.set("Access-Control-Allow-Origin", origin);
+
+    response.headers.set(
+      "Access-Control-Allow-Methods",
+      "POST, OPTIONS"
+    );
+
+    response.headers.set(
+      "Access-Control-Allow-Headers",
+      "Authorization, Content-Type"
+    );
+  }
+
+  return response;
+}
+
+export async function OPTIONS(
+  request: NextRequest
+): Promise<NextResponse> {
+  const origin = request.headers.get("origin");
+
+  if (!origin || !ALLOWED_ORIGINS.has(origin)) {
+    return applyCors(
+      NextResponse.json(
+        { error: "Deze web-origin is niet toegestaan." },
+        { status: 403 }
+      ),
+      null
+    );
+  }
+
+  return applyCors(
+    new NextResponse(null, { status: 204 }),
+    origin
+  );
+}
+
+export async function POST(
+  request: NextRequest
+): Promise<NextResponse> {
+  const origin = request.headers.get("origin");
+
+  if (origin && !ALLOWED_ORIGINS.has(origin)) {
+    return applyCors(
+      NextResponse.json(
+        { error: "Deze web-origin is niet toegestaan." },
+        { status: 403 }
+      ),
+      null
+    );
+  }
+
+  /*
+   * De bestaande betaalfunctie blijft de gebruiker
+   * controleren via het Supabase Bearer-token.
+   */
+  const response = await handleCheckoutRequest(request);
+
+  return applyCors(response, origin);
+}
 function getRequiredEnv(name: string): string {
   const value = process.env[name];
 
@@ -84,7 +157,9 @@ function formatTrainingDate(value: string): string {
   }).format(new Date(value));
 }
 
-export async function POST(request: NextRequest) {
+async function handleCheckoutRequest(
+  request: NextRequest
+): Promise<NextResponse> {
   try {
     const authorizationHeader = request.headers.get("authorization");
 
