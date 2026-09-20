@@ -177,7 +177,7 @@ function validateStripeSession(
     String(session.ui_mode) !== (
   attempt.checkout_mode === "embedded"
     ? "embedded_page"
-    : "hosted"
+    : "hosted_page"
 ) ||
     session.livemode !== attempt.stripe_livemode ||
     session.metadata?.gowtrain_checkout_attempt_id !== attempt.id ||
@@ -394,7 +394,7 @@ export async function createOrResumePackageCheckout(
       ui_mode:
       input.mode === "embedded"
     ? "embedded_page"
-    : "hosted",
+    : "hosted_page",
       payment_method_types: ["card", "ideal"],
       customer_email: input.playerEmail,
       client_reference_id: attempt.id,
