@@ -7,6 +7,74 @@ import {
 
 export const runtime = "nodejs";
 
+const ALLOWED_ORIGINS = new Set([
+  "https://www.gowtrain.com",
+  "https://gowtrain.com",
+  "http://localhost:8081",
+]);
+
+function applyCors(
+  response: NextResponse,
+  origin: string | null
+): NextResponse {
+  response.headers.append("Vary", "Origin");
+  response.headers.set("Cache-Control", "no-store");
+
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    response.headers.set("Access-Control-Allow-Origin", origin);
+    response.headers.set(
+      "Access-Control-Allow-Methods",
+      "POST, OPTIONS"
+    );
+    response.headers.set(
+      "Access-Control-Allow-Headers",
+      "Authorization, Content-Type"
+    );
+  }
+
+  return response;
+}
+
+export async function OPTIONS(
+  request: Request
+): Promise<NextResponse> {
+  const origin = request.headers.get("origin");
+
+  if (!origin || !ALLOWED_ORIGINS.has(origin)) {
+    return applyCors(
+      NextResponse.json(
+        { error: "Deze web-origin is niet toegestaan." },
+        { status: 403 }
+      ),
+      null
+    );
+  }
+
+  return applyCors(
+    new NextResponse(null, { status: 204 }),
+    origin
+  );
+}
+
+export async function POST(
+  request: Request
+): Promise<NextResponse> {
+  const origin = request.headers.get("origin");
+
+  if (origin && !ALLOWED_ORIGINS.has(origin)) {
+    return applyCors(
+      NextResponse.json(
+        { error: "Deze web-origin is niet toegestaan." },
+        { status: 403 }
+      ),
+      null
+    );
+  }
+
+  const response = await handlePackageCheckout(request);
+  return applyCors(response, origin);
+}
+
 function getRequiredEnv(name: string): string {
   const value = process.env[name]?.trim();
 
@@ -34,30 +102,32 @@ function isUuid(value: string): boolean {
   );
 }
 
-export async function POST(
+function json(
+  body: Record<string, unknown>,
+  status = 200
+): NextResponse {
+  return NextResponse.json(body, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+async function handlePackageCheckout(
   request: Request
 ): Promise<NextResponse> {
-  const headers = {
-    "Cache-Control": "no-store",
-  };
-
   try {
     const authorization = request.headers.get("authorization");
 
     if (!authorization?.startsWith("Bearer ")) {
-      return NextResponse.json(
-        { error: "Je bent niet ingelogd." },
-        { status: 401, headers }
-      );
+      return json({ error: "Je bent niet ingelogd." }, 401);
     }
 
     const accessToken = authorization.slice(7).trim();
 
     if (!accessToken) {
-      return NextResponse.json(
-        { error: "Je bent niet ingelogd." },
-        { status: 401, headers }
-      );
+      return json({ error: "Je bent niet ingelogd." }, 401);
     }
 
     const {
@@ -66,16 +136,42 @@ export async function POST(
     } = await supabaseAdmin.auth.getUser(accessToken);
 
     if (userError || !user) {
-      return NextResponse.json(
+      return json(
         { error: "Je sessie is verlopen. Log opnieuw in." },
-        { status: 401, headers }
+        401
       );
     }
 
     if (!user.email || !user.email_confirmed_at) {
-      return NextResponse.json(
+      return json(
         { error: "Bevestig eerst je e-mailadres." },
-        { status: 403, headers }
+        403
+      );
+    }
+
+    // Ook op de server controleren dat de koper een speler is.
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from("profiles")
+      .select("role")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (profileError) {
+      console.error("Spelerprofiel controleren mislukt:", {
+        code: profileError.code,
+        message: profileError.message,
+      });
+
+      return json(
+        { error: "Je profiel kon tijdelijk niet worden gecontroleerd." },
+        503
+      );
+    }
+
+    if (!profile || profile.role !== "player") {
+      return json(
+        { error: "Je hebt een speleraccount nodig om een pakket te boeken." },
+        403
       );
     }
 
@@ -84,21 +180,11 @@ export async function POST(
     try {
       body = await request.json();
     } catch {
-      return NextResponse.json(
-        { error: "Ongeldige aanvraag." },
-        { status: 400, headers }
-      );
+      return json({ error: "Ongeldige aanvraag." }, 400);
     }
 
-    if (
-      !body ||
-      typeof body !== "object" ||
-      Array.isArray(body)
-    ) {
-      return NextResponse.json(
-        { error: "Ongeldige aanvraag." },
-        { status: 400, headers }
-      );
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return json({ error: "Ongeldige aanvraag." }, 400);
     }
 
     const packageIdValue = (
@@ -111,18 +197,18 @@ export async function POST(
         : "";
 
     if (!isUuid(packageId)) {
-      return NextResponse.json(
+      return json(
         { error: "Een geldig lespakket-ID is verplicht." },
-        { status: 400, headers }
+        400
       );
     }
 
     /*
-     * De helper reserveert het pakket en gebruikt uitsluitend
-     * de vastgelegde prijsgegevens uit de database.
-     *
-     * De koper komt uit de geverifieerde sessie,
-     * niet uit de requestbody.
+     * Bestaande helper behouden:
+     * - reserveert het pakket;
+     * - gebruikt de vastgelegde databaseprijs;
+     * - hergebruikt een bestaande betaalpoging;
+     * - gebruikt de geverifieerde gebruiker als koper.
      */
     const checkout = await createOrResumePackageCheckout({
       packageId,
@@ -135,17 +221,14 @@ export async function POST(
       throw new Error("De Checkout-URL ontbreekt.");
     }
 
-    return NextResponse.json(
-      {
-        checkoutUrl: checkout.checkoutUrl,
-      },
-      { headers }
-    );
+    return json({
+      checkoutUrl: checkout.checkoutUrl,
+    });
   } catch (error: unknown) {
     if (error instanceof PackageCheckoutError) {
-      return NextResponse.json(
+      return json(
         { error: error.message },
-        { status: error.status, headers }
+        error.status
       );
     }
 
@@ -156,12 +239,12 @@ export async function POST(
           : "Onbekende fout.",
     });
 
-    return NextResponse.json(
+    return json(
       {
         error:
           "De betaalpagina kon niet worden geopend. Probeer het later opnieuw. Een bestaande betaalpoging blijft gereserveerd totdat de status is gecontroleerd.",
       },
-      { status: 503, headers }
+      503
     );
   }
 }
