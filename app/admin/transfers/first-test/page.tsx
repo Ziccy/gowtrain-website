@@ -4,8 +4,8 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase-browser";
 
-const BOOKING_ID = "c413bd74-8c8f-4ba5-8f03-98430c08f905";
-const PURCHASE_ID = "c02e8212-9379-4f3f-8edd-023dea74910a";
+const BOOKING_ID = "b7d8c195-2f03-428e-bbdb-8e7bf65f76db";
+const PURCHASE_ID = "0ceb3427-c520-4351-9cb4-e2fb9ea08069";
 const CONFIRMATION = "TRANSFER 19 EUR";
 
 type Result = {
