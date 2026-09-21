@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
-import { inspectSandboxPackageTransferSource } from "@/lib/inspect-sandbox-package-transfer-source";
+import { inspectSandboxTransferHistory } from "@/lib/inspect-sandbox-transfer-history";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,7 +11,7 @@ export const maxDuration = 90;
  * Expliciet afgebakende broninspectie van de nieuwe v2-testaankoop.
  * Dit geeft geen toestemming voor transferuitvoering.
  */
-const TEST_PURCHASE_ID = "4e54c469-299a-4fa6-a61f-3f8a61bc2f57";
+const TEST_PURCHASE_ID = "0ceb3427-c520-4351-9cb4-e2fb9ea08069";
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -153,9 +153,15 @@ export async function POST(
      * Geen input voor purchaseId accepteren.
      * De helper leest Supabase en Stripe, maar schrijft niets.
      */
-    const source = await inspectSandboxPackageTransferSource(
+    const inspection = await inspectSandboxTransferHistory(
       TEST_PURCHASE_ID,
     );
+
+    const source = {
+      ...inspection.source,
+      databaseRequestCount: inspection.databaseRequestCount,
+      historyComparison: inspection.historyComparison,
+    };
 
     responseBody = {
       inspectionConfirmed: true,
@@ -163,7 +169,7 @@ export async function POST(
       environment: "test",
       source,
       message:
-        "De afgebakende broncontrole is geslaagd. Bestemming, eerdere separate transfers en beschikbaar trainersdeel zijn hiermee niet goedgekeurd.",
+        "De betaalbron en relevante afgeronde transferhistorie zijn gecontroleerd. Dit is geen actuele capabilitycontrole, beschikbaar-saldoberekening of toestemming voor een nieuwe transfer.",
     };
 
     responseStatus = 200;

@@ -2,7 +2,7 @@ import "server-only";
 
 import type Stripe from "stripe";
 
-type TransferSummary = {
+export type TransferSummary = {
   transferId: string;
   destinationAccountId: string | null;
   sourceChargeId: string | null;
@@ -14,6 +14,11 @@ type TransferSummary = {
   transferGroup: string | null;
   matchesSourceCharge: boolean;
   matchesDestination: boolean;
+
+  // Extra gegevens voor vergelijking met opgeslagen opdrachten.
+  livemode: false;
+  metadata: Record<string, string>;
+  hasReversalRecords: boolean;
 };
 
 export type SandboxSourceTransferInspection = {
@@ -39,6 +44,24 @@ function objectId(
   return value?.id ?? null;
 }
 
+function readMetadata(value: unknown): Record<string, string> {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ) {
+    throw new Error("TRANSFER_SCAN_METADATA_INVALID");
+  }
+
+  const entries = Object.entries(value);
+
+  if (entries.some(([, item]) => typeof item !== "string")) {
+    throw new Error("TRANSFER_SCAN_METADATA_INVALID");
+  }
+
+  return Object.fromEntries(entries) as Record<string, string>;
+}
+
 /*
  * Alleen-lezen inventarisatie.
  *
@@ -47,6 +70,9 @@ function objectId(
  *
  * Geen transfer aanmaken, terugdraaien of administratief toepassen.
  * Geen berekening van vrij besteedbaar budget.
+ *
+ * Metadata is een vergelijkingsgegeven, geen zelfstandige
+ * autorisatie of bewijs van een correcte financiële koppeling.
  */
 export async function inspectSandboxSourceTransfers(
   stripe: Stripe,
@@ -73,9 +99,9 @@ export async function inspectSandboxSourceTransfers(
 
   for (let pageNumber = 0; pageNumber < MAX_PAGES; pageNumber++) {
     /*
-     * Niet filteren op destination of transfer_group:
-     * een transfer uit de broncharge naar een andere bestemming
-     * moet ook zichtbaar zijn.
+     * Geen destination- of transfer_group-filter.
+     * Ook transfers uit de bron naar een andere bestemming
+     * moeten zichtbaar blijven.
      */
     const page = await stripe.transfers.list({
       limit: PAGE_SIZE,
@@ -93,7 +119,7 @@ export async function inspectSandboxSourceTransfers(
     for (const transfer of page.data) {
       if (
         transfer.object !== "transfer" ||
-        !transfer.id ||
+        !/^tr_[A-Za-z0-9]+$/.test(transfer.id) ||
         seenIds.has(transfer.id)
       ) {
         throw new Error("TRANSFER_SCAN_DUPLICATE_OR_INVALID_RESULT");
@@ -112,6 +138,19 @@ export async function inspectSandboxSourceTransfers(
         typeof transfer.reversed !== "boolean"
       ) {
         throw new Error("TRANSFER_SCAN_AMOUNT_INVALID");
+      }
+
+      if (
+        !Number.isSafeInteger(transfer.created) ||
+        transfer.created <= 0 ||
+        typeof transfer.currency !== "string" ||
+        !transfer.currency ||
+        (
+          transfer.transfer_group !== null &&
+          typeof transfer.transfer_group !== "string"
+        )
+      ) {
+        throw new Error("TRANSFER_SCAN_TRANSFER_FIELDS_INVALID");
       }
 
       seenIds.add(transfer.id);
@@ -137,21 +176,41 @@ export async function inspectSandboxSourceTransfers(
         }
       }
 
-      if (matchesSourceCharge || matchesDestination) {
-        relevantTransfers.push({
-          transferId: transfer.id,
-          destinationAccountId,
-          sourceChargeId,
-          amountCents: transfer.amount,
-          amountReversedCents: transfer.amount_reversed,
-          currency: transfer.currency,
-          fullyReversed: transfer.reversed,
-          created: transfer.created,
-          transferGroup: transfer.transfer_group,
-          matchesSourceCharge,
-          matchesDestination,
-        });
+      if (!matchesSourceCharge && !matchesDestination) {
+        continue;
       }
+
+      /*
+       * Alleen vaststellen of reversalrecords bestaan.
+       * Een niet-lege of gedeeltelijke lijst nooit interpreteren
+       * als een volledige inventarisatie van alle reversals.
+       */
+      if (
+        !transfer.reversals ||
+        !Array.isArray(transfer.reversals.data) ||
+        typeof transfer.reversals.has_more !== "boolean"
+      ) {
+        throw new Error("TRANSFER_SCAN_REVERSAL_DATA_INVALID");
+      }
+
+      relevantTransfers.push({
+        transferId: transfer.id,
+        destinationAccountId,
+        sourceChargeId,
+        amountCents: transfer.amount,
+        amountReversedCents: transfer.amount_reversed,
+        currency: transfer.currency,
+        fullyReversed: transfer.reversed,
+        created: transfer.created,
+        transferGroup: transfer.transfer_group,
+        matchesSourceCharge,
+        matchesDestination,
+        livemode: false,
+        metadata: readMetadata(transfer.metadata),
+        hasReversalRecords:
+          transfer.reversals.data.length > 0 ||
+          transfer.reversals.has_more,
+      });
     }
 
     if (!page.has_more) {
@@ -176,9 +235,6 @@ export async function inspectSandboxSourceTransfers(
     }
   }
 
-  /*
-   * Geen gedeeltelijke uitkomst als volledige controle presenteren.
-   * Grotere datasets vragen een afzonderlijke, duurzame scan.
-   */
+  // Een begrensde, onvolledige scan is geen geslaagde controle.
   throw new Error("TRANSFER_SCAN_LIMIT_REACHED");
 }
