@@ -15,8 +15,8 @@ import { syncSandboxTrainerTransfer } from "@/lib/sync-sandbox-trainer-transfer"
  * Eerste uitvoeringsversie: uitsluitend deze ene echte testles.
  * Geen vrije keuze vanuit browserinput en geen automatische batch.
  */
-const ALLOWED_BOOKING_ID = "c413bd74-8c8f-4ba5-8f03-98430c08f905";
-const ALLOWED_PURCHASE_ID = "c02e8212-9379-4f3f-8edd-023dea74910a";
+const ALLOWED_BOOKING_ID = "b7d8c195-2f03-428e-bbdb-8e7bf65f76db";
+const ALLOWED_PURCHASE_ID = "0ceb3427-c520-4351-9cb4-e2fb9ea08069";
 const ALLOWED_TRAINER_ID = "4c4a5ffc-7584-4ffb-9678-95d3a311c50e";
 const ALLOWED_DESTINATION_ID = "acct_1UHJRCBAMjpV6Qwm";
 const ALLOWED_AMOUNT_CENTS = 1900;

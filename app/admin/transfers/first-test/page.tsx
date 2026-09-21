@@ -202,14 +202,14 @@ export default function AdminFirstTransferTestPage() {
           <div>
             <dt className="text-[#B9BEC2]">Eerste les</dt>
             <dd className="mt-1">
-              26 september 2026, 19:00 Amsterdam
+              20 september 2026, 19:00 Amsterdam
             </dd>
           </div>
 
           <div>
             <dt className="text-[#B9BEC2]">Vroegste transfermoment</dt>
             <dd className="mt-1">
-              27 september 2026, 19:00 Amsterdam.
+              21 september 2026, 19:00 Amsterdam.
               De database controleert het daadwerkelijke tijdstip.
             </dd>
           </div>
