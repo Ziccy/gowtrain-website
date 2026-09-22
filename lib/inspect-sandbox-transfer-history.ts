@@ -7,6 +7,17 @@ import {
   type CompletedSandboxTransferHistoryEntry,
   type SandboxTransferHistoryComparison,
 } from "@/lib/compare-sandbox-transfer-history";
+import {
+  separateClaimedTransferHistory,
+} from "@/lib/separate-claimed-transfer-history";
+
+type VerifiedSource = Awaited<
+  ReturnType<typeof inspectSandboxPackageTransferSource>
+>;
+
+type ExpectedClaim = Parameters<
+  typeof separateClaimedTransferHistory
+>[0]["expected"];
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -94,56 +105,46 @@ const database = createClient(
 );
 
 export type SandboxTransferHistoryInspection = {
-  source: Awaited<
-    ReturnType<typeof inspectSandboxPackageTransferSource>
-  >;
+  source: VerifiedSource;
   databaseRequestCount: number;
   historyComparison: SandboxTransferHistoryComparison;
 };
 
+export type ClaimedSandboxTransferHistoryInspection = {
+  source: VerifiedSource;
+  currentRequestId: string;
+
+  // Inclusief de ene gecontroleerde eigen claim.
+  databaseRequestCount: number;
+
+  // Alleen de eerdere, volledig gecontroleerde opdrachten.
+  completedRequestCount: number;
+
+  claimCheckedAt: string;
+  claimLockedUntil: string;
+  historyComparison: SandboxTransferHistoryComparison;
+};
+
 /*
- * Inspectie van volledig afgeronde relevante transferhistorie.
+ * Gedeelde validatie voor eerdere, afgeronde opdrachten.
  *
- * Alleen voor vertrouwde server-side aanroepers.
- * Een API-route moet zelf adminautorisatie uitvoeren.
+ * Bij een gewone inspectie is dit de volledige databasehistorie.
+ * Bij claiminspectie is uitsluitend de vooraf door de RPC en
+ * separateClaimedTransferHistory gecontroleerde eigen claim verwijderd.
  *
- * Geen registratie, claim, prepare of Stripe-write.
- * Geen resultaatsynchronisatie of incidentwijziging.
+ * Alle overige statussen, ook cancelled, worden voorlopig geweigerd.
  *
- * Deze inspectieversie accepteert GEEN onafgeronde opdrachten.
- * Niet rechtstreeks gebruiken na het claimen van een nieuwe transfer.
+ * Geen netwerkverkeer of databasewrites in deze functie.
  */
-export async function inspectSandboxTransferHistory(
-  purchaseId: string,
-): Promise<SandboxTransferHistoryInspection> {
-  purchaseId = requiredUuid(purchaseId);
-
-  /*
-   * Verifieert de aankoopcontext en actuele Stripe-betaalbron,
-   * en scant transfers uit de bron of naar de bestemming.
-   *
-   * Bestaande refund-/disputeblokkades blijven behouden.
-   */
-  const source = await inspectSandboxPackageTransferSource(purchaseId);
-
-  const { data, error } = await database.rpc(
-    "read_sandbox_trainer_transfer_history",
-    {
-      p_purchase_id: purchaseId,
-      p_source_charge_id: source.chargeId,
-    },
-  );
-
-  if (error) {
-    console.error("Transferhistorie ophalen mislukt:", {
-      purchaseId,
-      databaseCode: error.code,
-    });
-
-    throw new Error("TRANSFER_HISTORY_DATABASE_LOOKUP_FAILED");
-  }
-
-  const history = requiredObject(data);
+function validateCompletedHistory(
+  rawHistory: unknown,
+  source: VerifiedSource,
+): {
+  completedRequestCount: number;
+  historyComparison: SandboxTransferHistoryComparison;
+} {
+  const history = requiredObject(rawHistory);
+  const purchaseId = source.purchaseId;
 
   if (
     history.purchase_id !== purchaseId ||
@@ -178,12 +179,13 @@ export async function inspectSandboxTransferHistory(
     const purchase = requiredObject(row.purchase);
 
     /*
-     * Voor deze inspectiestap niets overslaan.
-     * Ook cancelled vereist later een afzonderlijke controle
-     * op aantoonbaar onvoorbereide, onverzonden afhandeling.
+     * Geen andere onzekere, geclaimde of geannuleerde opdracht
+     * stilzwijgend overslaan.
      */
     if (request.status !== "succeeded") {
-      throw new Error("TRANSFER_HISTORY_NONCOMPLETED_REQUEST_REQUIRES_REVIEW");
+      throw new Error(
+        "TRANSFER_HISTORY_NONCOMPLETED_REQUEST_REQUIRES_REVIEW",
+      );
     }
 
     const requestId = requiredUuid(request.id);
@@ -200,7 +202,9 @@ export async function inspectSandboxTransferHistory(
     const destinationAccountId = requiredString(
       request.destination_account_id,
     );
-    const sourceChargeId = requiredString(request.stripe_source_charge_id);
+    const sourceChargeId = requiredString(
+      request.stripe_source_charge_id,
+    );
     const transferId = requiredString(request.stripe_transfer_id);
 
     if (
@@ -239,7 +243,10 @@ export async function inspectSandboxTransferHistory(
       booking.commission_amount_cents,
       0,
     );
-    const purchaseTotal = requiredInteger(purchase.total_price_cents, 1);
+    const purchaseTotal = requiredInteger(
+      purchase.total_price_cents,
+      1,
+    );
     const purchaseTrainerNet = requiredInteger(
       purchase.trainer_net_amount_cents,
       0,
@@ -254,13 +261,15 @@ export async function inspectSandboxTransferHistory(
     }
 
     /*
-     * De huidige aankoop mag niet aan een andere betaalbron worden
-     * gekoppeld. Omgekeerd mag dezelfde PI/charge niet ongemerkt
-     * onder een andere aankoop worden verklaard.
+     * De huidige aankoop moet dezelfde PI en broncharge gebruiken.
+     * Een andere aankoop mag niet stilzwijgend dezelfde betaalbron
+     * claimen.
      */
     const belongsToCurrentPurchase = originalPurchaseId === purchaseId;
-    const matchesCurrentPayment = paymentIntentId === source.paymentIntentId;
-    const matchesCurrentCharge = sourceChargeId === source.chargeId;
+    const matchesCurrentPayment =
+      paymentIntentId === source.paymentIntentId;
+    const matchesCurrentCharge =
+      sourceChargeId === source.chargeId;
 
     if (
       (
@@ -280,16 +289,17 @@ export async function inspectSandboxTransferHistory(
     }
 
     /*
-     * De loader leest bewust ruimer dan de Stripe-scan.
-     * Een historische bestemming van dezelfde trainer niet
-     * ongemerkt wegfilteren: die valt buiten deze inspectiescope.
+     * De loader leest ruimer dan de Stripe-scan.
+     * Historie buiten deze scan niet stilzwijgend verwijderen.
      */
     if (
       sourceChargeId !== source.chargeId &&
       destinationAccountId !==
         source.transferInspection.destinationAccountId
     ) {
-      throw new Error("TRANSFER_HISTORY_OUTSIDE_SCAN_SCOPE_REQUIRES_REVIEW");
+      throw new Error(
+        "TRANSFER_HISTORY_OUTSIDE_SCAN_SCOPE_REQUIRES_REVIEW",
+      );
     }
 
     completedRequests.push({
@@ -309,7 +319,9 @@ export async function inspectSandboxTransferHistory(
 
       requestStatus: "succeeded",
       storedPayload: requiredObject(request.stripe_request_payload),
-      storedIdempotencyKey: requiredString(request.stripe_idempotency_key),
+      storedIdempotencyKey: requiredString(
+        request.stripe_idempotency_key,
+      ),
 
       stripeTransferId: transferId,
       firstStripeRequestAt: requiredTimestamp(
@@ -340,8 +352,175 @@ export async function inspectSandboxTransferHistory(
   });
 
   return {
-    source,
-    databaseRequestCount: requestCount,
+    completedRequestCount: requestCount,
     historyComparison,
+  };
+}
+
+/*
+ * Bestaande alleen-lezen inspectie.
+ *
+ * Zelfde publieke functie en returnstructuur als voorheen.
+ * Accepteert geen onafgeronde opdrachten.
+ *
+ * Geen registratie, claim, prepare, synchronisatie of Stripe-write.
+ */
+export async function inspectSandboxTransferHistory(
+  purchaseId: string,
+): Promise<SandboxTransferHistoryInspection> {
+  purchaseId = requiredUuid(purchaseId);
+
+  const source = await inspectSandboxPackageTransferSource(purchaseId);
+
+  const { data, error } = await database.rpc(
+    "read_sandbox_trainer_transfer_history",
+    {
+      p_purchase_id: purchaseId,
+      p_source_charge_id: source.chargeId,
+    },
+  );
+
+  if (error) {
+    console.error("Transferhistorie ophalen mislukt:", {
+      purchaseId,
+      databaseCode: error.code,
+    });
+
+    throw new Error("TRANSFER_HISTORY_DATABASE_LOOKUP_FAILED");
+  }
+
+  const checked = validateCompletedHistory(data, source);
+
+  return {
+    source,
+    databaseRequestCount: checked.completedRequestCount,
+    historyComparison: checked.historyComparison,
+  };
+}
+
+/*
+ * Nieuwe claimgebonden inspectie.
+ *
+ * Alleen aanroepen vanuit een vertrouwde uitvoerder die de claim
+ * daadwerkelijk via claim_sandbox_trainer_transfer heeft verkregen.
+ *
+ * expected komt uit de gecontroleerde opdracht/claim.
+ * lockToken komt uit de bevestigde claimresponse.
+ * Geen browserpayload rechtstreeks doorgeven.
+ *
+ * Geen registratie, claim, prepare, synchronisatie of Stripe-write.
+ * De RPC neemt wel tijdelijk rijlocks voor de claimcontrole.
+ */
+export async function inspectClaimedSandboxTransferHistory(input: {
+  expected: ExpectedClaim;
+  lockToken: string;
+}): Promise<ClaimedSandboxTransferHistoryInspection> {
+  const expected: ExpectedClaim = {
+    requestId: requiredUuid(input.expected.requestId),
+    bookingId: requiredUuid(input.expected.bookingId),
+    purchaseId: requiredUuid(input.expected.purchaseId),
+    trainerId: requiredUuid(input.expected.trainerId),
+    destinationAccountId: requiredString(
+      input.expected.destinationAccountId,
+    ),
+    paymentIntentId: requiredString(input.expected.paymentIntentId),
+    amountCents: requiredInteger(input.expected.amountCents, 1),
+  };
+
+  const lockToken = requiredUuid(input.lockToken);
+
+  if (
+    !/^acct_[A-Za-z0-9]+$/.test(expected.destinationAccountId) ||
+    !/^pi_[A-Za-z0-9]+$/.test(expected.paymentIntentId)
+  ) {
+    throw new Error("TRANSFER_HISTORY_CLAIM_INPUT_INVALID");
+  }
+
+  /*
+   * De helper voert de bestaande bron- en transferscan uit.
+   * Refund- en disputeregistraties blijven blokkeren.
+   */
+  const source = await inspectSandboxPackageTransferSource(
+    expected.purchaseId,
+  );
+
+  if (
+    source.purchaseId !== expected.purchaseId ||
+    source.paymentIntentId !== expected.paymentIntentId ||
+    source.transferInspection.destinationAccountId !==
+      expected.destinationAccountId
+  ) {
+    throw new Error("TRANSFER_HISTORY_CLAIM_SOURCE_MISMATCH");
+  }
+
+  /*
+   * Controleer de eigen claim met de databaseklok en het echte token.
+   * De RPC haalt de volledige historie op terwijl de relevante
+   * claim-/aankoop-/boekingslocks binnen die transactie gehouden worden.
+   */
+  const { data, error } = await database.rpc(
+    "read_claimed_sandbox_transfer_history",
+    {
+      p_request_id: expected.requestId,
+      p_lock_token: lockToken,
+      p_source_charge_id: source.chargeId,
+    },
+  );
+
+  if (error) {
+    console.error("Claimgebonden transferhistorie niet bevestigd:", {
+      requestId: expected.requestId,
+      databaseCode: error.code,
+    });
+
+    throw new Error("TRANSFER_HISTORY_CLAIM_LOOKUP_NOT_CONFIRMED");
+  }
+
+  const claimedResponse = requiredObject(data);
+
+  /*
+   * De separator:
+   * - bevestigt precies één eigen onvoorbereide processing-opdracht;
+   * - weigert Stripe-transfers die al naar die opdracht/boeking wijzen;
+   * - laat alle overige databaserijen intact.
+   */
+  const separated = separateClaimedTransferHistory({
+    claimedResponse,
+    expected,
+    inspection: source.transferInspection,
+  });
+
+  const checked = validateCompletedHistory(
+    separated.historyWithoutCurrentClaim,
+    source,
+  );
+
+  const fullHistory = requiredObject(claimedResponse.history);
+  const fullRequestCount = requiredInteger(
+    fullHistory.request_count,
+    1,
+  );
+
+  if (fullRequestCount !== checked.completedRequestCount + 1) {
+    throw new Error("TRANSFER_HISTORY_CLAIM_COUNT_MISMATCH");
+  }
+
+  const claimCheckedAt = requiredTimestamp(claimedResponse.checked_at);
+  const claimLockedUntil = requiredTimestamp(
+    claimedResponse.locked_until,
+  );
+
+  if (Date.parse(claimLockedUntil) <= Date.parse(claimCheckedAt)) {
+    throw new Error("TRANSFER_HISTORY_CLAIM_LEASE_INVALID");
+  }
+
+  return {
+    source,
+    currentRequestId: separated.currentRequestId,
+    databaseRequestCount: fullRequestCount,
+    completedRequestCount: checked.completedRequestCount,
+    claimCheckedAt,
+    claimLockedUntil,
+    historyComparison: checked.historyComparison,
   };
 }

@@ -2,7 +2,10 @@ import "server-only";
 
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
-import { findSandboxTrainerTransfer } from "@/lib/find-sandbox-trainer-transfer";
+import {
+  findSandboxTrainerTransfer,
+  type OtherSourceTransferContext,
+} from "@/lib/find-sandbox-trainer-transfer";
 import {
   syncSandboxTrainerTransfer,
   type SandboxTrainerTransferSyncResult,
@@ -11,9 +14,7 @@ import {
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
 
-  if (!value) {
-    throw new Error(`${name} ontbreekt.`);
-  }
+  if (!value) throw new Error(`${name} ontbreekt.`);
 
   return value;
 }
@@ -96,6 +97,16 @@ async function readRequest(requestId: string) {
   return data;
 }
 
+type RecoverySearchContext = {
+  scannedTransferCount: number;
+  checkedAt: string;
+  finishedAt: string;
+
+  // Deze overige transfers zijn niet door deze herstelactie goedgekeurd.
+  otherSourceTransfers: OtherSourceTransferContext[];
+  historyApprovalGranted: false;
+};
+
 export type SandboxTrainerTransferRecoveryResult =
   | {
       result: "lease_still_active" | "not_recovery_candidate";
@@ -105,33 +116,31 @@ export type SandboxTrainerTransferRecoveryResult =
       result: "unprepared_requires_review";
       requestId: string;
     }
-  | {
+  | (RecoverySearchContext & {
       result: "not_found_requires_review";
       requestId: string;
-      scannedTransferCount: number;
-      checkedAt: string;
-      finishedAt: string;
-    }
-  | {
+    })
+  | (RecoverySearchContext & {
       result: "synchronized";
       requestId: string;
       synchronization: SandboxTrainerTransferSyncResult;
-    };
+    });
 
 /*
+ * Herstel van precies één bestaande opdracht.
+ *
  * Alleen voor vertrouwde server-side aanroepers.
- * Een route moet zelf authenticatie en autorisatie controleren.
+ * Een route moet zelf authenticatie en autorisatie uitvoeren.
  *
- * Verwerkt precies één bestaande opdracht.
- *
- * Geen registratie of claim.
- * Geen prepare.
- * Geen Stripe-transferaanmaak of herverzending.
- * Geen automatische reset naar queued.
+ * Geen registratie, claim, prepare of transfers.create.
+ * Geen reset of automatische herverzending.
  *
  * Mogelijke databasewrites:
  * - verlopen claim blokkeren;
- * - geverifieerd Stripe-resultaat transactioneel toepassen.
+ * - geverifieerd bestaand resultaat toepassen.
+ *
+ * Andere brontransfers zijn context, geen goedgekeurde historie.
+ * Nieuwe prepare blijft de volledige historiecontrole vereisen.
  */
 export async function reconcileSandboxTrainerTransfer(
   requestId: string,
@@ -139,6 +148,8 @@ export async function reconcileSandboxTrainerTransfer(
   if (!isUuid(requestId)) {
     throw new Error("TRANSFER_RECOVERY_REQUEST_ID_INVALID");
   }
+
+  requestId = requestId.toLowerCase();
 
   if (
     !stripeKey.startsWith("sk_test_") &&
@@ -158,13 +169,6 @@ export async function reconcileSandboxTrainerTransfer(
   }
 
   if (request.status === "processing") {
-    /*
-     * De database bepaalt onder locks met haar eigen klok
-     * of de lease verlopen is.
-     *
-     * Niet afgaan op de lokale serverklok en geen blind
-     * wissen van een claimtoken vanuit TypeScript.
-     */
     const { data: blocked, error: blockError } =
       await supabaseAdmin.rpc(
         "block_expired_sandbox_trainer_transfer",
@@ -198,7 +202,6 @@ export async function reconcileSandboxTrainerTransfer(
       };
     }
 
-    // Een andere synchronisatie kan ondertussen zijn afgerond.
     request = await readRequest(requestId);
   }
 
@@ -212,41 +215,8 @@ export async function reconcileSandboxTrainerTransfer(
     };
   }
 
-  /*
-   * Een bestaand resultaat opnieuw volledig verifiëren via
-   * de gedeelde synchronisatiehelper.
-   *
-   * Ook bij succeeded niet uitsluitend vertrouwen op de
-   * lokaal opgeslagen status.
-   */
-  if (request.stripe_transfer_id !== null) {
-    if (typeof request.stripe_transfer_id !== "string") {
-      throw new Error("TRANSFER_RECOVERY_RESULT_ID_INVALID");
-    }
-
-    const synchronization = await syncSandboxTrainerTransfer(
-      requestId,
-      request.stripe_transfer_id,
-    );
-
-    return {
-      result: "synchronized",
-      requestId,
-      synchronization,
-    };
-  }
-
-  if (
-    request.status === "succeeded" ||
-    request.succeeded_at !== null ||
-    request.applied_at !== null
-  ) {
-    throw new Error("TRANSFER_RECOVERY_RESULT_STATE_INCONSISTENT");
-  }
-
   const hasPreparationTime =
     request.first_stripe_request_at !== null;
-
   const hasPayload =
     request.stripe_request_payload !== null;
 
@@ -255,15 +225,42 @@ export async function reconcileSandboxTrainerTransfer(
   }
 
   if (!hasPreparationTime) {
-    /*
-     * Geen vrijgave geregistreerd.
-     * Toch geen automatische reset: gecontroleerde afhandeling
-     * van onverzonden opdrachten wordt afzonderlijk gebouwd.
-     */
+    if (
+      request.stripe_transfer_id !== null ||
+      request.succeeded_at !== null ||
+      request.applied_at !== null ||
+      request.status === "succeeded"
+    ) {
+      throw new Error("TRANSFER_RECOVERY_RESULT_STATE_INCONSISTENT");
+    }
+
     return {
       result: "unprepared_requires_review",
       requestId,
     };
+  }
+
+  const knownTransferId = request.stripe_transfer_id;
+
+  if (
+    knownTransferId !== null &&
+    (
+      typeof knownTransferId !== "string" ||
+      !/^tr_[A-Za-z0-9]+$/.test(knownTransferId)
+    )
+  ) {
+    throw new Error("TRANSFER_RECOVERY_RESULT_ID_INVALID");
+  }
+
+  if (
+    knownTransferId === null &&
+    (
+      request.status === "succeeded" ||
+      request.succeeded_at !== null ||
+      request.applied_at !== null
+    )
+  ) {
+    throw new Error("TRANSFER_RECOVERY_RESULT_STATE_INCONSISTENT");
   }
 
   if (
@@ -271,6 +268,8 @@ export async function reconcileSandboxTrainerTransfer(
     !isUuid(request.trainer_id) ||
     !isUuid(request.source_package_purchase_id) ||
     request.currency !== "eur" ||
+    request.stripe_livemode !== false ||
+    request.funds_flow !== "separate_transfers_v1" ||
     !Number.isSafeInteger(request.amount_cents) ||
     request.amount_cents <= 0 ||
     typeof request.destination_account_id !== "string" ||
@@ -302,27 +301,43 @@ export async function reconcileSandboxTrainerTransfer(
     },
     storedPayload: request.stripe_request_payload,
     storedIdempotencyKey: request.stripe_idempotency_key,
+    knownTransferId,
   });
+
+  const searchContext: RecoverySearchContext = {
+    scannedTransferCount: search.scannedTransferCount,
+    checkedAt: search.checkedAt,
+    finishedAt: search.finishedAt,
+    otherSourceTransfers: search.otherSourceTransfers,
+    historyApprovalGranted: false,
+  };
+
+  if (search.otherSourceTransfers.length > 0) {
+    console.info("Transferherstel: overige brontransfers waargenomen.", {
+      requestId,
+      otherTransferIds: search.otherSourceTransfers.map(
+        (transfer) => transfer.transferId,
+      ),
+      historyApprovalGranted: false,
+    });
+  }
 
   if (search.result === "not_found_requires_review") {
     /*
-     * Geen databasewijziging op basis van afwezigheid.
-     * De opdracht wordt hier niet vrijgegeven of herverzonden.
-     * Een gelijktijdige synchronisatie kan ondertussen wel
-     * zelfstandig een gevonden resultaat hebben toegepast.
+     * Afwezigheid tijdens de scan geeft geen toestemming
+     * voor reset, nieuwe vrijgave of herverzending.
      */
     return {
       result: "not_found_requires_review",
       requestId,
-      scannedTransferCount: search.scannedTransferCount,
-      checkedAt: search.checkedAt,
-      finishedAt: search.finishedAt,
+      ...searchContext,
     };
   }
 
   /*
-   * Synchronisatie haalt opdracht én transfer opnieuw op.
-   * Niet rechtstreeks de zoekresponse op de boeking toepassen.
+   * Haal opdracht en transfer opnieuw op via de gedeelde sync.
+   * Laat de database onder locks de daadwerkelijke toepassing
+   * en eventuele herhaalde toepassing controleren.
    */
   const synchronization = await syncSandboxTrainerTransfer(
     requestId,
@@ -333,5 +348,6 @@ export async function reconcileSandboxTrainerTransfer(
     result: "synchronized",
     requestId,
     synchronization,
+    ...searchContext,
   };
 }

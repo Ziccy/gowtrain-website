@@ -3,7 +3,7 @@ import "server-only";
 import { isDeepStrictEqual } from "node:util";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
-import { inspectSandboxPackageTransferSource } from "@/lib/inspect-sandbox-package-transfer-source";
+import { inspectClaimedSandboxTransferHistory } from "@/lib/inspect-sandbox-transfer-history";
 import { retrieveTrainerConnectV2StatusSnapshot } from "@/lib/stripe-connect-v2-status";
 import {
   buildTrainerTransferPayload,
@@ -245,13 +245,39 @@ export async function executeSandboxTrainerTransfer(
       throw new Error("TRANSFER_EXECUTION_CLAIM_CONTEXT_MISMATCH");
     }
 
-    stage = "inspect_source";
+    stage = "inspect_claimed_history";
 
-    const source = await inspectSandboxPackageTransferSource(
-      ALLOWED_PURCHASE_ID,
-    );
+    /*
+     * Controleert de actuele betaalbron en Stripe-transfers.
+     *
+     * De database-RPC bevestigt daarna met het echte claimtoken:
+     * - welke opdracht onze eigen onvoorbereide claim is;
+     * - of de lease nog geldig is;
+     * - welke overige opdrachten relevant zijn.
+     *
+     * Alleen de eigen claim wordt apart gezet.
+     * Andere onafgeronde of onverklaarde opdrachten blokkeren.
+     */
+    const history = await inspectClaimedSandboxTransferHistory({
+      expected: {
+        requestId,
+        bookingId: ALLOWED_BOOKING_ID,
+        purchaseId: ALLOWED_PURCHASE_ID,
+        trainerId: ALLOWED_TRAINER_ID,
+        destinationAccountId: ALLOWED_DESTINATION_ID,
+        paymentIntentId: claim.stripe_payment_intent_id,
+        amountCents: ALLOWED_AMOUNT_CENTS,
+      },
+      lockToken,
+    });
+
+    const source = history.source;
 
     if (
+      history.currentRequestId !== requestId ||
+      history.historyComparison.comparisonConfirmed !== true ||
+      history.databaseRequestCount !==
+        history.completedRequestCount + 1 ||
       source.purchaseId !== ALLOWED_PURCHASE_ID ||
       source.paymentIntentId !== claim.stripe_payment_intent_id ||
       source.transferInspection.destinationAccountId !==
@@ -259,6 +285,20 @@ export async function executeSandboxTrainerTransfer(
     ) {
       throw new Error("TRANSFER_EXECUTION_SOURCE_CONTEXT_MISMATCH");
     }
+
+    /*
+     * Deze vergelijking is geen zelfstandige vrijgave.
+     * Prepare vergelijkt de bron en oorspronkelijke scan opnieuw
+     * met de actuele databasehistorie onder locks.
+     */
+    console.log("Transferhistorie vóór prepare gecontroleerd:", {
+      requestId,
+      completedRequestCount: history.completedRequestCount,
+      sourceTransferredCents:
+        history.historyComparison.currentSourceTransferredCents,
+      destinationTransferredCents:
+        history.historyComparison.currentDestinationTransferredCents,
+    });
 
     stage = "destination_context";
 
