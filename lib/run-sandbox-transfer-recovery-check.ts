@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createClient } from "@supabase/supabase-js";
+import type { SandboxTransferSearchResult } from "@/lib/find-sandbox-trainer-transfer";
 import {
   reconcileSandboxTrainerTransfer,
   type SandboxTrainerTransferRecoveryResult,
@@ -156,6 +157,79 @@ async function finishCheck(input: {
   }
 }
 
+
+async function recordCompletedScan(
+  checkId: string,
+  search: SandboxTransferSearchResult,
+): Promise<void> {
+  /*
+   * Alleen de expliciet toegestane waarnemingsvelden doorgeven.
+   * Geen raw Stripe-object, payload of vrije metadata opslaan.
+   */
+  const otherSourceTransfers = search.otherSourceTransfers.map(
+    (transfer) => ({
+      transferId: transfer.transferId,
+      destinationAccountId: transfer.destinationAccountId,
+      amountCents: transfer.amountCents,
+      currency: transfer.currency,
+      amountReversedCents: transfer.amountReversedCents,
+      fullyReversed: transfer.fullyReversed,
+      metadataRequestId: transfer.metadataRequestId,
+      metadataBookingId: transfer.metadataBookingId,
+    }),
+  );
+
+  let recorded: unknown;
+
+  try {
+    const { data, error } = await database.rpc(
+      "record_sandbox_transfer_recovery_scan",
+      {
+        p_check_id: checkId,
+        p_checked_at: search.checkedAt,
+        p_finished_at: search.finishedAt,
+        p_scanned_transfer_count: search.scannedTransferCount,
+        p_search_outcome: search.result,
+        p_own_transfer_id:
+          search.result === "verified_match"
+            ? search.verified.transferId
+            : null,
+        p_other_source_transfers: otherSourceTransfers,
+      },
+    );
+
+    if (error) {
+      console.error("Scanopslag transferonderzoek niet bevestigd:", {
+        checkId,
+        databaseCode: error.code,
+      });
+
+      throw new Error("TRANSFER_RECOVERY_SCAN_NOT_CONFIRMED");
+    }
+
+    recorded = data;
+  } catch {
+    /*
+     * Bij een onzekere verbinding kan de scan al opgeslagen zijn.
+     * Geen automatische retry en niet doorgaan naar synchronisatie.
+     */
+    throw new Error("TRANSFER_RECOVERY_SCAN_NOT_CONFIRMED");
+  }
+
+  if (recorded === false) {
+    /*
+     * Bijvoorbeeld: het onderzoek is inmiddels afgesloten/verlopen.
+     * Niet alsnog synchroniseren vanuit deze herstelactie.
+     */
+    throw new Error("TRANSFER_RECOVERY_SCAN_REJECTED");
+  }
+
+  if (recorded !== true) {
+    throw new Error("TRANSFER_RECOVERY_SCAN_RESPONSE_INVALID");
+  }
+}
+
+
 /*
  * Alleen intern aanroepen met de bevestigde response van een
  * start-RPC uit deze module. Niet exporteren naar routes.
@@ -172,7 +246,12 @@ async function runStartedRecoveryCheck(
   let recovery: SandboxTrainerTransferRecoveryResult;
 
   try {
-    recovery = await reconcileSandboxTrainerTransfer(requestId);
+    recovery = await reconcileSandboxTrainerTransfer(
+      requestId,
+      async (search) => {
+        await recordCompletedScan(checkId, search);
+      },
+    );
   } catch (error: unknown) {
     const code = diagnosticCode(error);
 

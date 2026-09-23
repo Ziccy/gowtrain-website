@@ -6,6 +6,31 @@ import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
 
+type OtherSourceTransfer = {
+  transferId: string;
+  destinationAccountId: string | null;
+  amountCents: number;
+  currency: string;
+  amountReversedCents: number;
+  fullyReversed: boolean;
+  metadataRequestId: string | null;
+  metadataBookingId: string | null;
+};
+
+type RecoveryScan = {
+  check_id: string;
+  recorded_at: string;
+  checked_at: string;
+  finished_at: string;
+  scanned_transfer_count: number;
+  search_outcome: "verified_match" | "not_found_requires_review";
+  own_transfer_id: string | null;
+  history_approval_granted: false;
+  other_source_transfer_count: number;
+  other_source_transfers_truncated: boolean;
+  other_source_transfers: OtherSourceTransfer[];
+};
+
 type RecoveryCheck = {
   id: string;
   status: string;
@@ -14,6 +39,7 @@ type RecoveryCheck = {
   outcome?: string | null;
   error_code?: string | null;
   stripe_transfer_id?: string | null;
+  scan?: RecoveryScan | null;
 };
 
 type TransferRow = {
@@ -80,9 +106,83 @@ function isNullableString(value: unknown): boolean {
   return value === null || typeof value === "string";
 }
 
+function isScan(value: unknown): value is RecoveryScan | null {
+  if (value === null) return true;
+  if (!isObject(value)) return false;
+
+  if (
+    !["check_id", "recorded_at", "checked_at", "finished_at"].every(
+      (key) => typeof value[key] === "string",
+    ) ||
+    typeof value.scanned_transfer_count !== "number" ||
+    !Number.isSafeInteger(value.scanned_transfer_count) ||
+    value.scanned_transfer_count < 0 ||
+    value.scanned_transfer_count > 2000 ||
+    !["verified_match", "not_found_requires_review"].includes(
+      String(value.search_outcome),
+    ) ||
+    !isNullableString(value.own_transfer_id) ||
+    value.history_approval_granted !== false ||
+    typeof value.other_source_transfer_count !== "number" ||
+    !Number.isSafeInteger(value.other_source_transfer_count) ||
+    value.other_source_transfer_count < 0 ||
+    value.other_source_transfer_count > value.scanned_transfer_count ||
+    typeof value.other_source_transfers_truncated !== "boolean" ||
+    !Array.isArray(value.other_source_transfers)
+  ) {
+    return false;
+  }
+
+  if (
+    value.other_source_transfers.length !==
+      Math.min(value.other_source_transfer_count, 10) ||
+    value.other_source_transfers_truncated !==
+      (value.other_source_transfer_count > 10)
+  ) {
+    return false;
+  }
+
+  if (value.search_outcome === "verified_match") {
+    if (
+      typeof value.own_transfer_id !== "string" ||
+      value.scanned_transfer_count < 1 ||
+      value.other_source_transfer_count > value.scanned_transfer_count - 1
+    ) {
+      return false;
+    }
+  } else if (value.own_transfer_id !== null) {
+    return false;
+  }
+
+  return value.other_source_transfers.every((item: unknown) => {
+    if (!isObject(item)) return false;
+
+    return (
+      typeof item.transferId === "string" &&
+      isNullableString(item.destinationAccountId) &&
+      typeof item.amountCents === "number" &&
+      Number.isSafeInteger(item.amountCents) &&
+      item.amountCents > 0 &&
+      typeof item.currency === "string" &&
+      typeof item.amountReversedCents === "number" &&
+      Number.isSafeInteger(item.amountReversedCents) &&
+      item.amountReversedCents >= 0 &&
+      item.amountReversedCents <= item.amountCents &&
+      typeof item.fullyReversed === "boolean" &&
+      isNullableString(item.metadataRequestId) &&
+      isNullableString(item.metadataBookingId)
+    );
+  });
+}
+
 function isCheck(value: unknown): value is RecoveryCheck | null {
   if (value === null) return true;
   if (!isObject(value)) return false;
+
+  const scanValid =
+    value.scan === undefined ||
+    value.scan === null ||
+    (isScan(value.scan) && value.scan.check_id === value.id);
 
   return (
     typeof value.id === "string" &&
@@ -90,7 +190,8 @@ function isCheck(value: unknown): value is RecoveryCheck | null {
     typeof value.started_at === "string" &&
     ["finished_at", "outcome", "error_code", "stripe_transfer_id"].every(
       (key) => value[key] === undefined || isNullableString(value[key]),
-    )
+    ) &&
+    scanValid
   );
 }
 
@@ -203,6 +304,93 @@ function Field({
         {value ?? "Niet geregistreerd"}
       </dd>
     </div>
+  );
+}
+
+function ScanDetails({ scan }: { scan: RecoveryScan | null | undefined }) {
+  if (!scan) {
+    return (
+      <p className="mt-4 border border-white/20 p-4 text-sm">
+        Geen voltooide scan opgeslagen bij dit onderzoek. Dit kan een ouder
+        onderzoek zijn, of een onderzoek zonder afgeronde zoekscan. Het
+        bewijst niet dat er geen Stripe-transfer bestaat.
+      </p>
+    );
+  }
+
+  return (
+    <details className="mt-5 border border-white/20 p-4">
+      <summary className="cursor-pointer font-display text-lg text-[#D6FF3F]">
+        OPGESLAGEN ZOEKSCAN
+      </summary>
+
+      <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <Field label="Zoekuitkomst" value={scan.search_outcome} />
+        <Field label="Gescande transfers" value={scan.scanned_transfer_count} />
+        <Field label="Eigen transfer gevonden" value={scan.own_transfer_id} />
+        <Field label="Scan gestart" value={formatDate(scan.checked_at)} />
+        <Field label="Scan beëindigd" value={formatDate(scan.finished_at)} />
+        <Field label="Scan opgeslagen" value={formatDate(scan.recorded_at)} />
+      </dl>
+
+      <p className="mt-4 text-sm leading-relaxed">
+        Een geverifieerde zoekmatch is niet hetzelfde als administratieve
+        toepassing. Overige brontransfers zijn uitsluitend waarnemingen:
+        deze scan verleent geen goedkeuring van de transferhistorie.
+      </p>
+
+      <h3 className="mt-5 font-display text-lg">
+        OVERIGE BRONTRANSFERS ({scan.other_source_transfer_count})
+      </h3>
+
+      {scan.other_source_transfer_count === 0 && (
+        <p className="mt-2 text-sm">
+          Deze voltooide scan heeft geen overige brontransfers geregistreerd.
+        </p>
+      )}
+
+      {scan.other_source_transfers_truncated && (
+        <p className="mt-2 text-sm text-[#D6FF3F]">
+          Alleen de eerste 10 worden hier getoond. De volledige opgeslagen
+          lijst blijft in de database behouden.
+        </p>
+      )}
+
+      <div className="mt-3 space-y-3">
+        {scan.other_source_transfers.map((transfer) => (
+          <dl
+            key={transfer.transferId}
+            className="grid gap-4 border border-white/20 p-3 sm:grid-cols-2"
+          >
+            <Field label="Transfer" value={transfer.transferId} />
+            <Field label="Bestemming" value={transfer.destinationAccountId} />
+            <Field
+              label="Bedrag"
+              value={formatMoney(transfer.amountCents, transfer.currency)}
+            />
+            <Field
+              label="Teruggedraaid bedrag"
+              value={formatMoney(
+                transfer.amountReversedCents,
+                transfer.currency,
+              )}
+            />
+            <Field
+              label="Volledig teruggedraaid volgens scan"
+              value={transfer.fullyReversed ? "Ja" : "Nee"}
+            />
+            <Field
+              label="Opdrachtreferentie in metadata"
+              value={transfer.metadataRequestId}
+            />
+            <Field
+              label="Boekingsreferentie in metadata"
+              value={transfer.metadataBookingId}
+            />
+          </dl>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -328,11 +516,14 @@ function TransferCard({ row }: { row: TransferRow }) {
           </div>
         )}
 
+        {latest && <ScanDetails scan={latest.scan} />}
+
         <p className="mt-4 text-xs leading-relaxed text-[#B9BEC2]">
           Een mislukt of verlopen onderzoek betekent niet dat de transfer
           mislukt is. Een timeout annuleert geen lopende Stripe-read of
-          synchronisatie. Dit overzicht toont alleen het laatste en het
-          lopende onderzoek, niet de volledige historie of scandetails.
+          synchronisatie. Dit overzicht toont het laatste en het lopende
+          onderzoek, niet de volledige onderzoekshistorie. Scaninformatie
+          hoort uitsluitend bij het getoonde laatste onderzoek.
         </p>
       </section>
     </article>

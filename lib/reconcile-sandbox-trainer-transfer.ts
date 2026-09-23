@@ -5,6 +5,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   findSandboxTrainerTransfer,
   type OtherSourceTransferContext,
+  type SandboxTransferSearchResult,
 } from "@/lib/find-sandbox-trainer-transfer";
 import {
   syncSandboxTrainerTransfer,
@@ -144,6 +145,9 @@ export type SandboxTrainerTransferRecoveryResult =
  */
 export async function reconcileSandboxTrainerTransfer(
   requestId: string,
+  recordCompletedSearch?: (
+    search: SandboxTransferSearchResult,
+  ) => Promise<void>,
 ): Promise<SandboxTrainerTransferRecoveryResult> {
   if (!isUuid(requestId)) {
     throw new Error("TRANSFER_RECOVERY_REQUEST_ID_INVALID");
@@ -303,6 +307,21 @@ export async function reconcileSandboxTrainerTransfer(
     storedIdempotencyKey: request.stripe_idempotency_key,
     knownTransferId,
   });
+
+  /*
+   * Bij een geregistreerd onderzoek de voltooide zoekscan
+   * duurzaam opslaan vóór eventuele financiële synchronisatie.
+   *
+   * Opslagfout: exception doorgeven, niet doorgaan naar sync.
+   * Geen gedeeltelijke of mislukte zoekscan als voltooid registreren.
+   *
+   * De callback is alleen voor vertrouwde server-side aanroepers.
+   * Bestaande directe aanroepers zonder callback blijven compatibel,
+   * maar slaan daarmee geen onderzoeksscan op.
+   */
+  if (recordCompletedSearch) {
+    await recordCompletedSearch(search);
+  }
 
   const searchContext: RecoverySearchContext = {
     scannedTransferCount: search.scannedTransferCount,
