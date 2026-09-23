@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { isDeepStrictEqual } from "node:util";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
+
+import {
+  connectOptions,
+  withConnectCors,
+} from "@/lib/stripe-connect-cors";
 import { retrieveVerifiedTrainerConnectV2Account } from "@/lib/stripe-connect-v2";
 import {
   buildConnectV2AccountPayload,
@@ -15,7 +20,9 @@ export const maxDuration = 90;
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
 
-  if (!value) throw new Error(`${name} ontbreekt.`);
+  if (!value) {
+    throw new Error(`${name} ontbreekt.`);
+  }
 
   return value;
 }
@@ -34,7 +41,9 @@ if (
   appBaseUrl.hash ||
   appBaseUrl.pathname !== "/"
 ) {
-  throw new Error("NEXT_PUBLIC_APP_URL moet een geldige basis-URL zijn.");
+  throw new Error(
+    "NEXT_PUBLIC_APP_URL moet een geldige basis-URL zijn.",
+  );
 }
 
 const stripe = new Stripe(stripeKey, {
@@ -42,12 +51,16 @@ const stripe = new Stripe(stripeKey, {
   maxNetworkRetries: 0,
 });
 
-const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false,
+const supabaseAdmin = createClient(
+  supabaseUrl,
+  serviceRoleKey,
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
   },
-});
+);
 
 type Reservation = {
   result: "already_linked" | "reserved" | "existing_attempt";
@@ -71,11 +84,15 @@ function json(
 ): NextResponse {
   return NextResponse.json(body, {
     status,
-    headers: { "Cache-Control": "no-store" },
+    headers: {
+      "Cache-Control": "no-store",
+    },
   });
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
+function isObject(
+  value: unknown,
+): value is Record<string, unknown> {
   return (
     value !== null &&
     typeof value === "object" &&
@@ -137,15 +154,13 @@ async function verifyAndStoreAccount(
   accountId: string,
   country: "NL" | "BE",
 ): Promise<void> {
-  const verified = await retrieveVerifiedTrainerConnectV2Account(
-    stripe,
-    {
+  const verified =
+    await retrieveVerifiedTrainerConnectV2Account(stripe, {
       accountId,
       trainerId,
       attemptId,
       country,
-    },
-  );
+    });
 
   const { data, error } = await supabaseAdmin.rpc(
     "link_verified_trainer_connect_v2_account",
@@ -160,10 +175,13 @@ async function verifyAndStoreAccount(
   );
 
   if (error || data !== true) {
-    console.error("V2-accountkoppeling opslaan niet bevestigd:", {
-      attemptId,
-      code: error?.code,
-    });
+    console.error(
+      "V2-accountkoppeling opslaan niet bevestigd:",
+      {
+        attemptId,
+        code: error?.code,
+      },
+    );
 
     throw new Error("CONNECT_V2_LINK_NOT_CONFIRMED");
   }
@@ -185,7 +203,9 @@ async function verifyExistingLink(
     .eq("status", "linked")
     .maybeSingle();
 
-  if (error) throw new Error("CONNECT_V2_ATTEMPT_LOOKUP_FAILED");
+  if (error) {
+    throw new Error("CONNECT_V2_ATTEMPT_LOOKUP_FAILED");
+  }
 
   if (
     !attempt ||
@@ -230,16 +250,20 @@ async function markAttemptForReview(
     .is("stripe_account_id", null);
 
   if (error) {
-    console.error("V2-accountaanmaak markeren voor controle mislukt:", {
-      attemptId,
-      accountId,
-      code: error.code,
-    });
+    console.error(
+      "V2-accountaanmaak markeren voor controle mislukt:",
+      {
+        attemptId,
+        accountId,
+        code: error.code,
+      },
+    );
   }
 }
 
 function diagnosticCode(error: unknown): string {
-  const message = error instanceof Error ? error.message : "";
+  const message =
+    error instanceof Error ? error.message : "";
 
   const knownCodes = new Set([
     "CONNECT_V2_PAYLOAD_INPUT_INVALID",
@@ -288,7 +312,7 @@ function diagnosticCode(error: unknown): string {
   return "CONNECT_OPERATION_NOT_CONFIRMED";
 }
 
-export async function POST(
+async function handlePost(
   request: NextRequest,
 ): Promise<NextResponse> {
   let stage = "authentication";
@@ -298,21 +322,30 @@ export async function POST(
   let createdAccountId: string | null = null;
 
   try {
-    const authorization = request.headers.get("authorization");
+    const authorization =
+      request.headers.get("authorization");
+
     const token = authorization?.startsWith("Bearer ")
       ? authorization.slice(7).trim()
       : "";
 
     if (!token) {
-      return json({ error: "Je bent niet ingelogd." }, 401);
+      return json(
+        { error: "Je bent niet ingelogd." },
+        401,
+      );
     }
 
-    const supabaseAuth = createClient(supabaseUrl, anonKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
+    const supabaseAuth = createClient(
+      supabaseUrl,
+      anonKey,
+      {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false,
+        },
       },
-    });
+    );
 
     const {
       data: { user },
@@ -331,33 +364,43 @@ export async function POST(
       !stripeKey.startsWith("rk_test_")
     ) {
       return json(
-        { error: "Deze onboarding is voorlopig uitsluitend voor testaccounts." },
+        {
+          error:
+            "Deze onboarding is voorlopig uitsluitend voor testaccounts.",
+        },
         403,
       );
     }
 
     stage = "trainer_lookup";
 
-    const { data: trainer, error: trainerError } = await supabaseAdmin
-      .from("trainers")
-      .select(
-        "id, stripe_account_id, stripe_account_api, stripe_account_livemode",
-      )
-      .eq("user_id", user.id)
-      .eq("approval_status", "approved")
-      .eq("is_active", true)
-      .maybeSingle();
+    const { data: trainer, error: trainerError } =
+      await supabaseAdmin
+        .from("trainers")
+        .select(
+          "id, stripe_account_id, stripe_account_api, stripe_account_livemode",
+        )
+        .eq("user_id", user.id)
+        .eq("approval_status", "approved")
+        .eq("is_active", true)
+        .maybeSingle();
 
     if (trainerError) {
       return json(
-        { error: "Je trainerprofiel kon niet worden geladen." },
+        {
+          error:
+            "Je trainerprofiel kon niet worden geladen.",
+        },
         503,
       );
     }
 
     if (!trainer) {
       return json(
-        { error: "Geen actief en goedgekeurd trainerprofiel gevonden." },
+        {
+          error:
+            "Geen actief en goedgekeurd trainerprofiel gevonden.",
+        },
         403,
       );
     }
@@ -405,7 +448,8 @@ export async function POST(
             code: "CONNECT_V2_RESERVATION_NOT_CONFIRMED",
             stage,
             error:
-              error.code === "P0001" || error.code === "42501"
+              error.code === "P0001" ||
+              error.code === "42501"
                 ? error.message
                 : "De accountaanmaak kon niet worden gereserveerd.",
           },
@@ -439,7 +483,9 @@ export async function POST(
         accountId = reservation.account_id;
       } else {
         if (
-          !["reserved", "existing_attempt"].includes(reservation.result) ||
+          !["reserved", "existing_attempt"].includes(
+            reservation.result,
+          ) ||
           !reservation.attempt_id
         ) {
           throw new Error("CONNECT_V2_RESERVATION_INVALID");
@@ -461,14 +507,21 @@ export async function POST(
 
         stage = "prepare_v2_attempt";
 
-        const { data: preparedData, error: prepareError } =
-          await supabaseAdmin.rpc("prepare_trainer_connect_v2_attempt", {
+        const {
+          data: preparedData,
+          error: prepareError,
+        } = await supabaseAdmin.rpc(
+          "prepare_trainer_connect_v2_attempt",
+          {
             p_attempt_id: attemptId,
             p_user_id: user.id,
-          });
+          },
+        );
 
         if (prepareError) {
-          throw new Error("CONNECT_V2_PREPARATION_NOT_CONFIRMED");
+          throw new Error(
+            "CONNECT_V2_PREPARATION_NOT_CONFIRMED",
+          );
         }
 
         if (!preparedData) {
@@ -492,7 +545,8 @@ export async function POST(
           prepared.trainer_id !== trainer.id ||
           prepared.account_api !== "accounts_v2" ||
           prepared.stripe_livemode !== false ||
-          prepared.idempotency_key !== `gowtrain-connect-v2/${attemptId}`
+          prepared.idempotency_key !==
+            `gowtrain-connect-v2/${attemptId}`
         ) {
           throw new Error("CONNECT_V2_PREPARATION_INVALID");
         }
@@ -505,9 +559,12 @@ export async function POST(
 
         stage = "create_v2_account";
 
-        const created = await stripe.v2.core.accounts.create(payload, {
-          idempotencyKey: prepared.idempotency_key,
-        });
+        const created = await stripe.v2.core.accounts.create(
+          payload,
+          {
+            idempotencyKey: prepared.idempotency_key,
+          },
+        );
 
         createdAccountId = created.id;
         stage = "verify_and_link_v2_account";
@@ -527,7 +584,10 @@ export async function POST(
 
     stage = "check_link_access";
 
-    const { data: currentTrainer, error: accessError } = await supabaseAdmin
+    const {
+      data: currentTrainer,
+      error: accessError,
+    } = await supabaseAdmin
       .from("trainers")
       .select("id")
       .eq("id", trainer.id)
@@ -552,23 +612,24 @@ export async function POST(
 
     stage = "create_v2_onboarding_link";
 
-    const accountLink = await stripe.v2.core.accountLinks.create({
-      account: accountId,
-      use_case: {
-        type: "account_onboarding",
-        account_onboarding: {
-          configurations: ["recipient"],
-          refresh_url: new URL(
-            "/trainer-dashboard?stripe=refresh",
-            appBaseUrl,
-          ).toString(),
-          return_url: new URL(
-            "/trainer-dashboard?stripe=return",
-            appBaseUrl,
-          ).toString(),
+    const accountLink =
+      await stripe.v2.core.accountLinks.create({
+        account: accountId,
+        use_case: {
+          type: "account_onboarding",
+          account_onboarding: {
+            configurations: ["recipient"],
+            refresh_url: new URL(
+              "/trainer-dashboard?stripe=refresh",
+              appBaseUrl,
+            ).toString(),
+            return_url: new URL(
+              "/trainer-dashboard?stripe=return",
+              appBaseUrl,
+            ).toString(),
+          },
         },
-      },
-    });
+      });
 
     if (
       accountLink.account !== accountId ||
@@ -578,10 +639,14 @@ export async function POST(
       throw new Error("CONNECT_V2_ACCOUNT_LINK_INVALID");
     }
 
-    return json({ onboardingUrl: accountLink.url });
+    return json({
+      onboardingUrl: accountLink.url,
+    });
   } catch (error: unknown) {
     const message =
-      error instanceof Error ? error.message : "Onbekende Connect-fout.";
+      error instanceof Error
+        ? error.message
+        : "Onbekende Connect-fout.";
 
     console.error("Connect v2-onboarding niet bevestigd:", {
       stage,
@@ -620,4 +685,24 @@ export async function POST(
       503,
     );
   }
+}
+
+/*
+ * CORS-preflight voor onder meer de Expo-browsertest.
+ * Dit voert geen onboarding of accountaanmaak uit.
+ */
+export function OPTIONS(
+  request: NextRequest,
+): NextResponse {
+  return connectOptions(request);
+}
+
+/*
+ * Alle normale POST-antwoorden, inclusief fouten,
+ * krijgen de CORS-afhandeling uit de gedeelde helper.
+ */
+export async function POST(
+  request: NextRequest,
+): Promise<NextResponse> {
+  return withConnectCors(request, handlePost);
 }

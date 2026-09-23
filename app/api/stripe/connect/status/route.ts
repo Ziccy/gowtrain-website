@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { isDeepStrictEqual } from "node:util";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
+
+import {
+  connectOptions,
+  withConnectCors,
+} from "@/lib/stripe-connect-cors";
 import { buildConnectV2AccountPayload } from "@/lib/stripe-connect-v2-payload";
 import { retrieveVerifiedTrainerConnectV2Account } from "@/lib/stripe-connect-v2";
 
@@ -29,12 +34,16 @@ const stripe = new Stripe(stripeKey, {
   maxNetworkRetries: 0,
 });
 
-const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false,
+const supabaseAdmin = createClient(
+  supabaseUrl,
+  serviceRoleKey,
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
   },
-});
+);
 
 function json(
   body: Record<string, unknown>,
@@ -42,11 +51,15 @@ function json(
 ): NextResponse {
   return NextResponse.json(body, {
     status,
-    headers: { "Cache-Control": "no-store" },
+    headers: {
+      "Cache-Control": "no-store",
+    },
   });
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
+function isObject(
+  value: unknown,
+): value is Record<string, unknown> {
   return (
     value !== null &&
     typeof value === "object" &&
@@ -90,28 +103,37 @@ function verifyStoredPayload(
   return country;
 }
 
-export async function POST(
+async function handlePost(
   request: NextRequest,
 ): Promise<NextResponse> {
   let stage = "authentication";
   let attemptId: string | null = null;
 
   try {
-    const authorization = request.headers.get("authorization");
+    const authorization =
+      request.headers.get("authorization");
+
     const token = authorization?.startsWith("Bearer ")
       ? authorization.slice(7).trim()
       : "";
 
     if (!token) {
-      return json({ error: "Je bent niet ingelogd." }, 401);
+      return json(
+        { error: "Je bent niet ingelogd." },
+        401,
+      );
     }
 
-    const supabaseAuth = createClient(supabaseUrl, anonKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
+    const supabaseAuth = createClient(
+      supabaseUrl,
+      anonKey,
+      {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false,
+        },
       },
-    });
+    );
 
     const {
       data: { user },
@@ -140,15 +162,16 @@ export async function POST(
 
     stage = "trainer_lookup";
 
-    const { data: trainer, error: trainerError } = await supabaseAdmin
-      .from("trainers")
-      .select(
-        "id, stripe_account_id, stripe_account_api, stripe_account_livemode",
-      )
-      .eq("user_id", user.id)
-      .eq("approval_status", "approved")
-      .eq("is_active", true)
-      .maybeSingle();
+    const { data: trainer, error: trainerError } =
+      await supabaseAdmin
+        .from("trainers")
+        .select(
+          "id, stripe_account_id, stripe_account_api, stripe_account_livemode",
+        )
+        .eq("user_id", user.id)
+        .eq("approval_status", "approved")
+        .eq("is_active", true)
+        .maybeSingle();
 
     if (trainerError) {
       throw new Error("CONNECT_V2_TRAINER_LOOKUP_FAILED");
@@ -156,7 +179,10 @@ export async function POST(
 
     if (!trainer) {
       return json(
-        { error: "Geen actief en goedgekeurd trainerprofiel gevonden." },
+        {
+          error:
+            "Geen actief en goedgekeurd trainerprofiel gevonden.",
+        },
         403,
       );
     }
@@ -187,16 +213,17 @@ export async function POST(
 
     stage = "linked_attempt_lookup";
 
-    const { data: attempt, error: attemptError } = await supabaseAdmin
-      .from("trainer_connect_attempts")
-      .select(
-        "id, trainer_user_id, stripe_livemode, stripe_request_payload",
-      )
-      .eq("trainer_id", trainer.id)
-      .eq("stripe_account_id", trainer.stripe_account_id)
-      .eq("account_api", "accounts_v2")
-      .eq("status", "linked")
-      .maybeSingle();
+    const { data: attempt, error: attemptError } =
+      await supabaseAdmin
+        .from("trainer_connect_attempts")
+        .select(
+          "id, trainer_user_id, stripe_livemode, stripe_request_payload",
+        )
+        .eq("trainer_id", trainer.id)
+        .eq("stripe_account_id", trainer.stripe_account_id)
+        .eq("account_api", "accounts_v2")
+        .eq("status", "linked")
+        .maybeSingle();
 
     if (attemptError) {
       throw new Error("CONNECT_V2_ATTEMPT_LOOKUP_FAILED");
@@ -229,32 +256,34 @@ export async function POST(
 
     stage = "retrieve_v2_account";
 
-    const verified = await retrieveVerifiedTrainerConnectV2Account(
-      stripe,
-      {
-        accountId: trainer.stripe_account_id,
-        trainerId: trainer.id,
-        attemptId: attempt.id,
-        country,
-      },
-    );
+    const verified =
+      await retrieveVerifiedTrainerConnectV2Account(
+        stripe,
+        {
+          accountId: trainer.stripe_account_id,
+          trainerId: trainer.id,
+          attemptId: attempt.id,
+          country,
+        },
+      );
 
     stage = "store_verified_status";
 
     // Deze RPC controleert eigenaarschap, approval, account-ID
     // en poging opnieuw onder locks.
     // We gebruiken uitsluitend de bestaande linked-poging.
-    const { data: stored, error: storeError } = await supabaseAdmin.rpc(
-      "link_verified_trainer_connect_v2_account",
-      {
-        p_attempt_id: attempt.id,
-        p_user_id: user.id,
-        p_account_id: verified.accountId,
-        p_transfers_status: verified.transfersStatus,
-        p_payouts_status: verified.payoutsStatus,
-        p_checked_at: verified.checkedAt,
-      },
-    );
+    const { data: stored, error: storeError } =
+      await supabaseAdmin.rpc(
+        "link_verified_trainer_connect_v2_account",
+        {
+          p_attempt_id: attempt.id,
+          p_user_id: user.id,
+          p_account_id: verified.accountId,
+          p_transfers_status: verified.transfersStatus,
+          p_payouts_status: verified.payoutsStatus,
+          p_checked_at: verified.checkedAt,
+        },
+      );
 
     if (storeError || stored !== true) {
       throw new Error("CONNECT_V2_STATUS_STORE_NOT_CONFIRMED");
@@ -264,20 +293,21 @@ export async function POST(
 
     // Lees de werkelijk opgeslagen status terug.
     // Een gelijktijdige nieuwere controle kan voorrang hebben gekregen.
-    const { data: current, error: currentError } = await supabaseAdmin
-      .from("trainers")
-      .select(
-        "stripe_transfers_status, stripe_payouts_status, stripe_account_checked_at",
-      )
-      .eq("id", trainer.id)
-      .eq("user_id", user.id)
-      .eq("approval_status", "approved")
-      .eq("is_active", true)
-      .eq("stripe_account_id", verified.accountId)
-      .eq("stripe_account_api", "accounts_v2")
-      .eq("stripe_account_livemode", false)
-      .eq("stripe_account_closed", false)
-      .maybeSingle();
+    const { data: current, error: currentError } =
+      await supabaseAdmin
+        .from("trainers")
+        .select(
+          "stripe_transfers_status, stripe_payouts_status, stripe_account_checked_at",
+        )
+        .eq("id", trainer.id)
+        .eq("user_id", user.id)
+        .eq("approval_status", "approved")
+        .eq("is_active", true)
+        .eq("stripe_account_id", verified.accountId)
+        .eq("stripe_account_api", "accounts_v2")
+        .eq("stripe_account_livemode", false)
+        .eq("stripe_account_closed", false)
+        .maybeSingle();
 
     if (
       currentError ||
@@ -295,10 +325,14 @@ export async function POST(
     });
   } catch (error: unknown) {
     const message =
-      error instanceof Error ? error.message : "Onbekende Connect-fout.";
+      error instanceof Error
+        ? error.message
+        : "Onbekende Connect-fout.";
 
     const stripeError =
-      error instanceof Stripe.errors.StripeError ? error : null;
+      error instanceof Stripe.errors.StripeError
+        ? error
+        : null;
 
     console.error("Connect v2-statuscontrole niet bevestigd:", {
       stage,
@@ -323,4 +357,24 @@ export async function POST(
       503,
     );
   }
+}
+
+/*
+ * CORS-preflight.
+ * Dit controleert geen Stripe-account en wijzigt geen gegevens.
+ */
+export function OPTIONS(
+  request: NextRequest,
+): NextResponse {
+  return connectOptions(request);
+}
+
+/*
+ * De bestaande statuscontrole, met CORS-afhandeling
+ * voor normale antwoorden en foutmeldingen.
+ */
+export async function POST(
+  request: NextRequest,
+): Promise<NextResponse> {
+  return withConnectCors(request, handlePost);
 }
