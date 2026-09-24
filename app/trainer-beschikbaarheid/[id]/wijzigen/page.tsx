@@ -1,34 +1,40 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useParams, useRouter } from "next/navigation";
-import Link from "next/link";
+
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import { supabase } from "@/lib/supabase-browser";
+import {
+  addCalendarDays,
+  getAmsterdamDateInputs,
+} from "@/lib/amsterdam-date-time";
 
-type ApprovalStatus = "pending" | "approved" | "rejected";
 type Sport = "padel" | "tennis";
 
 type TrainerAccount = {
   id: string;
   is_active: boolean;
-  approval_status: ApprovalStatus;
+  approval_status: string;
 };
 
-type Venue = {
+type Pattern = {
   id: string;
-  name: string;
-  address_line: string;
-  postal_code: string | null;
-  city: string;
-  sports: Sport[];
-  court_environment: "indoor" | "outdoor" | "indoor_outdoor" | null;
+  trainer_id: string;
+  is_active: boolean;
+  updated_at: string;
 };
 
-type RecurringAvailability = {
-  id: string;
+type Version = {
+  recurring_availability_id: string;
+  effective_from: string;
   weekday: number;
   starts_at_time: string;
   ends_at_time: string;
@@ -40,830 +46,1221 @@ type RecurringAvailability = {
   currency: string;
   level: string | null;
   booking_deadline_hours: number;
-  is_active: boolean;
-  venue: Venue | null;
+  recorded_at: string;
 };
 
-type UpdateRecurringAvailabilityResult = {
-  recurring_availability_id: string;
-  cancelled_slots: number;
-  created_slots: number;
-  skipped_slots: number;
+type Venue = {
+  id: string;
+  name: string;
+  address_line: string | null;
+  postal_code: string | null;
+  city: string;
+  sports: Sport[];
 };
 
-const weekdayOptions = [
-  { value: 1, shortLabel: "MA", label: "MAANDAG" },
-  { value: 2, shortLabel: "DI", label: "DINSDAG" },
-  { value: 3, shortLabel: "WO", label: "WOENSDAG" },
-  { value: 4, shortLabel: "DO", label: "DONDERDAG" },
-  { value: 5, shortLabel: "VR", label: "VRIJDAG" },
-  { value: 6, shortLabel: "ZA", label: "ZATERDAG" },
-  { value: 7, shortLabel: "ZO", label: "ZONDAG" },
+type LoadedPage = {
+  userId: string;
+  trainer: TrainerAccount;
+  pattern: Pattern;
+  versions: Version[];
+};
+
+type SaveResult = {
+  effectiveFrom: string;
+  cancelled: number;
+  created: number;
+  skipped: number;
+  wasPaused: boolean;
+};
+
+const WEEKDAYS = [
+  { value: 1, short: "MA", label: "Maandag" },
+  { value: 2, short: "DI", label: "Dinsdag" },
+  { value: 3, short: "WO", label: "Woensdag" },
+  { value: 4, short: "DO", label: "Donderdag" },
+  { value: 5, short: "VR", label: "Vrijdag" },
+  { value: 6, short: "ZA", label: "Zaterdag" },
+  { value: 7, short: "ZO", label: "Zondag" },
 ];
 
-const durationOptions = [30, 60, 90, 120];
-const participantOptions = [1, 2, 3, 4];
-const hoursOptions: string[] = Array.from({ length: 17 }, (_, i) => String(i + 7).padStart(2, "0")); // 07:00 t/m 23:00
-const minuteOptions: string[] = ["00", "15", "30", "45"];
+const DURATIONS = [30, 60, 90, 120];
+const PARTICIPANTS = [1, 2, 3, 4];
+const HOURS = Array.from(
+  { length: 17 },
+  (_, index) => String(index + 7).padStart(2, "0"),
+);
+const MINUTES = ["00", "15", "30", "45"];
 
-function toDateInputValue(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const VERSION_SELECT = `
+  recurring_availability_id,
+  effective_from,
+  weekday,
+  starts_at_time,
+  ends_at_time,
+  duration_minutes,
+  sport,
+  location_id,
+  max_participants,
+  price_cents,
+  currency,
+  level,
+  booking_deadline_hours,
+  recorded_at
+`;
+
+function todayAmsterdam() {
+  return getAmsterdamDateInputs(new Date()).date;
 }
 
-function formatEuroFromInput(value: string): string {
-  const parsedValue = Number(value.replace(",", "."));
-  if (
-    !value.trim() ||
-    Number.isNaN(parsedValue) ||
-    !Number.isFinite(parsedValue) ||
-    parsedValue <= 0
-  ) {
-    return "–";
-  }
+function formatDate(value: string) {
+  if (value === "-infinity") return "de uitgangssituatie";
 
+  // Kalenderdatum weergeven, niet de lokale browsertijd gebruiken.
+  const date = new Date(`${value}T12:00:00Z`);
+
+  if (!Number.isFinite(date.getTime())) return "onbekende datum";
+
+  return new Intl.DateTimeFormat("nl-NL", {
+    timeZone: "Europe/Amsterdam",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(date);
+}
+
+function weekdayLabel(value: number) {
+  return WEEKDAYS.find((item) => item.value === value)?.label ?? "Onbekend";
+}
+
+function formatMoney(cents: number, currency: string) {
   return new Intl.NumberFormat("nl-NL", {
     style: "currency",
-    currency: "EUR",
-  }).format(parsedValue);
+    currency: currency.toUpperCase(),
+  }).format(cents / 100);
 }
 
-function getWeekdayLabel(weekday: number): string {
-  return (
-    weekdayOptions.find((option) => option.value === weekday)?.label ??
-    "ONBEKEND"
-  );
+function parsePrice(value: string): number | null {
+  const normalized = value.trim().replace(",", ".");
+
+  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
+
+  const cents = Math.round(Number(normalized) * 100);
+
+  return Number.isSafeInteger(cents) &&
+    cents > 0 &&
+    cents <= 2147483647
+    ? cents
+    : null;
 }
 
-function getVenueLabel(venue: Venue): string {
-  return `${venue.city.toUpperCase()} — ${venue.name}`;
+function timeMinutes(value: string) {
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
 }
 
-function toDatabaseTime(timeValue: string): string | null {
-  const [hoursString, minutesString] = timeValue.split(":");
-  const hours = Number(hoursString);
-  const minutes = Number(minutesString);
+function venueLabel(venue: Venue) {
+  return `${venue.city} — ${venue.name}`;
+}
 
-  if (
-    Number.isNaN(hours) ||
-    Number.isNaN(minutes) ||
-    hours < 0 ||
-    hours > 23 ||
-    minutes < 0 ||
-    minutes > 59
-  ) {
-    return null;
+function sortedVersions(versions: Version[]) {
+  return [...versions].sort((a, b) => {
+    if (a.effective_from === b.effective_from) return 0;
+    if (a.effective_from === "-infinity") return -1;
+    if (b.effective_from === "-infinity") return 1;
+    return a.effective_from.localeCompare(b.effective_from);
+  });
+}
+
+function minimumEffectiveDate(versions: Version[], today: string) {
+  const sorted = sortedVersions(versions);
+  const latest = sorted[sorted.length - 1];
+
+  if (!latest || latest.effective_from === "-infinity") {
+    return today;
   }
 
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:00`;
+  return latest.effective_from > today
+    ? latest.effective_from
+    : today;
+}
+
+function versionsFingerprint(versions: Version[]) {
+  return JSON.stringify(sortedVersions(versions));
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0;
+}
+
+async function readPage(patternId: string): Promise<LoadedPage> {
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+
+  if (userError || !user) {
+    throw new Error(
+      "Je sessie kon niet worden gecontroleerd. Log zo nodig opnieuw in.",
+    );
+  }
+
+  const { data: trainer, error: trainerError } = await supabase
+    .from("trainers")
+    .select("id, is_active, approval_status")
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (trainerError) throw trainerError;
+  if (!trainer) throw new Error("Geen trainerprofiel gevonden.");
+
+  const { data: pattern, error: patternError } = await supabase
+    .from("recurring_availability")
+    .select("id, trainer_id, is_active, updated_at")
+    .eq("id", patternId)
+    .eq("trainer_id", trainer.id)
+    .maybeSingle();
+
+  if (patternError) throw patternError;
+  if (!pattern) {
+    throw new Error("Deze reeks bestaat niet of is niet van jouw account.");
+  }
+
+  const versions: Version[] = [];
+  const pageSize = 100;
+
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from("recurring_availability_versions")
+      .select(VERSION_SELECT)
+      .eq("recurring_availability_id", patternId)
+      .order("effective_from", { ascending: true })
+      .range(from, from + pageSize - 1);
+
+    if (error) throw error;
+
+    const page = (data ?? []) as Version[];
+    versions.push(...page);
+
+    if (page.length < pageSize) break;
+  }
+
+  if (!versions.length) {
+    throw new Error(
+      "Er zijn geen leesbare reeksversies gevonden. Wijzigen is daarom geblokkeerd.",
+    );
+  }
+
+  return {
+    userId: user.id,
+    trainer: trainer as TrainerAccount,
+    pattern: pattern as Pattern,
+    versions: sortedVersions(versions),
+  };
 }
 
 export default function TrainerBeschikbaarheidWijzigenPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
-  const successMessageRef = useRef<HTMLDivElement | null>(null);
 
-  const recurringAvailabilityId = Array.isArray(params.id)
+  const patternId = Array.isArray(params.id)
     ? params.id[0]
     : params.id;
 
-  const [trainerAccount, setTrainerAccount] = useState<TrainerAccount | null>();
-  const [originalPattern, setOriginalPattern] = useState<RecurringAvailability | null>();
+  const [loaded, setLoaded] = useState<LoadedPage | null>(null);
+  const [baseVersion, setBaseVersion] = useState<Version | null>(null);
 
-  const [selectedWeekday, setSelectedWeekday] = useState(1);
-  const [effectiveFrom, setEffectiveFrom] = useState(toDateInputValue(new Date()));
-
-  // 💡 CUSTOM KWARTIER TIJDPRIKER STATE (VAN & TOT)
-  const [startHour, setStartHour] = useState<string>("18");
-  const [startMinute, setStartMinute] = useState<string>("00");
-
-  const [endHour, setEndHour] = useState<string>("21");
-  const [endMinute, setEndMinute] = useState<string>("00");
-
-  const startTime = useMemo(() => `${startHour}:${startMinute}`, [startHour, startMinute]);
-  const endTime = useMemo(() => `${endHour}:${endMinute}`, [endHour, endMinute]);
-
-  const [selectedDuration, setSelectedDuration] = useState(60);
-  const [selectedSport, setSelectedSport] = useState<Sport>("padel");
+  const [effectiveFrom, setEffectiveFrom] = useState("");
+  const [today, setToday] = useState("");
+  const [weekday, setWeekday] = useState(1);
+  const [startHour, setStartHour] = useState("18");
+  const [startMinute, setStartMinute] = useState("00");
+  const [endHour, setEndHour] = useState("21");
+  const [endMinute, setEndMinute] = useState("00");
+  const [duration, setDuration] = useState(60);
+  const [sport, setSport] = useState<Sport>("padel");
+  const [participants, setParticipants] = useState(1);
+  const [price, setPrice] = useState("");
 
   const [venues, setVenues] = useState<Venue[]>([]);
-  const [venuesLoading, setVenuesLoading] = useState(true);
-  const [selectedVenueId, setSelectedVenueId] = useState("");
+  const [venueId, setVenueId] = useState("");
   const [venueSearch, setVenueSearch] = useState("");
-  const [venuePickerOpen, setVenuePickerOpen] = useState(false);
-
-  const [maxParticipants, setMaxParticipants] = useState(1);
-  const [price, setPrice] = useState("");
-  const [level, setLevel] = useState("");
+  const [venueOpen, setVenueOpen] = useState(false);
+  const [venuesLoading, setVenuesLoading] = useState(false);
+  const [venueError, setVenueError] = useState("");
+  const [venueRetry, setVenueRetry] = useState(0);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<SaveResult | null>(null);
+  const [mustReload, setMustReload] = useState(false);
+  const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const [retry, setRetry] = useState(0);
 
-  const [errorMessage, setErrorMessage] = useState("");
-  const [successMessage, setSuccessMessage] = useState("");
+  const saveLock = useRef(false);
+  const mounted = useRef(true);
+  const feedbackRef = useRef<HTMLDivElement | null>(null);
+  const venueContainerRef = useRef<HTMLDivElement | null>(null);
 
-  const trainerIsActive =
-    trainerAccount?.approval_status === "approved" &&
-    trainerAccount?.is_active === true;
+  const startTime = `${startHour}:${startMinute}`;
+  const endTime = `${endHour}:${endMinute}`;
+  const blockMinutes = timeMinutes(endTime) - timeMinutes(startTime);
+  const possibleSlots = blockMinutes >= duration
+    ? Math.floor(blockMinutes / duration)
+    : 0;
+  const remainderMinutes = possibleSlots > 0
+    ? blockMinutes - possibleSlots * duration
+    : 0;
+
+  const priceCents = parsePrice(price);
+  const currency = baseVersion?.currency ?? "eur";
+
+  const trainerActive =
+    loaded?.trainer.is_active === true &&
+    loaded.trainer.approval_status === "approved";
+
+  const formDisabled =
+    saving || mustReload || result !== null || !trainerActive;
+
+  const minDate = loaded
+    ? minimumEffectiveDate(loaded.versions, today)
+    : today;
 
   const selectedVenue = useMemo(
-    () => venues.find((venue) => venue.id === selectedVenueId) ?? null,
-    [venues, selectedVenueId]
+    () => venues.find((venue) => venue.id === venueId) ?? null,
+    [venues, venueId],
   );
 
   const filteredVenues = useMemo(() => {
-    const normalizedSearch = venueSearch.trim().toLocaleLowerCase("nl-NL");
-    if (!normalizedSearch) return venues;
+    const query = venueSearch.trim().toLocaleLowerCase("nl-NL");
 
-    return venues.filter((venue) => {
-      const searchableText = [
-        venue.name,
-        venue.city,
-        venue.address_line,
-        venue.postal_code ?? "",
-      ]
+    return venues.filter((venue) =>
+      [venue.name, venue.city, venue.address_line, venue.postal_code]
+        .filter(Boolean)
         .join(" ")
-        .toLocaleLowerCase("nl-NL");
-
-      return searchableText.includes(normalizedSearch);
-    });
-  }, [venueSearch, venues]);
-
-  const formattedPrice = useMemo(() => formatEuroFromInput(price), [price]);
-
-  const startMinutes = useMemo(() => {
-    return Number(startHour) * 60 + Number(startMinute);
-  }, [startHour, startMinute]);
-
-  const endMinutes = useMemo(() => {
-    return Number(endHour) * 60 + Number(endMinute);
-  }, [endHour, endMinute]);
-
-  const blockMinutes = endMinutes > startMinutes ? endMinutes - startMinutes : 0;
-  const possibleSlots = blockMinutes >= selectedDuration ? Math.floor(blockMinutes / selectedDuration) : 0;
+        .toLocaleLowerCase("nl-NL")
+        .includes(query),
+    );
+  }, [venues, venueSearch]);
 
   useEffect(() => {
-    if (!recurringAvailabilityId) {
-      setLoading(false);
-      setErrorMessage("Deze vaste reeks kon niet worden gevonden.");
-      return;
-    }
+    mounted.current = true;
 
-    void loadPage();
-  }, [recurringAvailabilityId]);
+    const tick = () => setToday(todayAmsterdam());
+    tick();
+    const timer = window.setInterval(tick, 60_000);
+
+    return () => {
+      mounted.current = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
-    if (!successMessage) return;
+    let active = true;
 
-    window.setTimeout(() => {
-      successMessageRef.current?.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
-      successMessageRef.current?.focus();
-    }, 50);
-  }, [successMessage]);
+    async function load() {
+      setLoading(true);
+      setLoadError("");
+      setError("");
+      setResult(null);
+      setConfirmationOpen(false);
+      setLoaded(null);
+      setBaseVersion(null);
 
-  function clearMessages(): void {
-    setErrorMessage("");
-    setSuccessMessage("");
-  }
-
-  function showError(message: string): void {
-    setSuccessMessage("");
-    setErrorMessage(message);
-  }
-
-  async function getCurrentTrainer(): Promise<TrainerAccount | null> {
-    const { data: { session } } = await supabase.auth.getSession();
-
-    if (!session?.user) {
-      router.replace("/trainer-login");
-      return null;
-    }
-
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      await supabase.auth.signOut();
-      router.replace("/trainer-login");
-      return null;
-    }
-
-    const { data: trainerData, error: trainerError } = await supabase
-      .from("trainers")
-      .select("id, is_active, approval_status")
-      .eq("user_id", user.id)
-      .single();
-
-    if (trainerError || !trainerData) {
-      showError("Je trainerprofiel kon niet worden geladen.");
-      return null;
-    }
-
-    return trainerData as TrainerAccount;
-  }
-
-  async function loadVenues(sport: Sport, selectedLocationId?: string): Promise<Venue[]> {
-    setVenuesLoading(true);
-
-    try {
-      const { data, error } = await supabase
-        .from("venues")
-        .select("id, name, address_line, postal_code, city, sports, court_environment")
-        .eq("is_active", true)
-        .contains("sports", [sport])
-        .order("city", { ascending: true })
-        .order("name", { ascending: true });
-
-      if (error) {
-        showError("De trainingslocaties konden niet worden geladen.");
-        return [];
-      }
-
-      const loadedVenues = (data ?? []) as Venue[];
-      setVenues(loadedVenues);
-
-      if (selectedLocationId) {
-        const selected = loadedVenues.find((venue) => venue.id === selectedLocationId);
-        if (selected) {
-          setSelectedVenueId(selected.id);
-          setVenueSearch(getVenueLabel(selected));
+      try {
+        if (!patternId || !UUID_PATTERN.test(patternId)) {
+          throw new Error("Deze reekslink is ongeldig.");
         }
+
+        const page = await readPage(patternId);
+        if (!active) return;
+
+        const latest = page.versions[page.versions.length - 1];
+        const localToday = todayAmsterdam();
+
+        setLoaded(page);
+        setBaseVersion(latest);
+        setToday(localToday);
+        setEffectiveFrom(
+          minimumEffectiveDate(page.versions, localToday),
+        );
+
+        setWeekday(latest.weekday);
+        setStartHour(latest.starts_at_time.slice(0, 2));
+        setStartMinute(latest.starts_at_time.slice(3, 5));
+        setEndHour(latest.ends_at_time.slice(0, 2));
+        setEndMinute(latest.ends_at_time.slice(3, 5));
+        setDuration(latest.duration_minutes);
+        setSport(latest.sport);
+        setParticipants(latest.max_participants);
+        setPrice((latest.price_cents / 100).toFixed(2));
+        setVenueId(latest.location_id);
+        setVenueSearch("");
+        setVenueOpen(false);
+        setMustReload(false);
+      } catch (error) {
+        console.error("Reeks voor bewerken laden mislukt:", error);
+
+        if (active) {
+          setLoadError(
+            error instanceof Error
+              ? error.message
+              : "De reeks kon niet worden geladen.",
+          );
+        }
+      } finally {
+        if (active) setLoading(false);
       }
-
-      return loadedVenues;
-    } catch {
-      showError("De trainingslocaties konden niet worden geladen.");
-      return [];
-    } finally {
-      setVenuesLoading(false);
     }
-  }
 
-  async function loadPage(): Promise<void> {
-    setLoading(true);
-    clearMessages();
+    void load();
 
-    try {
-      const trainer = await getCurrentTrainer();
-      if (!trainer) return;
+    return () => {
+      active = false;
+    };
+  }, [patternId, retry]);
 
-      setTrainerAccount(trainer);
+  useEffect(() => {
+    if (!loaded) return;
 
-      const { data: patternData, error: patternError } = await supabase
-        .from("recurring_availability")
-        .select(
-          `
-            id,
-            weekday,
-            starts_at_time,
-            ends_at_time,
-            duration_minutes,
-            sport,
-            location_id,
-            max_participants,
-            price_cents,
-            currency,
-            level,
-            booking_deadline_hours,
-            is_active,
-            venue:venues!recurring_availability_location_id_fkey (
-              id, name, address_line, postal_code, city, sports, court_environment
-            )
-          `
-        )
-        .eq("id", recurringAvailabilityId)
-        .eq("trainer_id", trainer.id)
-        .maybeSingle();
+    let active = true;
 
-      if (patternError || !patternData) {
-        showError("Deze vaste reeks bestaat niet of kan niet worden gewijzigd.");
-        return;
+    async function loadVenues() {
+      setVenuesLoading(true);
+      setVenueError("");
+      setVenues([]);
+
+      try {
+        const all: Venue[] = [];
+        const pageSize = 200;
+
+        for (let from = 0; ; from += pageSize) {
+          const { data, error } = await supabase
+            .from("venues")
+            .select("id, name, address_line, postal_code, city, sports")
+            .eq("is_active", true)
+            .contains("sports", [sport])
+            .order("city", { ascending: true })
+            .order("name", { ascending: true })
+            .order("id", { ascending: true })
+            .range(from, from + pageSize - 1);
+
+          if (error) throw error;
+          if (!active) return;
+
+          const page = (data ?? []) as Venue[];
+          all.push(...page);
+
+          if (page.length < pageSize) break;
+        }
+
+        if (active) setVenues(all);
+      } catch (error) {
+        console.error("Locaties laden mislukt:", error);
+
+        if (active) {
+          setVenueError("De trainingslocaties konden niet worden geladen.");
+        }
+      } finally {
+        if (active) setVenuesLoading(false);
       }
-
-      const pattern = patternData as unknown as RecurringAvailability;
-
-      setOriginalPattern(pattern);
-      setSelectedWeekday(pattern.weekday);
-
-      // Parse bestaande start- en eindtijden naar uur en minuut
-      const [sH, sM] = pattern.starts_at_time.split(":");
-      setStartHour(sH.padStart(2, "0"));
-      setStartMinute(sM.padStart(2, "0"));
-
-      const [eH, eM] = pattern.ends_at_time.split(":");
-      setEndHour(eH.padStart(2, "0"));
-      setEndMinute(eM.padStart(2, "0"));
-
-      setSelectedDuration(pattern.duration_minutes);
-      setSelectedSport(pattern.sport);
-      setMaxParticipants(pattern.max_participants);
-      setPrice((pattern.price_cents / 100).toFixed(2));
-      setLevel(pattern.level ?? "");
-
-      setEffectiveFrom(toDateInputValue(new Date()));
-      await loadVenues(pattern.sport, pattern.location_id);
-    } catch {
-      showError("Deze vaste reeks kon niet worden geladen.");
-    } finally {
-      setLoading(false);
     }
+
+    void loadVenues();
+
+    return () => {
+      active = false;
+    };
+  }, [loaded, sport, venueRetry]);
+
+  useEffect(() => {
+    if (!error && !result && !confirmationOpen) return;
+
+    feedbackRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+    feedbackRef.current?.focus();
+  }, [error, result, confirmationOpen]);
+
+  useEffect(() => {
+    function closeOutside(event: PointerEvent) {
+      if (
+        event.target instanceof Node &&
+        venueContainerRef.current &&
+        !venueContainerRef.current.contains(event.target)
+      ) {
+        setVenueOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", closeOutside);
+
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!saving) return;
+
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", beforeUnload);
+
+    return () => {
+      window.removeEventListener("beforeunload", beforeUnload);
+    };
+  }, [saving]);
+
+  function changed() {
+    setError("");
+    setConfirmationOpen(false);
   }
 
-  async function handleSportChange(sport: Sport): Promise<void> {
-    clearMessages();
-    if (sport === selectedSport) return;
+  function reload() {
+    if (saveLock.current) return;
+    setRetry((value) => value + 1);
+  }
 
-    setSelectedSport(sport);
-    setSelectedVenueId("");
+  function changeSport(value: Sport) {
+    if (formDisabled || sport === value) return;
+
+    changed();
+    setSport(value);
+    setVenueId("");
     setVenueSearch("");
-    setVenuePickerOpen(false);
-
-    await loadVenues(sport);
+    setVenueOpen(false);
+    setVenues([]);
+    setVenuesLoading(true);
   }
 
-  function handleVenueSearchChange(value: string): void {
-    clearMessages();
-    setVenueSearch(value);
-    setSelectedVenueId("");
-    setVenuePickerOpen(true);
+  function validate(): string | null {
+    if (!loaded || !baseVersion) return "De reeks is niet geladen.";
+    if (!trainerActive) return "Je trainerprofiel is niet actief en goedgekeurd.";
+
+    const localToday = todayAmsterdam();
+    const minimum = minimumEffectiveDate(loaded.versions, localToday);
+
+    if (
+      !effectiveFrom ||
+      addCalendarDays(effectiveFrom, 0) !== effectiveFrom ||
+      effectiveFrom < minimum
+    ) {
+      return `Kies een geldige ingangsdatum vanaf ${formatDate(minimum)}.`;
+    }
+
+    if (
+      !WEEKDAYS.some((item) => item.value === weekday) ||
+      !DURATIONS.includes(duration) ||
+      !PARTICIPANTS.includes(participants) ||
+      !HOURS.includes(startHour) ||
+      !HOURS.includes(endHour) ||
+      !MINUTES.includes(startMinute) ||
+      !MINUTES.includes(endMinute)
+    ) {
+      return "Controleer weekdag, tijden, lesduur en aantal spelers.";
+    }
+
+    if (blockMinutes <= 0 || possibleSlots < 1) {
+      return "De eindtijd moet na de starttijd liggen en de lesduur moet in het blok passen.";
+    }
+
+    if (
+      venuesLoading ||
+      venueError ||
+      !selectedVenue ||
+      !selectedVenue.sports.includes(sport)
+    ) {
+      return "Kies een actieve locatie voor de geselecteerde sport.";
+    }
+
+    if (priceCents === null) {
+      return "Vul een positieve prijs per les in met maximaal twee decimalen.";
+    }
+
+    return null;
   }
 
-  function handleVenueSelect(venue: Venue): void {
-    clearMessages();
-    setSelectedVenueId(venue.id);
-    setVenueSearch(getVenueLabel(venue));
-    setVenuePickerOpen(false);
-  }
-
-  function clearVenueSelection(): void {
-    clearMessages();
-    setSelectedVenueId("");
-    setVenueSearch("");
-    setVenuePickerOpen(true);
-  }
-
-  async function handleSave(event: FormEvent<HTMLFormElement>): Promise<void> {
+  function requestConfirmation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    clearMessages();
 
-    if (!trainerAccount || !originalPattern) {
-      showError("Deze vaste reeks kon niet worden geladen.");
+    if (saveLock.current || formDisabled) return;
+
+    const validationError = validate();
+
+    if (validationError) {
+      setError(validationError);
       return;
     }
 
-    if (!trainerIsActive) {
-      showError("Je profiel is nog niet actief.");
+    setError("");
+    setConfirmationOpen(true);
+  }
+
+  async function save() {
+    if (
+      saveLock.current ||
+      !confirmationOpen ||
+      !loaded ||
+      !baseVersion ||
+      mustReload ||
+      result
+    ) {
       return;
     }
 
-    if (!effectiveFrom) {
-      showError("Kies vanaf welke datum de wijziging geldt.");
+    const validationError = validate();
+
+    if (validationError) {
+      setConfirmationOpen(false);
+      setError(validationError);
       return;
     }
 
-    if (!selectedVenue || !selectedVenueId) {
-      showError("Kies een trainingslocatie.");
-      return;
-    }
+    const amount = parsePrice(price);
+    if (amount === null) return;
 
-    const databaseStartTime = toDatabaseTime(startTime);
-    const databaseEndTime = toDatabaseTime(endTime);
-
-    if (!databaseStartTime || !databaseEndTime) {
-      showError("Kies een geldige start- en eindtijd.");
-      return;
-    }
-
-    if (endMinutes <= startMinutes) {
-      showError("De eindtijd moet na de starttijd liggen.");
-      return;
-    }
-
-    if (possibleSlots < 1) {
-      showError("De gekozen lesduur past niet binnen dit tijdsblok.");
-      return;
-    }
-
-    const priceNumber = Number(price.replace(",", "."));
-    if (Number.isNaN(priceNumber) || priceNumber <= 0) {
-      showError("Vul een geldige totaalprijs in.");
-      return;
-    }
-
-    const priceCents = Math.round(priceNumber * 100);
-
+    saveLock.current = true;
     setSaving(true);
+    setError("");
+
+    let requestStarted = false;
 
     try {
-      const { data, error } = await supabase.rpc(
+      // Extra hercontrole vóór de mutatie.
+      // De RPC blijft verantwoordelijk voor server-side autorisatie en locks.
+      const fresh = await readPage(loaded.pattern.id);
+
+      if (!mounted.current) return;
+
+      if (
+        fresh.userId !== loaded.userId ||
+        fresh.trainer.id !== loaded.trainer.id
+      ) {
+        throw new Error("Je ingelogde account is gewijzigd.");
+      }
+
+      if (
+        !fresh.trainer.is_active ||
+        fresh.trainer.approval_status !== "approved"
+      ) {
+        throw new Error("Je trainerprofiel is niet meer actief en goedgekeurd.");
+      }
+
+      if (
+        fresh.pattern.is_active !== loaded.pattern.is_active ||
+        fresh.pattern.updated_at !== loaded.pattern.updated_at ||
+        versionsFingerprint(fresh.versions) !==
+          versionsFingerprint(loaded.versions)
+      ) {
+        throw new Error(
+          "De reeks of een geplande versie is ondertussen gewijzigd. Laad de actuele gegevens opnieuw.",
+        );
+      }
+
+      requestStarted = true;
+
+      const { data, error: rpcError } = await supabase.rpc(
         "update_recurring_availability_from_date",
         {
-          p_recurring_availability_id: originalPattern.id,
+          p_recurring_availability_id: loaded.pattern.id,
           p_effective_from: effectiveFrom,
+          p_weekday: weekday,
+          p_starts_at_time: `${startTime}:00`,
+          p_ends_at_time: `${endTime}:00`,
+          p_duration_minutes: duration,
+          p_sport: sport,
+          p_location_id: venueId,
+          p_max_participants: participants,
+          p_price_cents: amount,
 
-          p_weekday: selectedWeekday,
-          p_starts_at_time: databaseStartTime,
-          p_ends_at_time: databaseEndTime,
-          p_duration_minutes: selectedDuration,
-
-          p_sport: selectedSport,
-          p_location_id: selectedVenueId,
-          p_max_participants: maxParticipants,
-          p_price_cents: priceCents,
-          p_level: level.trim() || null,
-          p_booking_deadline_hours: 24,
-        }
+          // Bewaar de waarden van de geladen versie.
+          p_level: baseVersion.level,
+          p_booking_deadline_hours: baseVersion.booking_deadline_hours,
+        },
       );
 
-      if (error) {
-        showError(error.message || "Je vaste reeks kon niet worden gewijzigd.");
-        return;
+      if (rpcError) throw rpcError;
+      if (!mounted.current) return;
+
+      const response: unknown = Array.isArray(data)
+        ? data.length === 1 ? data[0] : null
+        : data;
+
+      if (
+        !isObject(response) ||
+        response.recurring_availability_id !== loaded.pattern.id ||
+        !isCount(response.cancelled_slots) ||
+        !isCount(response.created_slots) ||
+        !isCount(response.skipped_slots)
+      ) {
+        throw new Error("De serverrespons kon niet worden bevestigd.");
       }
 
-      const result = (Array.isArray(data) ? data[0] : data) as UpdateRecurringAvailabilityResult | null;
-      if (!result) {
-        showError("Je vaste reeks kon niet worden gewijzigd.");
-        return;
-      }
+      setConfirmationOpen(false);
+      setResult({
+        effectiveFrom,
+        cancelled: response.cancelled_slots,
+        created: response.created_slots,
+        skipped: response.skipped_slots,
+        wasPaused: !loaded.pattern.is_active,
+      });
+    } catch (error) {
+      console.error("Reekswijziging niet bevestigd:", error);
 
-      setSuccessMessage(
-        `Je vaste reeks is gewijzigd vanaf ${new Intl.DateTimeFormat("nl-NL", {
-          day: "numeric",
-          month: "long",
-          year: "numeric",
-        }).format(new Date(`${effectiveFrom}T12:00:00`))}. ${result.cancelled_slots} beschikbare slots zijn vervangen.`
-      );
-    } catch {
-      showError("Je vaste reeks kon niet worden gewijzigd.");
+      if (mounted.current) {
+        const message = error instanceof Error
+          ? error.message
+          : isObject(error) && typeof error.message === "string"
+            ? error.message
+            : "De wijziging kon niet worden bevestigd.";
+
+        setConfirmationOpen(false);
+        setMustReload(true);
+        setError(
+          `${message} ${
+            requestStarted
+              ? "De aanvraag kan al verwerkt zijn. Controleer eerst de opgeslagen versies; we herhalen de wijziging niet automatisch."
+              : "Er is nog geen wijzigings-RPC verstuurd. Laad eerst de actuele gegevens opnieuw."
+          }`,
+        );
+      }
     } finally {
-      setSaving(false);
+      saveLock.current = false;
+
+      if (mounted.current) setSaving(false);
     }
   }
 
-  if (loading) {
+  const inputClass =
+    "min-h-12 w-full border-2 border-white/25 bg-[#14171A] px-3 py-3 text-white outline-none focus:border-[#D6FF3F] disabled:opacity-60";
+
+  const buttonClass =
+    "inline-flex min-h-11 items-center justify-center px-4 py-3 font-display text-sm transition disabled:cursor-not-allowed disabled:opacity-50";
+
+  function option(label: string, selected: boolean, onClick: () => void) {
     return (
-      <main className="flex min-h-screen flex-col items-center justify-center bg-[#14171A] px-5 text-white">
-        <div className="flex flex-col items-center">
-          <div className="flex items-center gap-2">
-            <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">GOWTRAIN</span>
-            <span className="h-0 w-0 animate-pulse border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
-          </div>
-          <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">VASTE REEKS LADEN...</p>
-        </div>
-      </main>
+      <button
+        key={label}
+        type="button"
+        aria-pressed={selected}
+        onClick={() => {
+          changed();
+          onClick();
+        }}
+        className={`${buttonClass} border-2 ${
+          selected
+            ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A]"
+            : "border-white/25 text-white hover:border-white"
+        }`}
+      >
+        {label}
+      </button>
     );
   }
 
+  const futureVersions = loaded?.versions.filter(
+    (version) =>
+      version.effective_from !== "-infinity" &&
+      version.effective_from > today,
+  ) ?? [];
+
   return (
     <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
-      {/* 💡 UNIVERSELE DYNAMISCHE SITE HEADER */}
       <SiteHeader />
 
-      {/* CONTENT */}
-      <section className="relative flex-1 overflow-hidden py-10 sm:py-14">
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -right-10 -top-20 select-none font-display text-[16rem] leading-none text-[#D6FF3F] opacity-[0.04] sm:text-[25rem]"
-        >
-          EDIT
-        </div>
-
-        <div className="relative mx-auto max-w-4xl px-5 sm:px-8">
-          
-          <div className="flex flex-col justify-between gap-4 border-b-2 border-white/20 pb-8 sm:flex-row sm:items-end">
+      <section className="flex-1 py-8 sm:py-12">
+        <div className="mx-auto max-w-4xl px-5 sm:px-8">
+          <div className="flex flex-col justify-between gap-5 border-b-2 border-white/20 pb-6 sm:flex-row sm:items-end">
             <div>
-              <p className="font-display text-lg text-[#FF4B3E]">BESCHIKBAARHEID</p>
-              <h1 className="mt-2 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
-                WIJZIG<br />VASTE REEKS.
+              <p className="font-display text-base text-[#FF4B3E]">
+                ROOSTERBEHEER
+              </p>
+              <h1 className="mt-3 font-display text-4xl leading-tight sm:text-5xl">
+                WIJZIG VASTE REEKS.
               </h1>
-              <p className="mt-4 max-w-2xl text-base leading-relaxed text-[#D7D9DA]">
-                Wijzig je vaste beschikbaarheid vanaf een gekozen datum. Bevestigde lessen blijven altijd ongewijzigd.
+              <p className="mt-3 max-w-xl text-sm leading-relaxed text-[#B9BEC2]">
+                Pas toekomstige vrije momenten aan vanaf een gekozen datum.
+                Gereserveerde en geboekte lessen blijven ongewijzigd.
               </p>
             </div>
 
-            <Link
-              href="/trainer-beschikbaarheid"
-              className="inline-flex shrink-0 border-2 border-white px-4 py-2.5 font-display text-xs text-white hover:border-[#D6FF3F] hover:text-[#D6FF3F] transition"
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => router.push("/trainer-beschikbaarheid")}
+              className={`${buttonClass} shrink-0 border-2 border-white text-white hover:border-[#D6FF3F]`}
             >
               ← VASTE MOMENTEN
-            </Link>
+            </button>
           </div>
 
-          {errorMessage && (
-            <div role="alert" className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] px-5 py-4 font-semibold text-white">
-              {errorMessage}
-            </div>
-          )}
-
-          {successMessage && (
-            <div
-              ref={successMessageRef}
-              role="status"
-              tabIndex={-1}
-              className="mt-8 border-2 border-[#D6FF3F] bg-[#D6FF3F] px-5 py-6 text-[#14171A] outline-none shadow-[8px_8px_0_0_#FF4B3E]"
-            >
-              <p className="font-display text-3xl">REEKS AANGEPAST.</p>
-              <p className="mt-3 font-semibold leading-relaxed">{successMessage}</p>
-
-              <Link
-                href="/trainer-beschikbaarheid"
-                className="mt-6 inline-flex bg-[#14171A] px-5 py-3 font-display text-base !text-white hover:bg-white hover:!text-[#14171A] transition"
+          {loading ? (
+            <p className="py-12 font-display text-xl text-[#D6FF3F]">
+              REEKS LADEN...
+            </p>
+          ) : loadError ? (
+            <div role="alert" className="mt-6 border-2 border-[#FF4B3E] p-5">
+              <p>{loadError}</p>
+              <button
+                type="button"
+                onClick={reload}
+                className={`${buttonClass} mt-4 bg-white text-[#14171A]`}
               >
-                TERUG NAAR VASTE MOMENTEN →
-              </Link>
+                OPNIEUW LADEN
+              </button>
             </div>
-          )}
+          ) : loaded && baseVersion ? (
+            <>
+              <div
+                ref={feedbackRef}
+                tabIndex={-1}
+                className="mt-6 space-y-4 outline-none"
+              >
+                {error && (
+                  <div role="alert" className="border-2 border-[#FF4B3E] p-5 text-sm leading-relaxed">
+                    {error}
+                  </div>
+                )}
 
-          <form onSubmit={handleSave} className="mt-8">
-            <div className="border-2 border-white bg-white p-3 text-[#14171A] shadow-[8px_8px_0_0_#FF4B3E]">
-              <div className="bg-[#14171A] p-5 text-white sm:p-8">
-                <p className="font-display text-xl text-[#D6FF3F]">NIEUWE REEKSINSTELLINGEN.</p>
+                {mustReload && (
+                  <div className="border border-white/25 p-5">
+                    <p className="text-sm leading-relaxed text-[#B9BEC2]">
+                      Opnieuw laden vervangt je invoer door de laatste opgeslagen
+                      reeksversie. Niet-opgeslagen invoer gaat verloren.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={reload}
+                      className={`${buttonClass} mt-3 bg-[#D6FF3F] text-[#14171A]`}
+                    >
+                      LAAD OPGESLAGEN VERSIES
+                    </button>
+                  </div>
+                )}
 
-                {/* Ingangsdatum */}
-                <div className="mt-8">
-                  <label htmlFor="effective-from" className="mb-2 block font-display text-base text-[#FF4B3E]">
-                    WIJZIGING GELDT VANAF DATUM
-                  </label>
-                  <input
-                    id="effective-from"
-                    type="date"
-                    value={effectiveFrom}
-                    min={toDateInputValue(new Date())}
-                    disabled={saving}
-                    onChange={(e) => {
-                      clearMessages();
-                      setEffectiveFrom(e.target.value);
-                    }}
-                    className="h-[52px] w-full border-2 border-white/25 bg-transparent px-4 font-display text-base text-white outline-none [color-scheme:dark] focus:border-[#D6FF3F]"
-                  />
+                {result && (
+                  <div role="status" className="border-2 border-[#D6FF3F] bg-[#D6FF3F] p-5 text-[#14171A]">
+                    <h2 className="font-display text-2xl">WIJZIGING OPGESLAGEN</h2>
+                    <p className="mt-2 text-sm">
+                      Nieuwe planning vanaf {formatDate(result.effectiveFrom)}.
+                    </p>
+                    <ul className="mt-3 list-disc space-y-1 pl-5 text-sm">
+                      <li>{result.cancelled} toekomstige vrije slots ingetrokken.</li>
+                      <li>{result.created} vervangende slots aangemaakt.</li>
+                      <li>{result.skipped} kandidaten overgeslagen.</li>
+                    </ul>
+                    <p className="mt-3 text-sm leading-relaxed">
+                      {result.wasPaused
+                        ? "De reeks was gepauzeerd en wordt door deze bewerking niet geactiveerd. Er worden pas bij activeren nieuwe slots aangevuld."
+                        : "De aanvulling is uitgevoerd voor het deel van de nieuwe planning binnen de huidige achtwekenhorizon."}
+                    </p>
+                    <p className="mt-2 text-xs">
+                      Nul nieuwe slots kan correct zijn bij een latere ingangsdatum
+                      buiten de horizon of bij bestaande conflicten.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => router.push("/trainer-beschikbaarheid")}
+                      className={`${buttonClass} mt-4 bg-[#14171A] text-white`}
+                    >
+                      TERUG NAAR VASTE MOMENTEN
+                    </button>
+                  </div>
+                )}
+
+                {confirmationOpen && !result && (
+                  <section className="border-2 border-[#FF4B3E] bg-[#1E2327] p-5">
+                    <h2 className="font-display text-2xl">WIJZIGING BEVESTIGEN?</h2>
+                    <p className="mt-3 text-sm leading-relaxed text-[#D7D9DA]">
+                      Vanaf 00:00 op {formatDate(effectiveFrom)} in
+                      Europe/Amsterdam worden toekomstige vrije slots van
+                      deze reeks ingetrokken en volgens de nieuwe planning
+                      aangevuld. Slots vóór die datum en gereserveerde of
+                      geboekte lessen blijven ongewijzigd.
+                    </p>
+                    <p className="mt-3 text-sm leading-relaxed text-[#D6FF3F]">
+                      {loaded.pattern.is_active
+                        ? "De reeks is actief: vervangende momenten worden direct binnen de achtwekenhorizon aangevuld."
+                        : "De reeks is gepauzeerd: oude vrije momenten worden ingetrokken, maar nieuwe momenten worden nog niet aangemaakt."}
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={() => setConfirmationOpen(false)}
+                        className={`${buttonClass} border-2 border-white text-white`}
+                      >
+                        TOCH NIET
+                      </button>
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={() => void save()}
+                        className={`${buttonClass} bg-[#FF4B3E] text-white`}
+                      >
+                        {saving ? "OPSLAAN..." : "JA, SLA WIJZIGING OP"}
+                      </button>
+                    </div>
+                  </section>
+                )}
+              </div>
+
+              {!trainerActive && (
+                <p className="mt-6 border border-[#FF4B3E] p-4 text-sm">
+                  Je trainerprofiel moet actief en goedgekeurd zijn om te wijzigen.
+                </p>
+              )}
+
+              <div className="mt-6 border border-white/25 bg-white/[0.03] p-5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <h2 className="font-display text-lg text-[#D6FF3F]">
+                    GELADEN UITGANGSPUNT
+                  </h2>
+                  <span className="border border-white/25 px-3 py-1 font-display text-xs">
+                    {loaded.pattern.is_active ? "ACTIEF" : "GEPAUZEERD"}
+                  </span>
                 </div>
 
-                {/* Sport */}
-                <fieldset className="mt-8">
-                  <legend className="font-display text-base text-[#FF4B3E]">SPORT</legend>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {(["padel", "tennis"] as Sport[]).map((sport) => (
-                      <button
-                        key={sport}
-                        type="button"
-                        disabled={saving}
-                        onClick={() => void handleSportChange(sport)}
-                        className={`border-2 px-5 py-3 font-display text-sm transition ${
-                          selectedSport === sport
-                            ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A]"
-                            : "border-white/30 text-white hover:border-white"
-                        }`}
-                      >
-                        {sport.toUpperCase()}
-                      </button>
-                    ))}
-                  </div>
-                </fieldset>
+                <p className="mt-3 text-sm">
+                  {weekdayLabel(baseVersion.weekday)} ·{" "}
+                  {baseVersion.starts_at_time.slice(0, 5)}–
+                  {baseVersion.ends_at_time.slice(0, 5)} ·{" "}
+                  {baseVersion.duration_minutes} min ·{" "}
+                  {formatMoney(baseVersion.price_cents, baseVersion.currency)} per les
+                </p>
 
-                {/* Weekdag */}
-                <fieldset className="mt-8">
-                  <legend className="font-display text-base text-[#FF4B3E]">ELKE</legend>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {weekdayOptions.map((weekday) => (
-                      <button
-                        key={weekday.value}
-                        type="button"
-                        disabled={saving}
-                        onClick={() => {
-                          clearMessages();
-                          setSelectedWeekday(weekday.value);
-                        }}
-                        className={`min-w-12 border-2 px-4 py-3 font-display text-sm transition ${
-                          selectedWeekday === weekday.value
-                            ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A]"
-                            : "border-white/30 text-white hover:border-white"
-                        }`}
-                      >
-                        {weekday.shortLabel}
-                      </button>
-                    ))}
-                  </div>
-                </fieldset>
+                <p className="mt-2 text-xs leading-relaxed text-[#B9BEC2]">
+                  {baseVersion.effective_from === "-infinity"
+                    ? "De gemigreerde uitgangsversie is geladen."
+                    : `De laatst opgeslagen versie is geladen, geldig vanaf ${formatDate(baseVersion.effective_from)}.`}
+                  {" "}Een nieuwe wijziging vóór een al geplande latere versie
+                  wordt niet ondersteund. Je kunt de laatste versie op dezelfde
+                  ingangsdatum aanpassen of een latere datum kiezen.
+                </p>
 
-                {/* 💡 CUSTOM KWARTIER TIJDPRIKER (VAN EN TOT) */}
-                <div className="mt-8 grid gap-6 sm:grid-cols-2">
-                  
-                  {/* STARTTIJD */}
+                {futureVersions.length > 0 && (
+                  <details className="mt-3">
+                    <summary className="cursor-pointer py-2 font-display text-sm text-[#D6FF3F]">
+                      GEPLANDE VERSIES ({futureVersions.length})
+                    </summary>
+                    <ul className="space-y-2 text-xs text-[#B9BEC2]">
+                      {futureVersions.map((version) => (
+                        <li key={version.effective_from}>
+                          Vanaf {formatDate(version.effective_from)}:{" "}
+                          {weekdayLabel(version.weekday)}{" "}
+                          {version.starts_at_time.slice(0, 5)}–
+                          {version.ends_at_time.slice(0, 5)}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </div>
+
+              <form onSubmit={requestConfirmation} className="mt-6">
+                <fieldset
+                  disabled={formDisabled}
+                  className="min-w-0 space-y-6 border-2 border-white/30 bg-[#1E2327] p-5 sm:p-6"
+                >
                   <div>
-                    <label className="mb-2 block font-display text-base text-[#FF4B3E]">
-                      VAN (STARTTIJD)
+                    <label htmlFor="effective-from" className="font-display text-sm text-[#D6FF3F]">
+                      WIJZIGING GELDT VANAF
                     </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <select
-                        value={startHour}
-                        disabled={saving}
-                        onChange={(e) => setStartHour(e.target.value)}
-                        className="h-[52px] w-full border-2 border-white/25 bg-[#14171A] px-3 font-display text-base text-white outline-none focus:border-[#D6FF3F]"
-                      >
-                        {hoursOptions.map((h) => (
-                          <option key={h} value={h}>{h}:00 UUR</option>
-                        ))}
-                      </select>
+                    <input
+                      id="effective-from"
+                      type="date"
+                      min={minDate}
+                      max="2100-12-31"
+                      required
+                      value={effectiveFrom}
+                      onChange={(event) => {
+                        changed();
+                        setEffectiveFrom(event.target.value);
+                      }}
+                      className={`${inputClass} mt-2 [color-scheme:dark]`}
+                    />
+                    <p className="mt-2 text-xs text-[#B9BEC2]">
+                      Vanaf deze datum, inclusief die dag. Eerder dan{" "}
+                      {formatDate(minDate)} is hier niet mogelijk.
+                    </p>
+                  </div>
 
-                      <div className="grid grid-cols-2 gap-1 h-[52px]">
-                        {minuteOptions.map((m) => (
-                          <button
-                            key={m}
-                            type="button"
-                            disabled={saving}
-                            onClick={() => setStartMinute(m)}
-                            className={`h-full border-2 font-display text-xs transition ${
-                              startMinute === m
-                                ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A] font-bold"
-                                : "border-white/30 text-white hover:border-white"
-                            }`}
-                          >
-                            :{m}
-                          </button>
-                        ))}
+                  <fieldset>
+                    <legend className="font-display text-sm text-[#D6FF3F]">SPORT</legend>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {(["padel", "tennis"] as Sport[]).map((value) =>
+                        option(value.toUpperCase(), sport === value, () => changeSport(value)),
+                      )}
+                    </div>
+                  </fieldset>
+
+                  <fieldset>
+                    <legend className="font-display text-sm text-[#D6FF3F]">ELKE</legend>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {WEEKDAYS.map((day) =>
+                        option(day.short, weekday === day.value, () => setWeekday(day.value)),
+                      )}
+                    </div>
+                  </fieldset>
+
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    <div>
+                      <label htmlFor="start-hour" className="font-display text-sm text-[#D6FF3F]">
+                        VAN
+                      </label>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <select
+                          id="start-hour"
+                          value={startHour}
+                          onChange={(event) => {
+                            changed();
+                            setStartHour(event.target.value);
+                          }}
+                          className={inputClass}
+                        >
+                          {HOURS.map((value) => (
+                            <option key={value} value={value}>{value} uur</option>
+                          ))}
+                        </select>
+                        <select
+                          aria-label="Startminuten"
+                          value={startMinute}
+                          onChange={(event) => {
+                            changed();
+                            setStartMinute(event.target.value);
+                          }}
+                          className={inputClass}
+                        >
+                          {MINUTES.map((value) => (
+                            <option key={value} value={value}>:{value}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label htmlFor="end-hour" className="font-display text-sm text-[#D6FF3F]">
+                        TOT
+                      </label>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <select
+                          id="end-hour"
+                          value={endHour}
+                          onChange={(event) => {
+                            changed();
+                            setEndHour(event.target.value);
+                          }}
+                          className={inputClass}
+                        >
+                          {HOURS.map((value) => (
+                            <option key={value} value={value}>{value} uur</option>
+                          ))}
+                        </select>
+                        <select
+                          aria-label="Eindminuten"
+                          value={endMinute}
+                          onChange={(event) => {
+                            changed();
+                            setEndMinute(event.target.value);
+                          }}
+                          className={inputClass}
+                        >
+                          {MINUTES.map((value) => (
+                            <option key={value} value={value}>:{value}</option>
+                          ))}
+                        </select>
                       </div>
                     </div>
                   </div>
 
-                  {/* EINDTIJD */}
-                  <div>
-                    <label className="mb-2 block font-display text-base text-[#FF4B3E]">
-                      TOT (EINDTIJD)
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <select
-                        value={endHour}
-                        disabled={saving}
-                        onChange={(e) => setEndHour(e.target.value)}
-                        className="h-[52px] w-full border-2 border-white/25 bg-[#14171A] px-3 font-display text-base text-white outline-none focus:border-[#D6FF3F]"
-                      >
-                        {hoursOptions.map((h) => (
-                          <option key={h} value={h}>{h}:00 UUR</option>
-                        ))}
-                      </select>
-
-                      <div className="grid grid-cols-2 gap-1 h-[52px]">
-                        {minuteOptions.map((m) => (
-                          <button
-                            key={m}
-                            type="button"
-                            disabled={saving}
-                            onClick={() => setEndMinute(m)}
-                            className={`h-full border-2 font-display text-xs transition ${
-                              endMinute === m
-                                ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A] font-bold"
-                                : "border-white/30 text-white hover:border-white"
-                            }`}
-                          >
-                            :{m}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  <p className="text-xs text-[#B9BEC2] sm:col-span-2">
-                    Gekozen tijdsblok: <span className="font-display text-sm text-[#D6FF3F]">{startTime} – {endTime} UUR</span>
+                  <p className="text-xs text-[#B9BEC2]">
+                    Tijdsblok: {startTime}–{endTime}, Nederlandse tijd.
                   </p>
 
-                </div>
+                  <fieldset>
+                    <legend className="font-display text-sm text-[#D6FF3F]">DUUR PER LES</legend>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {DURATIONS.map((value) =>
+                        option(`${value} min`, duration === value, () => setDuration(value)),
+                      )}
+                    </div>
+                    <p className="mt-2 text-xs text-[#B9BEC2]">
+                      {possibleSlots} volledige lessen per tijdsblok.
+                      {remainderMinutes > 0
+                        ? ` ${remainderMinutes} resterende minuten worden niet aangeboden.`
+                        : ""}
+                    </p>
+                  </fieldset>
 
-                {/* Duur */}
-                <fieldset className="mt-8">
-                  <legend className="font-display text-base text-[#FF4B3E]">DUUR PER LES</legend>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {durationOptions.map((duration) => (
-                      <button
-                        key={duration}
-                        type="button"
-                        disabled={saving}
-                        onClick={() => setSelectedDuration(duration)}
-                        className={`border-2 px-4 py-3 font-display text-sm transition ${
-                          selectedDuration === duration
-                            ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A]"
-                            : "border-white/30 text-white hover:border-white"
-                        }`}
-                      >
-                        {duration} MIN
-                      </button>
-                    ))}
-                  </div>
-                </fieldset>
+                  <div ref={venueContainerRef}>
+                    <label htmlFor="venue-search" className="font-display text-sm text-[#D6FF3F]">
+                      TRAININGSLOCATIE
+                    </label>
 
-                {/* Locatie */}
-                <div className="mt-8">
-                  <label htmlFor="venue-search" className="mb-2 block font-display text-base text-[#FF4B3E]">
-                    TRAININGSLOCATIE
-                  </label>
-
-                  <div className="relative">
                     <input
                       id="venue-search"
                       type="search"
-                      value={venueSearch}
-                      disabled={venuesLoading || saving}
-                      placeholder={venuesLoading ? "Locaties laden..." : "Zoek op stad of clubnaam..."}
-                      onFocus={() => { if (!venuesLoading && !saving) setVenuePickerOpen(true); }}
-                      onChange={(e) => handleVenueSearchChange(e.target.value)}
-                      className="w-full border-2 border-white/25 bg-transparent px-4 py-4 text-white outline-none placeholder:text-[#8A8F94] focus:border-[#D6FF3F]"
+                      autoComplete="off"
+                      value={
+                        venueOpen
+                          ? venueSearch
+                          : selectedVenue
+                            ? venueLabel(selectedVenue)
+                            : venueSearch
+                      }
+                      disabled={venuesLoading || formDisabled}
+                      aria-expanded={venueOpen}
+                      aria-controls="venue-results"
+                      onFocus={() => {
+                        setVenueSearch("");
+                        setVenueOpen(true);
+                      }}
+                      onChange={(event) => {
+                        changed();
+                        setVenueSearch(event.target.value);
+                        setVenueOpen(true);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") setVenueOpen(false);
+                      }}
+                      placeholder={venuesLoading ? "Locaties laden..." : "Zoek stad of club"}
+                      className={`${inputClass} mt-2`}
                     />
 
-                    {venuePickerOpen && !venuesLoading && !saving && (
-                      <div className="absolute z-20 mt-2 max-h-72 w-full overflow-y-auto border-2 border-[#D6FF3F] bg-[#14171A] shadow-[6px_6px_0_0_#FF4B3E]">
-                        {filteredVenues.map((venue) => (
+                    {venueOpen && !venuesLoading && !venueError && (
+                      <div id="venue-results" className="mt-2 max-h-64 overflow-y-auto border-2 border-[#D6FF3F] bg-[#14171A]">
+                        {filteredVenues.length ? filteredVenues.map((venue) => (
                           <button
                             key={venue.id}
                             type="button"
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => handleVenueSelect(venue)}
-                            className="block w-full border-b border-white/15 px-5 py-4 text-left transition last:border-b-0 hover:bg-[#D6FF3F] hover:text-[#14171A]"
+                            onClick={() => {
+                              changed();
+                              setVenueId(venue.id);
+                              setVenueSearch("");
+                              setVenueOpen(false);
+                            }}
+                            className="block w-full border-b border-white/15 px-4 py-3 text-left transition hover:bg-[#D6FF3F] hover:text-[#14171A]"
                           >
-                            <span className="block font-display text-base">{getVenueLabel(venue)}</span>
-                            <span className="mt-1 block text-xs opacity-75">{venue.address_line}</span>
+                            <span className="block font-semibold">{venueLabel(venue)}</span>
+                            <span className="mt-1 block text-xs opacity-75">
+                              {[venue.address_line, venue.postal_code].filter(Boolean).join(" · ")}
+                            </span>
                           </button>
-                        ))}
+                        )) : (
+                          <p className="p-4 text-sm text-[#B9BEC2]">Geen locaties gevonden.</p>
+                        )}
                       </div>
+                    )}
+
+                    {venueError && (
+                      <div className="mt-2">
+                        <p role="alert" className="text-sm text-[#FF8A80]">{venueError}</p>
+                        <button
+                          type="button"
+                          onClick={() => setVenueRetry((value) => value + 1)}
+                          className={`${buttonClass} mt-2 border border-white/30`}
+                        >
+                          LOCATIES OPNIEUW LADEN
+                        </button>
+                      </div>
+                    )}
+
+                    {!venuesLoading && !venueError && !selectedVenue && (
+                      <p className="mt-2 text-xs text-[#B9BEC2]">
+                        Kies een geldige locatie. Een eerder opgeslagen,
+                        inactieve locatie kan niet opnieuw worden geselecteerd.
+                      </p>
                     )}
                   </div>
 
-                  {selectedVenue && (
-                    <div className="mt-4 border-l-2 border-[#D6FF3F] bg-white/5 p-4">
-                      <p className="font-display text-base">{getVenueLabel(selectedVenue)}</p>
-                      <p className="mt-1 text-xs text-[#B9BEC2]">{selectedVenue.address_line}, {selectedVenue.city}</p>
+                  <fieldset>
+                    <legend className="font-display text-sm text-[#D6FF3F]">MAXIMAAL SPELERS</legend>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {PARTICIPANTS.map((value) =>
+                        option(
+                          `${value} ${value === 1 ? "speler" : "spelers"}`,
+                          participants === value,
+                          () => setParticipants(value),
+                        ),
+                      )}
                     </div>
-                  )}
-                </div>
+                  </fieldset>
 
-                {/* Maximaal aantal spelers */}
-                <fieldset className="mt-8">
-                  <legend className="font-display text-base text-[#FF4B3E]">MAXIMAAL AANTAL SPELERS</legend>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {participantOptions.map((count) => (
-                      <button
-                        key={count}
-                        type="button"
-                        disabled={saving}
-                        onClick={() => {
-                          clearMessages();
-                          setMaxParticipants(count);
-                        }}
-                        className={`border-2 px-4 py-3 font-display text-sm transition ${
-                          maxParticipants === count
-                            ? "border-[#D6FF3F] bg-[#D6FF3F] text-[#14171A]"
-                            : "border-white/30 text-white hover:border-white"
-                        }`}
-                      >
-                        {count} {count === 1 ? "SPELER" : "SPELERS"}
-                      </button>
-                    ))}
-                  </div>
-                </fieldset>
-
-                {/* Prijs */}
-                <div className="mt-8">
-                  <label htmlFor="price" className="mb-2 block font-display text-base text-[#FF4B3E]">
-                    TOTAALPRIJS INCLUSIEF BAANHUUR
-                  </label>
-
-                  <div className="flex border-2 border-white/25 focus-within:border-[#D6FF3F]">
-                    <span className="flex items-center border-r-2 border-white/25 px-4 font-display text-xl text-[#D6FF3F]">
-                      €
-                    </span>
+                  <div>
+                    <label htmlFor="price" className="font-display text-sm text-[#D6FF3F]">
+                      PRIJS PER LES INCLUSIEF BAANHUUR ({currency.toUpperCase()})
+                    </label>
                     <input
                       id="price"
-                      type="number"
+                      type="text"
                       inputMode="decimal"
-                      min="1"
-                      step="0.01"
+                      required
                       value={price}
-                      disabled={saving}
-                      onChange={(e) => {
-                        clearMessages();
-                        setPrice(e.target.value);
+                      onChange={(event) => {
+                        changed();
+                        setPrice(event.target.value);
                       }}
-                      className="w-full bg-transparent px-4 py-4 text-white outline-none"
+                      className={`${inputClass} mt-2`}
                     />
                   </div>
-                </div>
 
-                {/* SUBMIT BUTTON */}
-                <button
-                  type="submit"
-                  disabled={saving || !trainerIsActive || venuesLoading || possibleSlots === 0}
-                  className="mt-8 flex w-full items-center justify-center gap-3 bg-[#FF4B3E] px-6 py-5 font-display text-xl text-white transition hover:-translate-y-1 hover:bg-[#D6FF3F] hover:text-[#14171A] disabled:opacity-60"
-                >
-                  {saving ? "WIJZIGING OPSLAAN..." : "WIJZIGING OPSLAAN. GOW!"}
-                  {!saving && <span aria-hidden="true">→</span>}
-                </button>
+                  <div className="border border-white/20 bg-[#14171A] p-4">
+                    <p className="font-display text-sm text-[#D6FF3F]">BEHOUDEN INSTELLINGEN</p>
+                    <p className="mt-2 text-xs leading-relaxed text-[#B9BEC2]">
+                      Boekingsdeadline: {baseVersion.booking_deadline_hours} uur vóór de les.
+                      {" "}Niveau: {baseVersion.level || "Niet ingesteld"}.
+                      {" "}Deze velden worden niet ongemerkt gewijzigd.
+                    </p>
+                  </div>
 
-              </div>
-            </div>
-          </form>
+                  <div className="border-l-2 border-[#D6FF3F] pl-4">
+                    <p className="font-display text-xl">
+                      ELKE {weekdayLabel(weekday).toUpperCase()} · {startTime}–{endTime}
+                    </p>
+                    <p className="mt-2 text-sm text-[#B9BEC2]">
+                      Vanaf {effectiveFrom ? formatDate(effectiveFrom) : "een gekozen datum"}
+                      {" · "}{possibleSlots} momenten per week
+                      {" · "}{duration} min per les
+                    </p>
+                    <p className="mt-2 font-display text-2xl text-[#D6FF3F]">
+                      {priceCents !== null ? formatMoney(priceCents, currency) : "PRIJS INVULLEN"}
+                      <span className="ml-2 text-sm text-[#B9BEC2]">PER LES</span>
+                    </p>
+                  </div>
 
+                  <button
+                    type="submit"
+                    disabled={
+                      formDisabled ||
+                      venuesLoading ||
+                      Boolean(venueError) ||
+                      possibleSlots === 0
+                    }
+                    className={`${buttonClass} w-full bg-[#FF4B3E] py-4 text-lg text-white hover:bg-[#D6FF3F] hover:text-[#14171A]`}
+                  >
+                    {result ? "WIJZIGING OPGESLAGEN" : "CONTROLEER WIJZIGING →"}
+                  </button>
+                </fieldset>
+              </form>
+            </>
+          ) : null}
         </div>
       </section>
 
