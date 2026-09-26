@@ -6,6 +6,12 @@ const ALLOWED_ORIGINS = new Set([
   "http://localhost:8081",
 ]);
 
+// Alleen de lokaal draaiende Next.js-ontwikkelserver.
+// Niet automatisch toestaan in productie.
+if (process.env.NODE_ENV === "development") {
+  ALLOWED_ORIGINS.add("http://localhost:3000");
+}
+
 type Handler = (
   request: NextRequest
 ) => Promise<NextResponse>;

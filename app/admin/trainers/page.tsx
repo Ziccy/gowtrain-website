@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
@@ -98,7 +98,8 @@ function getStatusClass(trainer: Trainer): string {
 
 export default function AdminTrainersPage() {
   const router = useRouter();
-
+  const updateLock = useRef(false);
+  const [needsStatusRefresh, setNeedsStatusRefresh] = useState(false);
   const [trainers, setTrainers] = useState<Trainer[]>([]);
   const [selectedFilter, setSelectedFilter] =
     useState<TrainerFilter>("pending");
@@ -219,6 +220,7 @@ export default function AdminTrainersPage() {
       }
 
       setTrainers((data ?? []) as Trainer[]);
+      setNeedsStatusRefresh(false);
     } catch {
       setErrorMessage("De trainers konden niet worden geladen.");
       setTrainers([]);
@@ -230,7 +232,14 @@ export default function AdminTrainersPage() {
   }
 
   async function handleRefresh(): Promise<void> {
-    if (controlsDisabled) return;
+    if (controlsDisabled || updateLock.current) return;
+
+if (needsStatusRefresh) {
+  setErrorMessage(
+    "Klik eerst op Ververs om de opgeslagen trainerstatus te controleren voordat je een nieuwe beheeractie start."
+  );
+  return;
+}
 
     setRefreshing(true);
     clearMessages();
@@ -274,65 +283,158 @@ export default function AdminTrainersPage() {
     setSelectedFilter(nextFilter);
   }
 
-  async function updateTrainer(
-    trainer: Trainer,
-    updates: TrainerUpdates
-  ): Promise<void> {
-    setUpdatingTrainerId(trainer.id);
-    setErrorMessage("");
-    setSuccessMessage("");
+async function updateTrainer(
+  trainer: Trainer,
+  updates: TrainerUpdates
+): Promise<void> {
+  if (updateLock.current || needsStatusRefresh) return;
 
-    try {
-      const { data, error } = await supabase
-        .from("trainers")
-        .update(updates)
-        .eq("id", trainer.id)
-        .select("id, approval_status, is_active, rejection_reason")
-        .single();
+  /*
+   * Vertaal uitsluitend de bestaande vier UI-acties.
+   * De database controleert de toegestane overgang opnieuw.
+   */
+  const action: ActionType =
+    updates.approval_status === "rejected"
+      ? "reject"
+      : updates.approval_status === "approved" &&
+          updates.is_active === true
+        ? trainer.approval_status === "approved"
+          ? "activate"
+          : "approve"
+        : "deactivate";
 
-      if (error || !data) {
-        setErrorMessage(
-          "De trainer kon niet worden bijgewerkt. Probeer het opnieuw."
-        );
-        return;
+  updateLock.current = true;
+  setUpdatingTrainerId(trainer.id);
+  setErrorMessage("");
+  setSuccessMessage("");
+
+  let mutationStarted = false;
+
+  function requireRefresh(message: string): void {
+    setNeedsStatusRefresh(true);
+    setPendingAction(null);
+    setRejectionReason("");
+    setRejectionReasonError("");
+    setErrorMessage(message);
+  }
+
+  try {
+    // UI-controle; de RPC voert zelf de beslissende admincontrole uit.
+    const allowed = await checkAdmin();
+
+    if (!allowed) return;
+
+    mutationStarted = true;
+
+    const { data, error } = await supabase.rpc(
+      "admin_set_trainer_status",
+      {
+        p_trainer_id: trainer.id,
+        p_action: action,
+        p_expected_user_id: trainer.user_id,
+        p_expected_approval_status: trainer.approval_status,
+        p_expected_is_active: trainer.is_active,
+        p_expected_rejection_reason: trainer.rejection_reason,
+        p_rejection_reason:
+          action === "reject"
+            ? updates.rejection_reason ?? null
+            : null,
       }
+    );
 
-      setPendingAction(null);
-      setRejectionReason("");
-      setRejectionReasonError("");
+    if (error) {
+      const controlledError = [
+        "P0001",
+        "42501",
+        "22023",
+        "55000",
+      ].includes(error.code);
 
-      if (updates.approval_status === "rejected") {
+      requireRefresh(
+        controlledError
+          ? `${error.message} Klik op Ververs voordat je opnieuw een actie kiest.`
+          : "De wijziging kon niet worden bevestigd. Ze kan al zijn verwerkt. Klik eerst op Ververs; de aanvraag wordt niet automatisch herhaald."
+      );
+      return;
+    }
+
+    const result = data as {
+      id?: string;
+      approval_status?: string;
+      is_active?: boolean;
+      rejection_reason?: string | null;
+    } | null;
+
+    const expectedStatus =
+      action === "reject"
+        ? "rejected"
+        : action === "deactivate"
+          ? trainer.approval_status
+          : "approved";
+
+    const expectedActive =
+      action === "approve" || action === "activate";
+
+    if (
+      !result ||
+      result.id !== trainer.id ||
+      result.approval_status !== expectedStatus ||
+      result.is_active !== expectedActive
+    ) {
+      requireRefresh(
+        "Het antwoord op de beheeractie kon niet worden bevestigd. Klik eerst op Ververs om de opgeslagen status te controleren."
+      );
+      return;
+    }
+
+    setPendingAction(null);
+    setRejectionReason("");
+    setRejectionReasonError("");
+
+    /*
+     * Eerst succesvol herladen voordat een nieuwe actie mag starten.
+     * loadTrainers heft dit alleen op na een geslaagde query.
+     */
+    setNeedsStatusRefresh(true);
+
+    switch (action) {
+      case "reject":
         setSuccessMessage(
           `${trainer.name} is afgekeurd. De toelichting is opgeslagen.`
         );
-      } else if (
-        updates.approval_status === "approved" &&
-        updates.is_active === true
-      ) {
-        if (trainer.approval_status === "approved") {
-          setSuccessMessage(
-            `${trainer.name} is opnieuw geactiveerd op Gowtrain.`
-          );
-        } else {
-          setSuccessMessage(
-            `${trainer.name} is goedgekeurd en staat live op Gowtrain.`
-          );
-        }
-      } else if (updates.is_active === false) {
+        break;
+
+      case "approve":
+        setSuccessMessage(
+          `${trainer.name} is goedgekeurd en geactiveerd.`
+        );
+        break;
+
+      case "activate":
+        setSuccessMessage(
+          `${trainer.name} is opnieuw geactiveerd op Gowtrain.`
+        );
+        break;
+
+      case "deactivate":
         setSuccessMessage(
           `${trainer.name} is gedeactiveerd.`
         );
-      }
-
-      await loadTrainers(false);
-    } catch {
-      setErrorMessage(
-        "De trainer kon niet worden bijgewerkt. Probeer het opnieuw."
-      );
-    } finally {
-      setUpdatingTrainerId(null);
+        break;
     }
+
+    await loadTrainers(false);
+  } catch {
+    requireRefresh(
+      mutationStarted
+        ? "De verbinding is onderbroken. De wijziging kan al verwerkt zijn. Klik eerst op Ververs; de aanvraag wordt niet automatisch herhaald."
+        : "De controle vóór de beheeractie is mislukt. Klik op Ververs voordat je opnieuw probeert."
+    );
+  } finally {
+    updateLock.current = false;
+    setUpdatingTrainerId(null);
   }
+}
 
   async function confirmAction(): Promise<void> {
     if (!pendingAction || controlsDisabled) return;

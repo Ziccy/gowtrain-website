@@ -366,6 +366,49 @@ export default function AdminHubPage() {
                 </div>
               </div>
             </Link>
+
+            {/* 6. ACCOUNTVERWIJDERINGEN */}
+<Link
+  href="/admin/account-deletions"
+  className="group border-2 border-white bg-white p-3 text-[#14171A] transition duration-200 hover:-translate-y-1 hover:shadow-[10px_10px_0_0_#FF4B3E]"
+>
+  <div className="flex h-full flex-col justify-between bg-[#14171A] p-6 text-white sm:p-8">
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="font-display text-xl text-[#FF4B3E]">
+          06 / ACCOUNTS
+        </p>
+
+        <span className="border border-white/30 px-3 py-1 font-display text-xs text-[#B9BEC2]">
+          INSPECTIE & OPVOLGING
+        </span>
+      </div>
+
+      <h2 className="mt-6 break-words font-display text-4xl sm:text-5xl">
+        ACCOUNT
+        <br />
+        VERWIJDERINGEN.
+      </h2>
+
+      <p className="mt-4 text-sm leading-relaxed text-[#B9BEC2]">
+        Bekijk verwijderverzoeken, uitvoerfasen en externe afhandeltaken.
+Wijs opvolging aan jezelf toe en plan een hercontrole. Geen
+geforceerde verwijdering of automatische herstart.
+      </p>
+    </div>
+
+    <div className="mt-8 flex items-center justify-between border-t border-white/20 pt-4">
+      <span className="font-display text-lg text-[#FF4B3E]">
+        BEKIJK VERZOEKEN
+      </span>
+
+      <span className="font-display text-2xl transition-transform group-hover:translate-x-2">
+        →
+      </span>
+    </div>
+  </div>
+</Link>
+
           </div>
         </div>
       </section>

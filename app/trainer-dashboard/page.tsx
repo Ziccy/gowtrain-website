@@ -7,7 +7,9 @@ import { useRouter } from "next/navigation";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import BookingChatModal from "@/components/BookingChatModal";
+
 import { supabase } from "@/lib/supabase-browser";
+import { getBookingMessageStates } from "@/lib/booking-message-state";
 
 /* TYPES */
 
@@ -91,12 +93,6 @@ type BookingSection = {
   bookings: Booking[];
 };
 
-type BookingMessage = {
-  booking_id: string;
-  sender_role: string;
-  created_at: string;
-};
-
 /* CONSTANTEN */
 
 const BOOKING_FILTERS: [string, BookingFilter][] = [
@@ -154,7 +150,9 @@ const QUICK_LINKS = [
 /* HELPERS */
 
 function formatDate(value?: string): string {
-  if (!value) return "GEEN DATUM";
+  if (!value || !Number.isFinite(Date.parse(value))) {
+    return "GEEN DATUM";
+  }
 
   return new Intl.DateTimeFormat("nl-NL", {
     weekday: "long",
@@ -168,7 +166,9 @@ function formatDate(value?: string): string {
 }
 
 function formatTime(value?: string): string {
-  if (!value) return "--:--";
+  if (!value || !Number.isFinite(Date.parse(value))) {
+    return "--:--";
+  }
 
   return new Intl.DateTimeFormat("nl-NL", {
     hour: "2-digit",
@@ -245,14 +245,17 @@ function getStatusExplanation(status: BookingStatus): string {
 
 function getBookingTime(booking: Booking): number {
   const startsAt = booking.availability_slots?.starts_at;
+  const timestamp = startsAt ? Date.parse(startsAt) : NaN;
 
-  return startsAt
-    ? new Date(startsAt).getTime()
+  return Number.isFinite(timestamp)
+    ? timestamp
     : Number.MAX_SAFE_INTEGER;
 }
 
 function getAmsterdamSlotDate(isoDate?: string): string {
-  if (!isoDate) return "";
+  if (!isoDate || !Number.isFinite(Date.parse(isoDate))) {
+    return "";
+  }
 
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Europe/Amsterdam",
@@ -273,12 +276,12 @@ function canTrainerCancelBooking(booking: Booking): boolean {
   const startsAt = booking.availability_slots?.starts_at;
 
   return Boolean(
-    startsAt && new Date(startsAt).getTime() > Date.now(),
+    startsAt && Date.parse(startsAt) > Date.now()
   );
 }
 
 function stripeCapabilityLabel(
-  status: StripeCapabilityStatus | null | undefined,
+  status: StripeCapabilityStatus | null | undefined
 ): string {
   switch (status) {
     case "active":
@@ -299,6 +302,16 @@ function stripeCapabilityLabel(
 export default function TrainerDashboardPage() {
   const router = useRouter();
 
+  const mountedRef = useRef(false);
+  const dashboardLoadSequenceRef = useRef(0);
+  const loadedUserIdRef = useRef("");
+
+  const refreshBusyRef = useRef(false);
+  const trainerCancelBusyRef = useRef(false);
+  const stripeRequestBusyRef = useRef(false);
+
+  const trainerCancellationRef = useRef<HTMLElement | null>(null);
+
   const [trainerAccount, setTrainerAccount] =
     useState<TrainerAccount | null>(null);
   const [currentUserId, setCurrentUserId] = useState("");
@@ -312,15 +325,18 @@ export default function TrainerDashboardPage() {
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [profileMissing, setProfileMissing] = useState(false);
+
+  const [chatBooking, setChatBooking] = useState<Booking | null>(null);
+  const [chatStatusError, setChatStatusError] = useState("");
+  const [chatRefreshVersion, setChatRefreshVersion] = useState(0);
+
+  const [stripeExpanded, setStripeExpanded] = useState(false);
   const [settingUpStripe, setSettingUpStripe] = useState(false);
   const [checkingStripeStatus, setCheckingStripeStatus] =
     useState(false);
-  const [profileMissing, setProfileMissing] = useState(false);
-
-  const stripeStatusCheckInFlight = useRef(false);
-  const dashboardInitializationStarted = useRef(false);
-
-  const [chatBooking, setChatBooking] = useState<Booking | null>(null);
+  const [stripeError, setStripeError] = useState("");
+  const [stripeSuccess, setStripeSuccess] = useState("");
 
   const [
     pendingTrainerCancellation,
@@ -332,16 +348,21 @@ export default function TrainerDashboardPage() {
 
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
-
-  const trainerCancellationRef = useRef<HTMLElement | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
   /*
-   * Eerst de opgeslagen dashboardgegevens laden.
-   * Alleen bij Stripe-return eenmaal de statusroute aanroepen.
+   * Normale opening:
+   * alleen opgeslagen dashboardgegevens ophalen.
+   *
+   * Stripe-return:
+   * blok openen en eenmaal de bestaande statusroute aanroepen.
+   *
+   * Uitgestelde start voorkomt een dubbele initialisatie
+   * tijdens de development-effectcontrole van React.
    */
   useEffect(() => {
-    if (dashboardInitializationStarted.current) return;
-    dashboardInitializationStarted.current = true;
+    mountedRef.current = true;
+    let active = true;
 
     async function initializeDashboard(): Promise<void> {
       const url = new URL(window.location.href);
@@ -349,59 +370,179 @@ export default function TrainerDashboardPage() {
         url.searchParams.get("stripe") === "return";
 
       if (returnedFromStripe) {
+        setStripeExpanded(true);
         url.searchParams.delete("stripe");
 
         window.history.replaceState(
           window.history.state,
           "",
-          `${url.pathname}${url.search}${url.hash}`,
+          `${url.pathname}${url.search}${url.hash}`
         );
       }
 
-      await loadDashboard();
+      const loaded = await loadDashboard();
 
-      if (returnedFromStripe) {
+      if (active && returnedFromStripe && loaded) {
         await handleStripeStatusRefresh();
       }
     }
 
-    void initializeDashboard();
+    const timer = window.setTimeout(() => {
+      void initializeDashboard();
+    }, 0);
+
+    return () => {
+      active = false;
+      mountedRef.current = false;
+      dashboardLoadSequenceRef.current += 1;
+      window.clearTimeout(timer);
+    };
   }, []);
+
+  useEffect(() => {
+    const updateClock = () => setNow(Date.now());
+    const timer = window.setInterval(updateClock, 10_000);
+
+    window.addEventListener("focus", updateClock);
+
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", updateClock);
+    };
+  }, []);
+
+  /*
+   * Alleen een veranderde verzameling boekingen moet
+   * de gesprekkenlijst opnieuw configureren.
+   */
+  const chatBookingIdsKey = useMemo(
+    () => JSON.stringify(bookings.map((booking) => booking.id).sort()),
+    [bookings]
+  );
+
+  /*
+   * Centrale berichtenstatus zonder localStorage.
+   * Fouten wissen de laatst bekende badges niet.
+   */
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    const bookingIds = JSON.parse(chatBookingIdsKey) as string[];
+
+    if (bookingIds.length === 0) {
+      setChatStatusError("");
+      return;
+    }
+
+    let active = true;
+    let busy = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    async function refreshMessageStates(): Promise<void> {
+      if (!active || busy) return;
+      if (document.visibilityState !== "visible") return;
+
+      busy = true;
+
+      try {
+        const states = await getBookingMessageStates(bookingIds);
+
+        if (!active) return;
+
+        setBookings((previous) =>
+          previous.map((booking) => {
+            const state = states.get(booking.id);
+
+            if (!state) return booking;
+
+            return {
+              ...booking,
+              chat_state: {
+                has_messages: state.has_messages,
+                has_unread_player_message: state.unread_count > 0,
+                last_sender_role: state.last_sender_role,
+              },
+            };
+          })
+        );
+
+        setChatStatusError("");
+      } catch (error: unknown) {
+        if (!active) return;
+
+        setChatStatusError(
+          error instanceof Error
+            ? error.message
+            : "De berichtenstatus kon niet worden geladen."
+        );
+      } finally {
+        busy = false;
+      }
+    }
+
+    async function poll(): Promise<void> {
+      await refreshMessageStates();
+
+      if (active) {
+        timer = setTimeout(() => void poll(), 10_000);
+      }
+    }
+
+    function handleReturn(): void {
+      if (document.visibilityState === "visible") {
+        void refreshMessageStates();
+      }
+    }
+
+    window.addEventListener("focus", handleReturn);
+    document.addEventListener("visibilitychange", handleReturn);
+
+    void poll();
+
+    return () => {
+      active = false;
+
+      if (timer !== undefined) clearTimeout(timer);
+
+      window.removeEventListener("focus", handleReturn);
+      document.removeEventListener("visibilitychange", handleReturn);
+    };
+  }, [currentUserId, chatBookingIdsKey, chatRefreshVersion]);
+
+  /* AFGELEIDE GEGEVENS */
 
   const unreadBookings = useMemo(
     () =>
       bookings.filter(
-        (booking) =>
-          booking.chat_state?.has_unread_player_message &&
-          booking.status === "confirmed",
+        (booking) => booking.chat_state?.has_unread_player_message
       ),
-    [bookings],
+    [bookings]
   );
 
   const paymentPendingCount = useMemo(
     () =>
       bookings.filter(
-        (booking) => booking.status === "payment_pending",
+        (booking) => booking.status === "payment_pending"
       ).length,
-    [bookings],
+    [bookings]
   );
 
   const confirmedBookingsCount = useMemo(
     () =>
       bookings.filter(
-        (booking) => booking.status === "confirmed",
+        (booking) => booking.status === "confirmed"
       ).length,
-    [bookings],
+    [bookings]
   );
 
   /*
    * Bestaande indicatieve dashboardberekening behouden.
-   * Dit is geen berekening van uitgevoerde bankuitbetalingen.
+   * Geen berekening van uitgevoerde bankuitbetalingen.
    */
   const thisMonthNetEarningsCents = useMemo(() => {
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth();
+    const currentDate = new Date();
+    const currentYear = currentDate.getFullYear();
+    const currentMonth = currentDate.getMonth();
 
     let totalCents = 0;
 
@@ -433,7 +574,7 @@ export default function TrainerDashboardPage() {
   }, [bookings]);
 
   const stripeHasStarted = Boolean(
-    trainerAccount?.stripe_account_id,
+    trainerAccount?.stripe_account_id
   );
 
   const stripeCheckedAt =
@@ -441,7 +582,7 @@ export default function TrainerDashboardPage() {
 
   const stripeHasValidCheck = Boolean(
     stripeCheckedAt &&
-    Number.isFinite(Date.parse(stripeCheckedAt)),
+    Number.isFinite(Date.parse(stripeCheckedAt))
   );
 
   // Opgeslagen v2-testcontext, geen actuele uitvoerautorisatie.
@@ -469,17 +610,31 @@ export default function TrainerDashboardPage() {
         }).format(new Date(stripeCheckedAt))
       : null;
 
+  const stripeSummaryLabel = stripeError
+    ? "Laatste aanvraag niet bevestigd"
+    : checkingStripeStatus
+      ? "Status controleren..."
+      : settingUpStripe
+        ? "Onboarding openen..."
+        : stripeLinkRequiresReview
+          ? "Koppeling vereist controle"
+          : stripeCapabilitiesActive
+            ? "Capabilities actief bij laatste controle"
+            : stripeHasStarted
+              ? "Testaccount gekoppeld — controleer status"
+              : "Nog geen testaccount gekoppeld";
+
   const bookingSections = useMemo((): BookingSection[] => {
     let sortedBookings = [...bookings].sort(
       (first, second) =>
-        getBookingTime(first) - getBookingTime(second),
+        getBookingTime(first) - getBookingTime(second)
     );
 
     if (startDateFilter || endDateFilter) {
       sortedBookings = sortedBookings.filter((booking) => {
         const slotDate = getAmsterdamSlotDate(
           booking.availability_slots?.starts_at ||
-          booking.created_at,
+          booking.created_at
         );
 
         if (startDateFilter && slotDate < startDateFilter) {
@@ -496,7 +651,7 @@ export default function TrainerDashboardPage() {
 
     if (bookingFilter !== "all") {
       const filteredBookings = sortedBookings.filter(
-        (booking) => booking.status === bookingFilter,
+        (booking) => booking.status === bookingFilter
       );
 
       const titles: Record<
@@ -512,21 +667,23 @@ export default function TrainerDashboardPage() {
       };
 
       return filteredBookings.length
-        ? [{
-            title: titles[bookingFilter],
-            bookings: filteredBookings,
-          }]
+        ? [
+            {
+              title: titles[bookingFilter],
+              bookings: filteredBookings,
+            },
+          ]
         : [];
     }
 
     const pendingPayments = sortedBookings.filter(
-      (booking) => booking.status === "payment_pending",
+      (booking) => booking.status === "payment_pending"
     );
 
     const futureConfirmed = sortedBookings.filter(
       (booking) =>
         booking.status === "confirmed" &&
-        getBookingTime(booking) >= Date.now(),
+        getBookingTime(booking) >= now
     );
 
     const nextBooking = futureConfirmed[0] ?? null;
@@ -537,7 +694,7 @@ export default function TrainerDashboardPage() {
     ]);
 
     const otherBookings = sortedBookings.filter(
-      (booking) => !priorityIds.has(booking.id),
+      (booking) => !priorityIds.has(booking.id)
     );
 
     const sections: BookingSection[] = [];
@@ -569,7 +726,10 @@ export default function TrainerDashboardPage() {
     bookingFilter,
     startDateFilter,
     endDateFilter,
+    now,
   ]);
+
+  /* MELDINGEN */
 
   function clearMessages(): void {
     setErrorMessage("");
@@ -581,9 +741,25 @@ export default function TrainerDashboardPage() {
     setErrorMessage(message);
   }
 
+  function showStripeError(message: string): void {
+    setStripeExpanded(true);
+    setStripeSuccess("");
+    setStripeError(message);
+  }
+
+  /* DASHBOARD OPHALEN */
+
   async function loadDashboard(
-    showLoading = true,
-  ): Promise<void> {
+    showLoading = true
+  ): Promise<boolean> {
+    const sequence = ++dashboardLoadSequenceRef.current;
+
+    const isCurrent = () =>
+      mountedRef.current &&
+      sequence === dashboardLoadSequenceRef.current;
+
+    if (!mountedRef.current) return false;
+
     if (showLoading) setLoading(true);
 
     setErrorMessage("");
@@ -591,28 +767,32 @@ export default function TrainerDashboardPage() {
 
     try {
       const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      if (!session?.user) {
-        router.replace("/trainer-login");
-        return;
-      }
-
-      setCurrentUserId(session.user.id);
-
-      const {
         data: { user },
         error: userError,
       } = await supabase.auth.getUser();
 
+      if (!isCurrent()) return false;
+
       if (userError || !user) {
-        await supabase.auth.signOut();
         router.replace("/trainer-login");
-        return;
+        return false;
       }
 
-      // calendar_feed_token wordt bewust niet meer opgehaald.
+      const userChanged = loadedUserIdRef.current !== user.id;
+      loadedUserIdRef.current = user.id;
+
+      if (userChanged) {
+        setBookings([]);
+        setChatBooking(null);
+        setChatStatusError("");
+        setTrainerAccount(null);
+        setAvailableSlotsCount(0);
+        setPendingTrainerCancellation(null);
+      }
+
+      setCurrentUserId(user.id);
+
+      // calendar_feed_token wordt bewust niet opgehaald.
       const { data: trainerData, error: trainerError } =
         await supabase
           .from("trainers")
@@ -632,12 +812,18 @@ export default function TrainerDashboardPage() {
           .eq("user_id", user.id)
           .maybeSingle();
 
-      if (trainerError || !trainerData) {
+      if (!isCurrent()) return false;
+
+      if (trainerError) {
+        throw new Error("Je trainerprofiel kon niet worden geladen.");
+      }
+
+      if (!trainerData) {
         setTrainerAccount(null);
         setBookings([]);
         setAvailableSlotsCount(0);
         setProfileMissing(true);
-        return;
+        return false;
       }
 
       const trainer = trainerData as TrainerAccount;
@@ -648,8 +834,9 @@ export default function TrainerDashboardPage() {
         trainer.is_active !== true
       ) {
         setBookings([]);
+        setChatBooking(null);
         setAvailableSlotsCount(0);
-        return;
+        return false;
       }
 
       const { data: bookingData, error: bookingError } =
@@ -685,144 +872,118 @@ export default function TrainerDashboardPage() {
           .eq("trainer_id", trainer.id)
           .order("created_at", { ascending: false });
 
+      if (!isCurrent()) return false;
+
       if (bookingError) {
-        showError("Je boekingen konden niet worden geladen.");
-      } else {
-        const rawBookings =
-          (bookingData ?? []) as unknown as Booking[];
-
-        const bookingIds = rawBookings.map(
-          (booking) => booking.id,
-        );
-
-        let messagesData: BookingMessage[] = [];
-
-        if (bookingIds.length > 0) {
-          const { data: fetchedMessages } = await supabase
-            .from("booking_messages")
-            .select("booking_id, sender_role, created_at")
-            .in("booking_id", bookingIds)
-            .order("created_at", { ascending: true });
-
-          messagesData = fetchedMessages ?? [];
-        }
-
-        const messagesByBooking = new Map<
-          string,
-          BookingMessage[]
-        >();
-
-        messagesData.forEach((message) => {
-          const list =
-            messagesByBooking.get(message.booking_id) || [];
-
-          list.push(message);
-          messagesByBooking.set(message.booking_id, list);
-        });
-
-        const bookingsWithState: Booking[] = rawBookings.map(
-          (booking) => {
-            const messages =
-              messagesByBooking.get(booking.id) || [];
-
-            const lastMessage = messages[messages.length - 1];
-
-            let lastReadTimeString: string | null = null;
-
-            try {
-              lastReadTimeString = localStorage.getItem(
-                `gowtrain_read_trainer_${booking.id}`,
-              );
-            } catch {
-              lastReadTimeString = null;
-            }
-
-            const lastReadTime = lastReadTimeString
-              ? new Date(lastReadTimeString).getTime()
-              : 0;
-
-            const hasUnreadPlayer = messages.some((message) => {
-              if (message.sender_role !== "player") return false;
-
-              return (
-                new Date(message.created_at).getTime() >
-                lastReadTime
-              );
-            });
-
-            return {
-              ...booking,
-              chat_state: {
-                has_messages: messages.length > 0,
-                has_unread_player_message: hasUnreadPlayer,
-                last_sender_role: lastMessage
-                  ? (
-                      lastMessage.sender_role as
-                        | "player"
-                        | "trainer"
-                    )
-                  : null,
-              },
-            };
-          },
-        );
-
-        setBookings(bookingsWithState);
+        throw new Error("Je boekingen konden niet worden geladen.");
       }
 
-      const { count } = await supabase
+      const rawBookings =
+        (bookingData ?? []) as unknown as Booking[];
+
+      /*
+       * Chatstatus behouden bij gewone dashboardverversing.
+       * Een aparte controle vernieuwt uitsluitend de badges.
+       */
+      setBookings((previous) => {
+        const previousById = new Map(
+          previous.map((booking) => [booking.id, booking])
+        );
+
+        return rawBookings.map((booking) => ({
+          ...booking,
+          chat_state: userChanged
+            ? undefined
+            : previousById.get(booking.id)?.chat_state,
+        }));
+      });
+
+      setChatRefreshVersion((value) => value + 1);
+      setNow(Date.now());
+
+      const { count, error: slotsError } = await supabase
         .from("availability_slots")
         .select("id", { count: "exact", head: true })
         .eq("trainer_id", trainer.id)
         .eq("status", "available")
         .gte("starts_at", new Date().toISOString());
 
+      if (!isCurrent()) return false;
+
+      if (slotsError) {
+        showError(
+          "De boekingen zijn geladen, maar het aantal open tijdsloten kon niet worden vernieuwd."
+        );
+        return false;
+      }
+
       setAvailableSlotsCount(count ?? 0);
-    } catch {
-      showError("Je dashboard kon niet worden geladen.");
+      return true;
+    } catch (error: unknown) {
+      if (isCurrent()) {
+        showError(
+          error instanceof Error
+            ? error.message
+            : "Je dashboard kon niet worden geladen."
+        );
+      }
+
+      return false;
     } finally {
-      if (showLoading) setLoading(false);
+      if (isCurrent() && showLoading) {
+        setLoading(false);
+      }
     }
   }
 
   async function handleRefresh(): Promise<void> {
+    if (refreshBusyRef.current) return;
+
+    refreshBusyRef.current = true;
     setRefreshing(true);
     clearMessages();
 
     try {
       await loadDashboard(false);
     } finally {
-      setRefreshing(false);
+      refreshBusyRef.current = false;
+
+      if (mountedRef.current) {
+        setRefreshing(false);
+      }
     }
   }
 
-  async function handleStripeStatusRefresh(): Promise<void> {
-    if (stripeStatusCheckInFlight.current) return;
+  /* STRIPE */
 
-    stripeStatusCheckInFlight.current = true;
+  async function handleStripeStatusRefresh(): Promise<void> {
+    if (stripeRequestBusyRef.current) return;
+
+    stripeRequestBusyRef.current = true;
     setCheckingStripeStatus(true);
-    clearMessages();
+    setStripeExpanded(true);
+    setStripeError("");
+    setStripeSuccess("");
 
     try {
       const {
         data: { session },
       } = await supabase.auth.getSession();
 
+      if (!mountedRef.current) return;
+
       if (!session?.access_token) {
         router.replace("/trainer-login");
         return;
       }
 
-      const response = await fetch(
-        "/api/stripe/connect/status",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-          },
-          cache: "no-store",
+      const response = await fetch("/api/stripe/connect/status", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
         },
-      );
+        cache: "no-store",
+      });
 
       const result = (await response.json()) as {
         statusChecked?: boolean;
@@ -830,10 +991,12 @@ export default function TrainerDashboardPage() {
         error?: string;
       };
 
+      if (!mountedRef.current) return;
+
       if (!response.ok) {
-        showError(
+        showStripeError(
           result.error ||
-            "De Stripe-status kon niet worden vernieuwd. De getoonde status kan verouderd zijn.",
+            "De Stripe-status kon niet worden vernieuwd. De getoonde status kan verouderd zijn."
         );
         return;
       }
@@ -843,31 +1006,55 @@ export default function TrainerDashboardPage() {
         typeof result.checkedAt !== "string" ||
         !Number.isFinite(Date.parse(result.checkedAt))
       ) {
-        showError(
-          "Het resultaat van de Stripe-controle kon niet worden bevestigd. De getoonde status kan verouderd zijn.",
+        showStripeError(
+          "Het resultaat van de Stripe-controle kon niet worden bevestigd. De getoonde status kan verouderd zijn."
         );
         return;
       }
 
-      await loadDashboard(false);
+      const loaded = await loadDashboard(false);
+
+      if (!mountedRef.current) return;
+
+      if (loaded) {
+        setStripeSuccess(
+          "Stripe-status gecontroleerd en opgeslagen gegevens vernieuwd."
+        );
+      } else {
+        showStripeError(
+          "De API heeft de Stripe-controle bevestigd, maar het dashboard kon niet volledig worden vernieuwd. Klik bovenaan op Ververs; start niet onnodig opnieuw de Stripe-controle."
+        );
+      }
     } catch {
-      showError(
-        "De verbinding tijdens de Stripe-controle is onderbroken. Controle en opslag kunnen al hebben plaatsgevonden. Er wordt niet automatisch opnieuw geprobeerd; de getoonde status kan verouderd zijn.",
-      );
+      if (mountedRef.current) {
+        showStripeError(
+          "De verbinding tijdens de Stripe-controle is onderbroken. Controle en opslag kunnen al hebben plaatsgevonden. Er wordt niet automatisch opnieuw geprobeerd; de getoonde status kan verouderd zijn."
+        );
+      }
     } finally {
-      stripeStatusCheckInFlight.current = false;
-      setCheckingStripeStatus(false);
+      stripeRequestBusyRef.current = false;
+
+      if (mountedRef.current) {
+        setCheckingStripeStatus(false);
+      }
     }
   }
 
   async function handleStripeOnboarding(): Promise<void> {
+    if (stripeRequestBusyRef.current) return;
+
+    stripeRequestBusyRef.current = true;
     setSettingUpStripe(true);
-    clearMessages();
+    setStripeExpanded(true);
+    setStripeError("");
+    setStripeSuccess("");
 
     try {
       const {
         data: { session },
       } = await supabase.auth.getSession();
+
+      if (!mountedRef.current) return;
 
       if (!session?.access_token) {
         router.replace("/trainer-login");
@@ -881,7 +1068,7 @@ export default function TrainerDashboardPage() {
           headers: {
             Authorization: `Bearer ${session.access_token}`,
           },
-        },
+        }
       );
 
       const result = (await response.json()) as {
@@ -889,22 +1076,52 @@ export default function TrainerDashboardPage() {
         error?: string;
       };
 
+      if (!mountedRef.current) return;
+
       if (!response.ok || !result.onboardingUrl) {
-        showError(
-          result.error || "Uitbetalingen instellen lukt nu niet.",
+        showStripeError(
+          result.error || "Uitbetalingen instellen lukt nu niet."
         );
         return;
       }
 
-      window.location.href = result.onboardingUrl;
+      // Alleen de bestaande Stripe-hosted onboarding openen.
+      const onboardingUrl = new URL(result.onboardingUrl);
+
+      if (
+        onboardingUrl.protocol !== "https:" ||
+        onboardingUrl.hostname !== "connect.stripe.com" ||
+        onboardingUrl.port !== "" ||
+        onboardingUrl.username !== "" ||
+        onboardingUrl.password !== ""
+      ) {
+        showStripeError(
+          "De ontvangen Stripe-link kon niet veilig worden gecontroleerd."
+        );
+        return;
+      }
+
+      window.location.href = onboardingUrl.href;
     } catch {
-      showError("Uitbetalingen instellen lukt nu niet.");
+      if (mountedRef.current) {
+        showStripeError(
+          "De onboardingaanvraag kon niet worden bevestigd. Er wordt niet automatisch opnieuw geprobeerd. Controleer eerst de opgeslagen koppeling via Ververs."
+        );
+      }
     } finally {
-      setSettingUpStripe(false);
+      stripeRequestBusyRef.current = false;
+
+      if (mountedRef.current) {
+        setSettingUpStripe(false);
+      }
     }
   }
 
+  /* ANNULEREN */
+
   function openTrainerCancellation(booking: Booking): void {
+    if (trainerCancelBusyRef.current) return;
+
     clearMessages();
     setPendingTrainerCancellation(booking);
 
@@ -918,13 +1135,14 @@ export default function TrainerDashboardPage() {
   }
 
   function closeTrainerCancellation(): void {
+    if (trainerCancelBusyRef.current) return;
     setPendingTrainerCancellation(null);
   }
 
   async function handleTrainerCancellation(
-    booking: Booking,
+    booking: Booking
   ): Promise<void> {
-    if (cancellingBookingId) return;
+    if (trainerCancelBusyRef.current) return;
 
     if (!canTrainerCancelBooking(booking)) {
       showError("Deze training kan niet meer geannuleerd worden.");
@@ -932,16 +1150,17 @@ export default function TrainerDashboardPage() {
       return;
     }
 
+    trainerCancelBusyRef.current = true;
     setCancellingBookingId(booking.id);
     clearMessages();
 
     try {
       const { data, error } = await supabase.rpc(
         "request_trainer_lesson_cancellation",
-        {
-          p_booking_id: booking.id,
-        },
+        { p_booking_id: booking.id }
       );
+
+      if (!mountedRef.current) return;
 
       if (error) {
         console.error("Trainerannulering mislukt:", {
@@ -952,7 +1171,7 @@ export default function TrainerDashboardPage() {
         showError(
           error.code === "P0001" || error.code === "42501"
             ? error.message
-            : "De annulering kon niet worden bevestigd. Vernieuw het overzicht voordat je opnieuw probeert.",
+            : "De annulering kon niet worden bevestigd. Vernieuw het overzicht voordat je opnieuw probeert."
         );
         return;
       }
@@ -972,23 +1191,31 @@ export default function TrainerDashboardPage() {
         !result.refund_request_id
       ) {
         showError(
-          "De annulering kon niet worden bevestigd. Vernieuw het overzicht voordat je opnieuw probeert.",
+          "De annulering kon niet worden bevestigd. Vernieuw het overzicht voordat je opnieuw probeert."
         );
         return;
       }
 
       setPendingTrainerCancellation(null);
       await loadDashboard(false);
-      setSuccessMessage(result.message);
 
-      // Geen extra refund-API-call:
-      // annulering en refundopdracht zijn samen opgeslagen.
+      if (mountedRef.current) {
+        setSuccessMessage(result.message);
+      }
+
+      // Geen extra refund-API-call.
     } catch {
-      showError(
-        "De verbinding is onderbroken. De annulering kan al geregistreerd zijn. Controleer eerst het overzicht.",
-      );
+      if (mountedRef.current) {
+        showError(
+          "De verbinding is onderbroken. De annulering kan al geregistreerd zijn. Controleer eerst het overzicht."
+        );
+      }
     } finally {
-      setCancellingBookingId(null);
+      trainerCancelBusyRef.current = false;
+
+      if (mountedRef.current) {
+        setCancellingBookingId(null);
+      }
     }
   }
 
@@ -1008,13 +1235,58 @@ export default function TrainerDashboardPage() {
             <span className="font-display text-5xl text-[#D6FF3F] sm:text-6xl">
               GOWTRAIN
             </span>
-            <span className="h-0 w-0 animate-pulse border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent" />
+            <span className="h-0 w-0 border-b-[14px] border-l-[12px] border-t-[14px] border-b-transparent border-l-[#D6FF3F] border-t-transparent motion-safe:animate-pulse" />
           </div>
 
           <p className="mt-4 font-display text-sm tracking-widest text-[#FF4B3E]">
             DASHBOARD LADEN...
           </p>
         </div>
+      </main>
+    );
+  }
+
+  /*
+   * Een laadfout niet presenteren als afkeuring
+   * of ontbrekend trainerprofiel.
+   */
+  if (!trainerAccount && !profileMissing) {
+    return (
+      <main className="flex min-h-screen flex-col bg-[#14171A] text-white">
+        <SiteHeader />
+
+        <section className="flex flex-1 items-center justify-center px-5 py-16">
+          <div className="w-full max-w-xl border-2 border-white/30 p-6">
+            <h1 className="font-display text-3xl text-[#D6FF3F]">
+              DASHBOARD NIET GELADEN
+            </h1>
+
+            <p role="alert" className="mt-4 text-sm text-[#B9BEC2]">
+              {errorMessage || "Je account kon niet worden geladen."}
+            </p>
+
+            <div className="mt-6 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => void handleRefresh()}
+                disabled={refreshing}
+                className="min-h-11 bg-[#D6FF3F] px-5 py-3 font-display text-[#14171A] disabled:opacity-60"
+              >
+                {refreshing ? "LADEN..." : "OPNIEUW LADEN"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void handleLogout()}
+                className="min-h-11 border border-white/30 px-5 py-3 font-display"
+              >
+                UITLOGGEN
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <SiteFooter />
       </main>
     );
   }
@@ -1055,8 +1327,9 @@ export default function TrainerDashboardPage() {
   }
 
   if (
-    trainerAccount?.approval_status !== "approved" ||
-    trainerAccount?.is_active !== true
+    !trainerAccount ||
+    trainerAccount.approval_status !== "approved" ||
+    trainerAccount.is_active !== true
   ) {
     const isRejected =
       trainerAccount?.approval_status === "rejected";
@@ -1080,7 +1353,7 @@ export default function TrainerDashboardPage() {
 
               <p className="mt-6 text-lg leading-relaxed text-[#B9BEC2]">
                 {isRejected
-                  ? "Neem contact op met GowTrain als je denkt dat dit een vergissing is."
+                  ? "Neem contact op met Gowtrain als je denkt dat dit een vergissing is."
                   : "We controleren je trainerprofiel. Je ontvangt bericht zodra je live kunt gaan."}
               </p>
 
@@ -1135,11 +1408,11 @@ export default function TrainerDashboardPage() {
 
               <button
                 type="button"
-                onClick={() => {
+                onClick={() =>
                   document
                     .getElementById("boekingen-overzicht")
-                    ?.scrollIntoView({ behavior: "smooth" });
-                }}
+                    ?.scrollIntoView({ behavior: "smooth" })
+                }
                 className="min-h-11 border-2 border-white px-4 py-3 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:bg-[#D6FF3F] hover:text-[#14171A]"
               >
                 BOEKINGEN ↓
@@ -1148,7 +1421,7 @@ export default function TrainerDashboardPage() {
               <button
                 type="button"
                 onClick={() => void handleRefresh()}
-                disabled={refreshing}
+                disabled={refreshing || cancellingBookingId !== null}
                 className="min-h-11 px-2 font-display text-sm text-[#D6FF3F] transition hover:text-white disabled:opacity-60"
               >
                 {refreshing ? "VERVERSEN..." : "↻ VERVERS"}
@@ -1159,22 +1432,23 @@ export default function TrainerDashboardPage() {
           {/* ONGELEZEN BERICHTEN */}
           {unreadBookings.length > 0 && (
             <div
-              role="alert"
+              role="status"
               className="mt-7 flex flex-col justify-between gap-4 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 text-white shadow-[5px_5px_0_0_#D6FF3F] sm:flex-row sm:items-center"
             >
               <div className="min-w-0">
                 <p className="font-display text-2xl">
+                  {unreadBookings.length}{" "}
                   {unreadBookings.length === 1
-                    ? "1 NIEUW BERICHT VAN JE SPELER!"
-                    : `${unreadBookings.length} NIEUWE BERICHTEN VAN JE SPELERS!`}
+                    ? "TRAINING MET NIEUWE BERICHTEN"
+                    : "TRAININGEN MET NIEUWE BERICHTEN"}
                 </p>
 
                 <p className="mt-1 text-sm leading-relaxed text-white/90">
                   {unreadBookings.length === 1
-                    ? `${unreadBookings[0].player_name} heeft een bericht gestuurd voor de training op ${formatDate(
-                        unreadBookings[0].availability_slots?.starts_at,
+                    ? `${unreadBookings[0].player_name} heeft ongelezen berichten voor de training op ${formatDate(
+                        unreadBookings[0].availability_slots?.starts_at
                       )}.`
-                    : `Je hebt ongelezen berichten van spelers voor ${unreadBookings.length} van je geplande trainingen.`}
+                    : `Er zijn ongelezen berichten van spelers bij ${unreadBookings.length} trainingen.`}
                 </p>
               </div>
 
@@ -1185,6 +1459,22 @@ export default function TrainerDashboardPage() {
               >
                 OPEN BERICHT. GOW! →
               </button>
+            </div>
+          )}
+
+          {chatStatusError && (
+            <div
+              role="status"
+              className="mt-7 border-2 border-[#FF4B3E] p-4 text-sm text-[#D7D9DA]"
+            >
+              <p className="font-semibold text-[#FF4B3E]">
+                BERICHTENSTATUS NIET ACTUEEL
+              </p>
+              <p className="mt-1">{chatStatusError}</p>
+              <p className="mt-1 text-xs text-[#B9BEC2]">
+                Eventuele badges tonen de laatst geladen status.
+                Klik op Ververs om opnieuw te controleren.
+              </p>
             </div>
           )}
 
@@ -1215,11 +1505,11 @@ export default function TrainerDashboardPage() {
                 chatBooking.availability_slots?.sport?.toUpperCase() ||
                 "TRAINING"
               } · ${formatDate(
-                chatBooking.availability_slots?.starts_at,
+                chatBooking.availability_slots?.starts_at
               )} (${formatTime(
-                chatBooking.availability_slots?.starts_at,
+                chatBooking.availability_slots?.starts_at
               )} - ${formatTime(
-                chatBooking.availability_slots?.ends_at,
+                chatBooking.availability_slots?.ends_at
               )})`}
               venueLabel={
                 chatBooking.availability_slots?.venue
@@ -1230,150 +1520,199 @@ export default function TrainerDashboardPage() {
               currentUserId={currentUserId}
               currentUserName={trainerAccount.name || "Trainer"}
               onClose={() => setChatBooking(null)}
-              onMessagesRead={() => void loadDashboard(false)}
+              onMessagesRead={() =>
+                setChatRefreshVersion((value) => value + 1)
+              }
             />
           )}
 
-          {/* STRIPE — VOLLEDIGE BREEDTE, GEEN AGENDABLOK */}
-          <section className="mt-7 border-2 border-[#FF4B3E] bg-white/[0.03] shadow-[5px_5px_0_0_#FF4B3E]">
-            <div className="grid lg:grid-cols-[minmax(0,1fr)_minmax(300px,380px)]">
-              <div className="min-w-0 p-5 sm:p-6">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <p className="font-display text-sm text-[#FF4B3E]">
-                    STRIPE CONNECT
+          {/* STRIPE — STANDAARD INGEKLAPT */}
+          <section className="mt-7 border border-white/20 bg-white/[0.02]">
+            <h2>
+              <button
+                type="button"
+                aria-expanded={stripeExpanded}
+                aria-controls="trainer-stripe-panel"
+                onClick={() => setStripeExpanded((value) => !value)}
+                className="flex min-h-16 w-full items-center justify-between gap-4 px-4 py-4 text-left transition hover:bg-white/[0.04] sm:px-5"
+              >
+                <span className="min-w-0">
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="font-display text-base text-white">
+                      STRIPE CONNECT
+                    </span>
+                    <span className="border border-white/20 px-2 py-0.5 font-display text-[10px] text-[#B9BEC2]">
+                      TESTOMGEVING
+                    </span>
+                  </span>
+
+                  <span
+                    className={`mt-1 block text-xs ${
+                      stripeError || stripeLinkRequiresReview
+                        ? "text-[#FF4B3E]"
+                        : "text-[#B9BEC2]"
+                    }`}
+                  >
+                    {stripeSummaryLabel}
+                  </span>
+                </span>
+
+                <span className="flex shrink-0 items-center gap-2 font-display text-xs text-[#B9BEC2]">
+                  <span className="hidden sm:inline">
+                    {stripeExpanded ? "INKLAPPEN" : "BEKIJKEN"}
+                  </span>
+                  <span aria-hidden="true" className="text-xl">
+                    {stripeExpanded ? "−" : "+"}
+                  </span>
+                </span>
+              </button>
+            </h2>
+
+            <div
+              id="trainer-stripe-panel"
+              hidden={!stripeExpanded}
+              className="border-t border-white/15"
+            >
+              <div className="grid lg:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]">
+                <div className="min-w-0 p-5 sm:p-6">
+                  <h3 className="font-display text-xl text-white">
+                    {stripeLinkRequiresReview
+                      ? "STRIPE-KOPPELING VEREIST CONTROLE"
+                      : stripeCapabilitiesActive
+                        ? "STRIPE-CAPABILITIES ACTIEF"
+                        : stripeHasStarted
+                          ? "STRIPE-STATUS CONTROLEREN"
+                          : "KOPPEL JE STRIPE-TESTACCOUNT"}
+                  </h3>
+
+                  <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[#B9BEC2]">
+                    {stripeLinkRequiresReview
+                      ? "Deze bestaande koppeling is niet bevestigd als een open v2-testaccount. Er wordt vanuit dit dashboard geen vervangend account aangemaakt. Neem contact op met Gowtrain."
+                      : stripeCapabilitiesActive
+                        ? "Bij de laatst opgeslagen Stripe-controle waren transfers en bankpayouts actief. Dit bewijst geen uitgevoerde transfer of bankuitbetaling."
+                        : stripeHasStarted
+                          ? "De laatst opgeslagen controle bevestigt nog niet dat beide capabilities actief zijn. Stripe kan nog gegevens verwerken of aanvullende informatie vragen."
+                          : "Open de beveiligde Stripe-hosted onboarding om je testaccount te koppelen. De onboarding opent buiten Gowtrain."}
                   </p>
 
-                  <span className="border border-white/25 px-2.5 py-1 font-display text-[10px] tracking-wide text-[#B9BEC2]">
-                    TESTOMGEVING
-                  </span>
-                </div>
-
-                <h2 className="mt-3 font-display text-2xl leading-tight text-white sm:text-3xl">
-                  {stripeLinkRequiresReview
-                    ? "STRIPE-KOPPELING VEREIST CONTROLE"
-                    : stripeCapabilitiesActive
-                      ? "STRIPE-CAPABILITIES ACTIEF"
-                      : stripeHasStarted
-                        ? "STRIPE-STATUS CONTROLEREN"
-                        : "KOPPEL JE STRIPE-TESTACCOUNT"}
-                </h2>
-
-                <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[#B9BEC2]">
-                  {stripeLinkRequiresReview
-                    ? "Deze bestaande koppeling is niet bevestigd als een open v2-testaccount. Er wordt vanuit dit dashboard geen vervangend account aangemaakt. Neem contact op met Gowtrain."
-                    : stripeCapabilitiesActive
-                      ? "Bij de laatst opgeslagen Stripe-controle waren transfers en bankpayouts actief. Dit bewijst geen uitgevoerde transfer of bankuitbetaling."
-                      : stripeHasStarted
-                        ? "De laatst opgeslagen controle bevestigt nog niet dat beide capabilities actief zijn. Stripe kan nog gegevens verwerken of aanvullende informatie vragen."
-                        : "Open de beveiligde Stripe-hosted onboarding om je testaccount te koppelen. De onboarding opent buiten Gowtrain."}
-                </p>
-
-                {stripeHasVerifiedContext && (
-                  <div className="mt-5">
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="border border-white/15 bg-[#14171A] p-3">
+                  {stripeHasVerifiedContext && (
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <div className="border border-white/15 p-3">
                         <p className="text-xs text-[#B9BEC2]">
                           Transfers naar Stripe-account
                         </p>
-                        <p className="mt-1 font-display text-lg text-white">
+                        <p className="mt-1 font-display text-base">
                           {stripeCapabilityLabel(
-                            trainerAccount.stripe_transfers_status,
+                            trainerAccount.stripe_transfers_status
                           )}
                         </p>
                       </div>
 
-                      <div className="border border-white/15 bg-[#14171A] p-3">
+                      <div className="border border-white/15 p-3">
                         <p className="text-xs text-[#B9BEC2]">
                           Bankpayout-capability
                         </p>
-                        <p className="mt-1 font-display text-lg text-white">
+                        <p className="mt-1 font-display text-base">
                           {stripeCapabilityLabel(
-                            trainerAccount.stripe_payouts_status,
+                            trainerAccount.stripe_payouts_status
                           )}
                         </p>
                       </div>
                     </div>
+                  )}
 
+                  {stripeCheckedAtLabel && (
                     <p className="mt-3 text-xs leading-relaxed text-[#B9BEC2]">
                       Laatste opgeslagen Stripe-controle:{" "}
                       {stripeCheckedAtLabel} (Amsterdam).
                     </p>
-                  </div>
-                )}
+                  )}
 
-                <p className="mt-4 border-t border-white/15 pt-4 text-xs leading-relaxed text-[#B9BEC2]">
-                  Automatische trainertransfers staan tijdens deze
-                  testfase uit. Een transfer naar het Stripe-account
-                  is niet hetzelfde als een uitbetaling naar de bank.
-                </p>
-              </div>
+                  <p className="mt-4 border-t border-white/15 pt-4 text-xs leading-relaxed text-[#B9BEC2]">
+                    Automatische trainertransfers staan tijdens deze
+                    testfase uit. Een transfer naar het Stripe-account
+                    is niet hetzelfde als een uitbetaling naar de bank.
+                  </p>
+                </div>
 
-              <div className="flex flex-col justify-center gap-3 border-t border-white/15 bg-[#14171A] p-5 sm:p-6 lg:border-l lg:border-t-0">
-                {stripeCapabilitiesActive && (
-                  <div className="border-2 border-[#D6FF3F] bg-[#D6FF3F] px-4 py-3 text-[#14171A]">
-                    <p className="font-display text-base">
-                      V2-TESTACCOUNT GEKOPPELD
-                    </p>
-                  </div>
-                )}
+                <div className="flex flex-col justify-center gap-3 border-t border-white/15 p-5 sm:p-6 lg:border-l lg:border-t-0">
+                  {stripeHasVerifiedContext && (
+                    <button
+                      type="button"
+                      onClick={() => void handleStripeStatusRefresh()}
+                      disabled={checkingStripeStatus || settingUpStripe}
+                      className="min-h-11 w-full border border-white/40 px-4 py-3 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:text-[#D6FF3F] disabled:opacity-60"
+                    >
+                      {checkingStripeStatus
+                        ? "STRIPE-STATUS CONTROLEREN..."
+                        : "STRIPE-STATUS VERNIEUWEN"}
+                    </button>
+                  )}
 
-                {stripeHasVerifiedContext && (
-                  <button
-                    type="button"
-                    onClick={() => void handleStripeStatusRefresh()}
-                    disabled={checkingStripeStatus || settingUpStripe}
-                    className="min-h-11 w-full border-2 border-white/40 px-4 py-3 font-display text-sm text-white transition hover:border-[#D6FF3F] hover:text-[#D6FF3F] disabled:opacity-60"
-                  >
-                    {checkingStripeStatus
-                      ? "STRIPE-STATUS CONTROLEREN..."
-                      : "STRIPE-STATUS VERNIEUWEN"}
-                  </button>
-                )}
+                  {!stripeLinkRequiresReview && (
+                    <button
+                      type="button"
+                      onClick={() => void handleStripeOnboarding()}
+                      disabled={settingUpStripe || checkingStripeStatus}
+                      className="min-h-11 w-full border border-[#D6FF3F]/60 px-4 py-3 font-display text-sm text-[#D6FF3F] transition hover:bg-[#D6FF3F] hover:text-[#14171A] disabled:opacity-60"
+                    >
+                      {settingUpStripe
+                        ? "STRIPE OPENEN..."
+                        : stripeHasStarted
+                          ? "BESTAANDE ONBOARDING OPENEN →"
+                          : "KOPPEL STRIPE. GOW! →"}
+                    </button>
+                  )}
 
-                {!stripeLinkRequiresReview && (
-                  <button
-                    type="button"
-                    onClick={() => void handleStripeOnboarding()}
-                    disabled={settingUpStripe || checkingStripeStatus}
-                    className="min-h-11 w-full bg-[#D6FF3F] px-4 py-3 font-display text-sm text-[#14171A] transition hover:bg-white disabled:opacity-60"
-                  >
-                    {settingUpStripe
-                      ? "STRIPE OPENEN..."
-                      : stripeHasStarted
-                        ? "BESTAANDE ONBOARDING OPENEN →"
-                        : "KOPPEL STRIPE. GOW! →"}
-                  </button>
-                )}
+                  <details className="border-t border-white/15 pt-2">
+                    <summary className="cursor-pointer py-3 font-display text-xs text-[#B9BEC2]">
+                      HOE WERKT DE CONTROLE?
+                    </summary>
 
-                <details className="mt-1 border-t border-white/15 pt-3">
-                  <summary className="cursor-pointer py-2 font-display text-xs text-[#D6FF3F]">
-                    HOE WERKT DE CONTROLE?
-                  </summary>
+                    <div className="space-y-3 pb-2 text-xs leading-relaxed text-[#B9BEC2]">
+                      {stripeHasVerifiedContext && (
+                        <p>
+                          Opnieuw openen controleert eerst je bestaande
+                          Stripe-account en opent daarna de Stripe-hosted
+                          onboarding. Dit start geen transfer of
+                          bankuitbetaling.
+                        </p>
+                      )}
 
-                  <div className="space-y-3 pt-2 text-xs leading-relaxed text-[#B9BEC2]">
-                    {stripeHasVerifiedContext && (
                       <p>
-                        Opnieuw openen controleert eerst je bestaande
-                        Stripe-account en opent daarna de Stripe-hosted
-                        onboarding. Dit start geen transfer of
-                        bankuitbetaling.
+                        ‘Ververs’ bovenaan leest alleen de opgeslagen
+                        dashboardgegevens. ‘Stripe-status vernieuwen’
+                        controleert je bestaande account bij Stripe,
+                        zonder onboarding te openen.
                       </p>
-                    )}
 
-                    <p>
-                      ‘Ververs’ bovenaan leest alleen de opgeslagen
-                      dashboardgegevens. ‘Stripe-status vernieuwen’
-                      controleert je bestaande account bij Stripe,
-                      zonder onboarding te openen.
-                    </p>
-
-                    <p>
-                      Na terugkeer uit de onboarding wordt die
-                      controle eenmaal automatisch uitgevoerd.
-                    </p>
-                  </div>
-                </details>
+                      <p>
+                        Uitklappen start geen Stripe-aanvraag. Na
+                        terugkeer uit de onboarding wordt de
+                        statuscontrole eenmaal automatisch uitgevoerd.
+                      </p>
+                    </div>
+                  </details>
+                </div>
               </div>
+
+              {stripeError && (
+                <div
+                  role="alert"
+                  className="mx-5 mb-5 border border-[#FF4B3E]/60 bg-[#FF4B3E]/5 p-4 text-sm text-[#FF4B3E] sm:mx-6"
+                >
+                  {stripeError}
+                </div>
+              )}
+
+              {stripeSuccess && (
+                <div
+                  role="status"
+                  className="mx-5 mb-5 border border-[#D6FF3F]/40 p-4 text-sm text-[#D6FF3F] sm:mx-6"
+                >
+                  {stripeSuccess}
+                </div>
+              )}
             </div>
           </section>
 
@@ -1420,14 +1759,16 @@ export default function TrainerDashboardPage() {
 
               <p className="mt-3 max-w-2xl leading-relaxed text-white/90">
                 Je annuleert de training met{" "}
-                <strong>{pendingTrainerCancellation.player_name}</strong>{" "}
+                <strong>
+                  {pendingTrainerCancellation.player_name}
+                </strong>{" "}
                 op{" "}
                 {formatDate(
-                  pendingTrainerCancellation.availability_slots?.starts_at,
+                  pendingTrainerCancellation.availability_slots?.starts_at
                 )}{" "}
                 om{" "}
                 {formatTime(
-                  pendingTrainerCancellation.availability_slots?.starts_at,
+                  pendingTrainerCancellation.availability_slots?.starts_at
                 )}
                 .
               </p>
@@ -1441,7 +1782,7 @@ export default function TrainerDashboardPage() {
                   Voor deze ene les wordt een refundopdracht van{" "}
                   {formatEuro(
                     pendingTrainerCancellation.total_price_cents,
-                    pendingTrainerCancellation.currency,
+                    pendingTrainerCancellation.currency
                   )}{" "}
                   geregistreerd. De speler ontvangt na succesvolle
                   verwerking een afzonderlijke bevestiging. Voor deze
@@ -1454,9 +1795,7 @@ export default function TrainerDashboardPage() {
                 <button
                   type="button"
                   onClick={closeTrainerCancellation}
-                  disabled={
-                    cancellingBookingId === pendingTrainerCancellation.id
-                  }
+                  disabled={cancellingBookingId !== null}
                   className="min-h-11 border-2 border-white px-5 py-3 font-display text-base text-white transition hover:bg-white hover:text-[#14171A] disabled:opacity-60"
                 >
                   TERUG
@@ -1466,12 +1805,10 @@ export default function TrainerDashboardPage() {
                   type="button"
                   onClick={() =>
                     void handleTrainerCancellation(
-                      pendingTrainerCancellation,
+                      pendingTrainerCancellation
                     )
                   }
-                  disabled={
-                    cancellingBookingId === pendingTrainerCancellation.id
-                  }
+                  disabled={cancellingBookingId !== null}
                   className="min-h-11 bg-[#14171A] px-5 py-3 font-display text-base text-white transition hover:bg-white hover:text-[#14171A] disabled:opacity-60"
                 >
                   {cancellingBookingId === pendingTrainerCancellation.id
@@ -1521,7 +1858,6 @@ export default function TrainerDashboardPage() {
               <p className="font-display text-xs">
                 INDICATIEF TRAINERSDEEL DEZE MAAND — NIET UITBETAALD
               </p>
-
               <p className="mt-2 font-display text-4xl leading-none">
                 {formatEuro(thisMonthNetEarningsCents)}
               </p>
@@ -1554,6 +1890,7 @@ export default function TrainerDashboardPage() {
                   <button
                     key={value}
                     type="button"
+                    aria-pressed={bookingFilter === value}
                     onClick={() => setBookingFilter(value)}
                     className={`min-h-11 border-2 px-3 py-2 font-display text-xs transition ${
                       bookingFilter === value
@@ -1615,7 +1952,6 @@ export default function TrainerDashboardPage() {
                 <p className="font-display text-2xl text-[#D6FF3F]">
                   GEEN BOEKINGEN VOOR DIT FILTER.
                 </p>
-
                 <p className="mt-2 text-sm text-[#B9BEC2]">
                   Kies een ander filter of voeg meer tijdsloten toe.
                 </p>
@@ -1654,7 +1990,7 @@ export default function TrainerDashboardPage() {
 
                                 <span
                                   className={`px-2.5 py-1.5 font-display text-[10px] ${getStatusClass(
-                                    booking.status,
+                                    booking.status
                                   )}`}
                                 >
                                   {getStatusLabel(booking.status)}
@@ -1691,7 +2027,7 @@ export default function TrainerDashboardPage() {
                                     <p className="font-display text-3xl text-[#D6FF3F]">
                                       {formatEuro(
                                         booking.total_price_cents,
-                                        booking.currency,
+                                        booking.currency
                                       )}
                                     </p>
                                     <p className="text-[10px] text-[#B9BEC2]">
@@ -1706,11 +2042,9 @@ export default function TrainerDashboardPage() {
                                   <p className="font-display text-xs text-[#FF4B3E]">
                                     LOCATIE
                                   </p>
-
                                   <p className="mt-1 font-display text-base">
                                     {getVenueLabel(slot.venue)}
                                   </p>
-
                                   <p className="mt-1 text-xs leading-relaxed text-[#B9BEC2]">
                                     {slot.venue.address_line},{" "}
                                     {slot.venue.city}
@@ -1725,29 +2059,41 @@ export default function TrainerDashboardPage() {
                               </div>
 
                               <div className="mt-auto space-y-3 pt-5">
-                                {booking.status === "confirmed" && (
-                                  <button
-                                    type="button"
-                                    onClick={() => setChatBooking(booking)}
-                                    className={`inline-flex min-h-11 w-full items-center justify-center px-4 py-3 font-display text-sm transition ${
-                                      chat?.has_unread_player_message
-                                        ? "bg-[#FF4B3E] !text-white motion-safe:animate-pulse"
-                                        : "bg-[#D6FF3F] !text-[#14171A] hover:bg-white"
-                                    }`}
-                                  >
-                                    {chat?.has_unread_player_message
-                                      ? "NIEUW BERICHT VAN SPELER!"
-                                      : chat?.has_messages
-                                        ? "CHAT OPENEN"
-                                        : "CHAT MET SPELER"}
-                                  </button>
-                                )}
+                                {/*
+                                 * Ook na afloop en annulering bereikbaar.
+                                 * Versturen wordt afzonderlijk gecontroleerd.
+                                 */}
+                                <div>
+  {chat?.has_messages && (
+    <p className="mb-2 font-display text-[11px] tracking-wide text-[#B9BEC2]">
+      AL EERDER GECHAT
+    </p>
+  )}
+
+  <button
+    type="button"
+    onClick={() => setChatBooking(booking)}
+    className={`inline-flex min-h-11 w-full items-center justify-center border-2 px-4 py-3 font-display text-sm transition ${
+      chat?.has_unread_player_message
+        ? "border-[#FF4B3E] bg-[#FF4B3E] !text-white motion-safe:animate-pulse"
+        : chat?.has_messages
+          ? "border-[#D6FF3F] bg-[#D6FF3F] !text-[#14171A] hover:border-white hover:bg-white"
+          : "border-white/30 bg-transparent text-[#B9BEC2] hover:border-[#D6FF3F] hover:text-[#D6FF3F]"
+    }`}
+  >
+    {chat?.has_unread_player_message
+      ? "NIEUW BERICHT VAN SPELER!"
+      : chat?.has_messages
+        ? "GESPREK BEKIJKEN"
+        : "GESPREK OPENEN"}
+  </button>
+</div>
 
                                 {canCancel && (
                                   <button
                                     type="button"
                                     disabled={
-                                      cancellingBookingId === booking.id ||
+                                      cancellingBookingId !== null ||
                                       pendingTrainerCancellation?.id ===
                                         booking.id
                                     }

@@ -3,17 +3,22 @@
 import Link from "next/link";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import PlayerPackageReservations from "@/components/PlayerPackageReservations";
 import PlayerPackagePurchases from "@/components/PlayerPackagePurchases";
 import BookingIssueModal from "@/components/BookingIssueModal";
 import BookingChatModal from "@/components/BookingChatModal";
+
 import { supabase } from "@/lib/supabase-browser";
+import { getBookingMessageStates } from "@/lib/booking-message-state";
 import {
   getWhatsAppShareUrl,
   getGoogleCalendarUrl,
 } from "@/lib/calendar-share";
+
+/* TYPES */
 
 type MainTab = "single" | "packages";
 type BookingFilter = "all" | "upcoming" | "completed" | "cancelled";
@@ -86,11 +91,7 @@ type BookingSection = {
   bookings: PlayerBooking[];
 };
 
-type BookingMessageSummary = {
-  booking_id: string;
-  sender_role: string;
-  created_at: string;
-};
+/* HELPERS */
 
 function parseTime(value?: string | null): number {
   return value ? Date.parse(value) : NaN;
@@ -153,10 +154,14 @@ function getVenueLabel(venue: VenueSummary | null): string {
 
 function getTrainerInitials(booking: PlayerBooking): string {
   const trainer = booking.trainers;
+
   if (!trainer) return "GT";
-  if (trainer.initials?.trim()) return trainer.initials.trim().toUpperCase();
+  if (trainer.initials?.trim()) {
+    return trainer.initials.trim().toUpperCase();
+  }
 
   const parts = trainer.name.trim().split(" ").filter(Boolean);
+
   if (!parts.length) return "GT";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
 
@@ -209,9 +214,11 @@ function getStatusClass(status: BookingStatus): string {
   if (status === "confirmed" || status === "completed") {
     return "bg-[#D6FF3F] text-[#14171A]";
   }
+
   if (status === "cancelled" || status === "refunded") {
     return "bg-[#FF4B3E] text-white";
   }
+
   return "bg-white text-[#14171A]";
 }
 
@@ -289,8 +296,11 @@ function bookingStart(booking: PlayerBooking): number {
   const value = parseTime(
     booking.availability_slots?.starts_at ?? booking.created_at
   );
+
   return Number.isFinite(value) ? value : 0;
 }
+
+/* LADEN */
 
 function LoadingScreen() {
   return (
@@ -305,9 +315,12 @@ function LoadingScreen() {
   );
 }
 
+/* PAGINA */
+
 function MijnBoekingenContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+
   const cancellationRef = useRef<HTMLElement | null>(null);
   const cancelBusyRef = useRef(false);
   const reviewBusyRef = useRef(false);
@@ -322,32 +335,47 @@ function MijnBoekingenContent() {
       : "single"
   );
 
-  const [playerProfile, setPlayerProfile] = useState<PlayerProfile | null>(null);
+  const [playerProfile, setPlayerProfile] =
+    useState<PlayerProfile | null>(null);
   const [currentUserId, setCurrentUserId] = useState("");
   const [bookings, setBookings] = useState<PlayerBooking[]>([]);
-  const [statusFilter, setStatusFilter] = useState<BookingFilter>("all");
+
+  const [statusFilter, setStatusFilter] =
+    useState<BookingFilter>("all");
   const [selectedMonth, setSelectedMonth] = useState("all");
   const [visibleLimit, setVisibleLimit] = useState(6);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [cancellingBookingId, setCancellingBookingId] = useState<string | null>(null);
-  const [payingBookingId, setPayingBookingId] = useState<string | null>(null);
-  const [chatBooking, setChatBooking] = useState<PlayerBooking | null>(null);
 
-  const [reviewBookingId, setReviewBookingId] = useState<string | null>(null);
+  const [cancellingBookingId, setCancellingBookingId] =
+    useState<string | null>(null);
+  const [payingBookingId, setPayingBookingId] =
+    useState<string | null>(null);
+
+  const [chatBooking, setChatBooking] =
+    useState<PlayerBooking | null>(null);
+  const [chatStatusError, setChatStatusError] = useState("");
+  const [chatRefreshVersion, setChatRefreshVersion] = useState(0);
+
+  const [reviewBookingId, setReviewBookingId] =
+    useState<string | null>(null);
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewComment, setReviewComment] = useState("");
   const [submittingReview, setSubmittingReview] = useState(false);
 
-  const [pendingCancellation, setPendingCancellation] = useState<PlayerBooking | null>(null);
-  const [pendingIssueBooking, setPendingIssueBooking] = useState<PlayerBooking | null>(null);
+  const [pendingCancellation, setPendingCancellation] =
+    useState<PlayerBooking | null>(null);
+  const [pendingIssueBooking, setPendingIssueBooking] =
+    useState<PlayerBooking | null>(null);
+
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     void loadPlayerBookings();
+
     return () => {
       loadSequenceRef.current += 1;
     };
@@ -364,6 +392,7 @@ function MijnBoekingenContent() {
   useEffect(() => {
     const updateClock = () => setNow(Date.now());
     const timer = window.setInterval(updateClock, 10_000);
+
     window.addEventListener("focus", updateClock);
 
     return () => {
@@ -371,6 +400,117 @@ function MijnBoekingenContent() {
       window.removeEventListener("focus", updateClock);
     };
   }, []);
+
+  /*
+   * Alleen de verzameling boekings-ID's bepaalt welke
+   * gesprekken gecontroleerd moeten worden.
+   *
+   * Een veranderde badge wijzigt deze sleutel niet en
+   * veroorzaakt daardoor geen nieuwe ophaallus.
+   */
+  const chatBookingIdsKey = useMemo(
+    () => JSON.stringify(bookings.map((booking) => booking.id).sort()),
+    [bookings]
+  );
+
+  /*
+   * Centrale berichtenstatus:
+   * - bij het laden van boekingen;
+   * - na een leesregistratie of verzonden bericht;
+   * - bij terugkeer naar het tabblad;
+   * - iedere tien seconden zolang het tabblad zichtbaar is.
+   *
+   * Geen volledige dashboardherlaadactie nodig.
+   */
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    const bookingIds = JSON.parse(chatBookingIdsKey) as string[];
+
+    if (bookingIds.length === 0) {
+      setChatStatusError("");
+      return;
+    }
+
+    let active = true;
+    let busy = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    async function refreshMessageStates(): Promise<void> {
+      if (!active || busy) return;
+      if (document.visibilityState !== "visible") return;
+
+      busy = true;
+
+      try {
+        const states = await getBookingMessageStates(bookingIds);
+
+        if (!active) return;
+
+        setBookings((previous) =>
+          previous.map((booking) => {
+            const state = states.get(booking.id);
+
+            // Een inmiddels toegevoegde boeking wordt
+            // in de volgende effectronde gecontroleerd.
+            if (!state) return booking;
+
+            return {
+              ...booking,
+              chat_state: {
+                has_messages: state.has_messages,
+                has_unread_trainer_message: state.unread_count > 0,
+                last_sender_role: state.last_sender_role,
+              },
+            };
+          })
+        );
+
+        setChatStatusError("");
+      } catch (error: unknown) {
+        if (!active) return;
+
+        // Bestaande badges behouden: een fout is geen nulmeting.
+        setChatStatusError(
+          error instanceof Error
+            ? error.message
+            : "De berichtenstatus kon niet worden geladen."
+        );
+      } finally {
+        busy = false;
+      }
+    }
+
+    async function poll(): Promise<void> {
+      await refreshMessageStates();
+
+      if (active) {
+        timer = setTimeout(() => void poll(), 10_000);
+      }
+    }
+
+    function handleReturn(): void {
+      if (document.visibilityState === "visible") {
+        void refreshMessageStates();
+      }
+    }
+
+    window.addEventListener("focus", handleReturn);
+    document.addEventListener("visibilitychange", handleReturn);
+
+    void poll();
+
+    return () => {
+      active = false;
+
+      if (timer !== undefined) clearTimeout(timer);
+
+      window.removeEventListener("focus", handleReturn);
+      document.removeEventListener("visibilitychange", handleReturn);
+    };
+  }, [currentUserId, chatBookingIdsKey, chatRefreshVersion]);
+
+  /* AFGELEIDE GEGEVENS */
 
   const singleBookings = useMemo(
     () => bookings.filter((booking) => booking.package_purchase_id === null),
@@ -382,6 +522,7 @@ function MijnBoekingenContent() {
 
     for (const booking of bookings) {
       if (!booking.package_purchase_id) continue;
+
       const list = groups.get(booking.package_purchase_id) ?? [];
       list.push(booking);
       groups.set(booking.package_purchase_id, list);
@@ -394,24 +535,31 @@ function MijnBoekingenContent() {
     return groups;
   }, [bookings]);
 
+  /*
+   * Ongelezen berichten blijven bereikbaar na afloop
+   * of annulering van de les.
+   *
+   * Het chatscherm en de database bepalen afzonderlijk
+   * of versturen nog is toegestaan.
+   */
   const unreadBookings = useMemo(
     () =>
       bookings.filter(
-        (booking) =>
-          booking.chat_state?.has_unread_trainer_message &&
-          booking.status === "confirmed" &&
-          parseTime(booking.availability_slots?.ends_at) > now
+        (booking) => booking.chat_state?.has_unread_trainer_message
       ),
-    [bookings, now]
+    [bookings]
   );
 
   const monthOptions = useMemo(() => {
     const months = new Set<string>();
+
     for (const booking of singleBookings) {
       if (hideExpiredReservation(booking, now)) continue;
+
       const key = getMonthKey(booking.availability_slots?.starts_at);
       if (key) months.add(key);
     }
+
     return Array.from(months).sort().reverse();
   }, [singleBookings, now]);
 
@@ -424,20 +572,30 @@ function MijnBoekingenContent() {
           statusFilter === "upcoming" &&
           booking.status !== "confirmed" &&
           booking.status !== "payment_pending"
-        ) return false;
+        ) {
+          return false;
+        }
 
-        if (statusFilter === "completed" && booking.status !== "completed") {
+        if (
+          statusFilter === "completed" &&
+          booking.status !== "completed"
+        ) {
           return false;
         }
 
         if (
           statusFilter === "cancelled" &&
-          !["cancelled", "refunded", "refund_pending"].includes(booking.status)
-        ) return false;
+          !["cancelled", "refunded", "refund_pending"].includes(
+            booking.status
+          )
+        ) {
+          return false;
+        }
 
         return (
           selectedMonth === "all" ||
-          getMonthKey(booking.availability_slots?.starts_at) === selectedMonth
+          getMonthKey(booking.availability_slots?.starts_at) ===
+            selectedMonth
         );
       }),
     [singleBookings, statusFilter, selectedMonth, now]
@@ -445,7 +603,9 @@ function MijnBoekingenContent() {
 
   const { bookingSections, totalFilteredCount } = useMemo(() => {
     const sorted = [...filteredBookings].sort((a, b) => {
-      const group = getSectionOrder(a.status) - getSectionOrder(b.status);
+      const group =
+        getSectionOrder(a.status) - getSectionOrder(b.status);
+
       if (group) return group;
 
       return ["confirmed", "payment_pending"].includes(a.status)
@@ -459,13 +619,18 @@ function MijnBoekingenContent() {
       ["RESERVERINGEN & BETAALSTATUS", ["payment_pending"]],
       ["AANKOMENDE TRAININGEN", ["confirmed"]],
       ["AFGERONDE TRAININGEN", ["completed"]],
-      ["GEANNULEERDE BOEKINGEN", ["cancelled", "refunded", "refund_pending"]],
+      [
+        "GEANNULEERDE BOEKINGEN",
+        ["cancelled", "refunded", "refund_pending"],
+      ],
     ];
 
     const sections: BookingSection[] = definitions
       .map(([title, statuses]) => ({
         title,
-        bookings: shown.filter((booking) => statuses.includes(booking.status)),
+        bookings: shown.filter((booking) =>
+          statuses.includes(booking.status)
+        ),
       }))
       .filter((section) => section.bookings.length > 0);
 
@@ -474,6 +639,8 @@ function MijnBoekingenContent() {
       totalFilteredCount: filteredBookings.length,
     };
   }, [filteredBookings, visibleLimit]);
+
+  /* ALGEMENE ACTIES */
 
   function clearMessages() {
     setErrorMessage("");
@@ -487,13 +654,18 @@ function MijnBoekingenContent() {
 
   function changeTab(tab: MainTab) {
     if (cancellingBookingId || submittingReview) return;
+
     setActiveTab(tab);
     setPendingCancellation(null);
     setReviewBookingId(null);
     clearMessages();
   }
 
-  async function loadPlayerBookings(showLoading = true): Promise<void> {
+  /* BOEKINGEN OPHALEN */
+
+  async function loadPlayerBookings(
+    showLoading = true
+  ): Promise<void> {
     const sequence = ++loadSequenceRef.current;
     const isCurrent = () => sequence === loadSequenceRef.current;
 
@@ -520,7 +692,10 @@ function MijnBoekingenContent() {
         .maybeSingle();
 
       if (!isCurrent()) return;
-      if (profileError) throw new Error("Je spelerprofiel kon niet worden geladen.");
+
+      if (profileError) {
+        throw new Error("Je spelerprofiel kon niet worden geladen.");
+      }
 
       if (!profile || profile.role !== "player") {
         router.replace("/speler-login");
@@ -555,89 +730,57 @@ function MijnBoekingenContent() {
               name, city, address_line, postal_code
             )
           ),
-          trainers (id, name, sport, focus, image_url, initials)
+          trainers (
+            id, name, sport, focus, image_url, initials
+          )
         `)
         .eq("player_id", user.id)
         .order("created_at", { ascending: false });
 
-      if (error) throw new Error("Je boekingen konden niet worden geladen.");
       if (!isCurrent()) return;
 
+      if (error) {
+        throw new Error("Je boekingen konden niet worden geladen.");
+      }
+
       const loaded = (data ?? []) as unknown as PlayerBooking[];
-      const ids = loaded.map((booking) => booking.id);
 
       const { data: reviews, error: reviewsError } = await supabase
         .from("trainer_reviews")
         .select("booking_id")
         .eq("player_id", user.id);
 
+      if (!isCurrent()) return;
+
       if (reviewsError) {
-        console.warn("Reviews ophalen mislukt:", reviewsError.message);
+        console.warn(
+          "Reviews ophalen mislukt:",
+          reviewsError.message
+        );
       }
 
       const reviewedIds = new Set(
         (reviews ?? []).map((review) => review.booking_id)
       );
 
-      let messages: BookingMessageSummary[] = [];
+      /*
+       * Behoud de laatst bevestigde chatstatus bij verversen.
+       * De afzonderlijke berichtencontrole vernieuwt die status.
+       */
+      setBookings((previous) => {
+        const previousById = new Map(
+          previous.map((booking) => [booking.id, booking])
+        );
 
-      if (ids.length) {
-        const { data: messageData, error: messageError } = await supabase
-          .from("booking_messages")
-          .select("booking_id, sender_role, created_at")
-          .in("booking_id", ids)
-          .order("created_at", { ascending: true });
-
-        if (messageError) {
-          console.warn("Berichtenstatus ophalen mislukt:", messageError.message);
-        }
-        messages = (messageData ?? []) as BookingMessageSummary[];
-      }
-
-      if (!isCurrent()) return;
-
-      const byBooking = new Map<string, BookingMessageSummary[]>();
-      for (const message of messages) {
-        const list = byBooking.get(message.booking_id) ?? [];
-        list.push(message);
-        byBooking.set(message.booking_id, list);
-      }
-
-      const withState: PlayerBooking[] = loaded.map((booking) => {
-        const list = byBooking.get(booking.id) ?? [];
-        const last = list[list.length - 1];
-        let readAt = 0;
-
-        try {
-          const stored = localStorage.getItem(
-            `gowtrain_read_player_${booking.id}`
-          );
-          const parsed = parseTime(stored);
-          if (Number.isFinite(parsed)) readAt = parsed;
-        } catch {
-          readAt = 0;
-        }
-
-        return {
+        return loaded.map((booking) => ({
           ...booking,
           has_review: reviewedIds.has(booking.id),
-          chat_state: {
-            has_messages: list.length > 0,
-            has_unread_trainer_message: list.some(
-              (message) =>
-                message.sender_role === "trainer" &&
-                Date.parse(message.created_at) > readAt
-            ),
-            last_sender_role:
-              last?.sender_role === "player" || last?.sender_role === "trainer"
-                ? last.sender_role
-                : null,
-          },
-        };
+          chat_state: previousById.get(booking.id)?.chat_state,
+        }));
       });
 
-      setBookings(withState);
       setNow(Date.now());
+      setChatRefreshVersion((value) => value + 1);
     } catch (error: unknown) {
       if (isCurrent()) {
         showError(
@@ -647,14 +790,18 @@ function MijnBoekingenContent() {
         );
       }
     } finally {
-      if (isCurrent() && showLoading) setLoading(false);
+      if (isCurrent() && showLoading) {
+        setLoading(false);
+      }
     }
   }
 
   async function handleRefresh(): Promise<void> {
     if (refreshing) return;
+
     setRefreshing(true);
     clearMessages();
+
     try {
       await loadPlayerBookings(false);
     } finally {
@@ -662,11 +809,15 @@ function MijnBoekingenContent() {
     }
   }
 
+  /* BETALING HERVATTEN */
+
   async function handleCheckout(bookingId: string): Promise<void> {
     if (payingBookingId) return;
+
     clearMessages();
 
     const booking = bookings.find((item) => item.id === bookingId);
+
     if (!booking || !canResumePayment(booking, Date.now())) {
       setNow(Date.now());
       showError(
@@ -676,9 +827,12 @@ function MijnBoekingenContent() {
     }
 
     setPayingBookingId(bookingId);
+
     window.location.href =
       `/boeken/checkout?bookingId=${encodeURIComponent(bookingId)}`;
   }
+
+  /* ANNULEREN */
 
   function openCancellationConfirmation(booking: PlayerBooking) {
     if (cancellingBookingId) return;
@@ -696,14 +850,18 @@ function MijnBoekingenContent() {
     }, 50);
   }
 
-  async function handleCancellation(booking: PlayerBooking): Promise<void> {
+  async function handleCancellation(
+    booking: PlayerBooking
+  ): Promise<void> {
     if (cancelBusyRef.current) return;
 
     if (
       !canPlayerCancel(booking) ||
       cancellationEligibility(booking, Date.now()) === "review"
     ) {
-      showError("Deze annulering moet door Gowtrain worden beoordeeld.");
+      showError(
+        "Deze annulering moet door Gowtrain worden beoordeeld."
+      );
       return;
     }
 
@@ -732,7 +890,9 @@ function MijnBoekingenContent() {
       } | null;
 
       if (!result || result.booking_id !== booking.id) {
-        showError("Controleer je boekingen; het resultaat kon niet worden bevestigd.");
+        showError(
+          "Controleer je boekingen; het resultaat kon niet worden bevestigd."
+        );
         return;
       }
 
@@ -749,7 +909,11 @@ function MijnBoekingenContent() {
     }
   }
 
-  async function submitReview(booking: PlayerBooking): Promise<void> {
+  /* REVIEWS */
+
+  async function submitReview(
+    booking: PlayerBooking
+  ): Promise<void> {
     if (!booking.trainers?.id || reviewBusyRef.current) return;
 
     reviewBusyRef.current = true;
@@ -766,13 +930,15 @@ function MijnBoekingenContent() {
         return;
       }
 
-      const { error } = await supabase.from("trainer_reviews").insert({
-        booking_id: booking.id,
-        trainer_id: booking.trainers.id,
-        player_id: user.id,
-        rating: reviewRating,
-        comment: reviewComment.trim() || null,
-      });
+      const { error } = await supabase
+        .from("trainer_reviews")
+        .insert({
+          booking_id: booking.id,
+          trainer_id: booking.trainers.id,
+          player_id: user.id,
+          rating: reviewRating,
+          comment: reviewComment.trim() || null,
+        });
 
       if (error) {
         showError("Je review kon niet worden opgeslagen.");
@@ -782,6 +948,7 @@ function MijnBoekingenContent() {
       setReviewBookingId(null);
       setReviewComment("");
       setReviewRating(5);
+
       await loadPlayerBookings(false);
       setSuccessMessage("Bedankt! Je beoordeling is geplaatst.");
     } catch {
@@ -791,6 +958,8 @@ function MijnBoekingenContent() {
       setSubmittingReview(false);
     }
   }
+
+  /* PROBLEEM MELDEN */
 
   function openIssueReport(booking: PlayerBooking) {
     clearMessages();
@@ -805,6 +974,7 @@ function MijnBoekingenContent() {
   function renderBookingCard(booking: PlayerBooking) {
     const trainer = booking.trainers;
     const slot = booking.availability_slots;
+
     const isPackageLesson = booking.package_purchase_id !== null;
     const isCompleted = booking.status === "completed";
     const startsAt = parseTime(slot?.starts_at);
@@ -845,6 +1015,7 @@ function MijnBoekingenContent() {
                   </span>
                 )}
               </div>
+
               <div className="min-w-0">
                 <p className="break-words font-display text-2xl leading-none">
                   {trainer?.name || "TRAINER"}
@@ -855,7 +1026,11 @@ function MijnBoekingenContent() {
               </div>
             </div>
 
-            <span className={`px-3 py-1.5 font-display text-xs ${getStatusClass(booking.status)}`}>
+            <span
+              className={`px-3 py-1.5 font-display text-xs ${getStatusClass(
+                booking.status
+              )}`}
+            >
               {getStatusLabel(booking, now)}
             </span>
           </div>
@@ -866,22 +1041,30 @@ function MijnBoekingenContent() {
                 {formatDate(slot?.starts_at)}
               </p>
               <p className="mt-1 font-display text-3xl">
-                {formatTime(slot?.starts_at)} – {formatTime(slot?.ends_at)}
+                {formatTime(slot?.starts_at)} –{" "}
+                {formatTime(slot?.ends_at)}
               </p>
             </div>
+
             <div className="text-right">
               <p className="font-display text-3xl text-[#D6FF3F]">
-                {formatEuro(booking.total_price_cents, booking.currency)}
+                {formatEuro(
+                  booking.total_price_cents,
+                  booking.currency
+                )}
               </p>
               <p className="text-[10px] text-[#8A8F94]">
-                {isPackageLesson ? "AANDEEL VAN HET PAKKET" : "INCL. BAANHUUR"}
+                {isPackageLesson
+                  ? "AANDEEL VAN HET PAKKET"
+                  : "INCL. BAANHUUR"}
               </p>
             </div>
           </div>
 
           {slot?.venue && (
             <p className="mt-3 text-xs text-[#B9BEC2]">
-              <strong>Locatie:</strong> {getVenueLabel(slot.venue)}
+              <strong>Locatie:</strong>{" "}
+              {getVenueLabel(slot.venue)}
             </p>
           )}
 
@@ -889,6 +1072,7 @@ function MijnBoekingenContent() {
             {getStatusExplanation(booking, now)}
           </p>
 
+          {/* AGENDA EN DELEN: BESTAANDE TERMIJN BEHOUDEN */}
           {showTrainingActions && slot && (
             <div className="mt-5 space-y-2 border-t border-white/10 pt-3">
               <div className="grid grid-cols-2 gap-2">
@@ -897,11 +1081,15 @@ function MijnBoekingenContent() {
                   onClick={() =>
                     window.open(
                       getGoogleCalendarUrl(
-                        `Gowtrain ${slot.sport.toUpperCase()} les bij ${trainer?.name || "trainer"}`,
+                        `Gowtrain ${slot.sport.toUpperCase()} les bij ${
+                          trainer?.name || "trainer"
+                        }`,
                         slot.starts_at,
                         slot.ends_at,
                         getVenueLabel(slot.venue),
-                        `Gowtrain les bij ${trainer?.name || "trainer"}.`
+                        `Gowtrain les bij ${
+                          trainer?.name || "trainer"
+                        }.`
                       ),
                       "_blank",
                       "noopener,noreferrer"
@@ -911,6 +1099,7 @@ function MijnBoekingenContent() {
                 >
                   IN AGENDA ZETTEN
                 </button>
+
                 <button
                   type="button"
                   onClick={() =>
@@ -931,29 +1120,47 @@ function MijnBoekingenContent() {
                   DELEN VIA WHATSAPP
                 </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setChatBooking(booking)}
-                className={`w-full px-4 py-3 font-display text-sm ${
-                  booking.chat_state?.has_unread_trainer_message
-                    ? "bg-[#FF4B3E] text-white"
-                    : "bg-[#D6FF3F] !text-[#14171A] hover:bg-white"
-                }`}
-              >
-                {booking.chat_state?.has_unread_trainer_message
-                  ? "NIEUW BERICHT VAN TRAINER!"
-                  : booking.chat_state?.has_messages
-                    ? "CHAT OPENEN"
-                    : "CHAT MET TRAINER"}
-              </button>
             </div>
           )}
 
+          {/*
+           * Gesprek blijft bereikbaar na afloop of annulering.
+           * Verstuurrechten worden in het chatscherm én
+           * in de database gecontroleerd.
+           */}
+          <div className="mt-4">
+  {booking.chat_state?.has_messages && (
+    <p className="mb-2 font-display text-[11px] tracking-wide text-[#B9BEC2]">
+      AL EERDER GECHAT
+    </p>
+  )}
+
+  <button
+    type="button"
+    onClick={() => setChatBooking(booking)}
+    className={`min-h-11 w-full border-2 px-4 py-3 font-display text-sm transition ${
+      booking.chat_state?.has_unread_trainer_message
+        ? "border-[#FF4B3E] bg-[#FF4B3E] text-white"
+        : booking.chat_state?.has_messages
+          ? "border-[#D6FF3F] bg-[#D6FF3F] !text-[#14171A] hover:border-white hover:bg-white"
+          : "border-white/30 bg-transparent text-[#B9BEC2] hover:border-[#D6FF3F] hover:text-[#D6FF3F]"
+    }`}
+  >
+    {booking.chat_state?.has_unread_trainer_message
+      ? "NIEUW BERICHT VAN TRAINER!"
+      : booking.chat_state?.has_messages
+        ? "GESPREK BEKIJKEN"
+        : "GESPREK OPENEN"}
+  </button>
+</div>
+
+          {/* REVIEW */}
           {isCompleted && !booking.has_review && (
             <div className="mt-5 border-2 border-[#D6FF3F] p-4">
               <p className="font-display text-base text-[#D6FF3F]">
                 BEOORDEEL DEZE LES
               </p>
+
               {reviewBookingId === booking.id ? (
                 <div className="mt-3 space-y-3">
                   <div className="flex flex-wrap gap-2">
@@ -975,15 +1182,19 @@ function MijnBoekingenContent() {
                       </button>
                     ))}
                   </div>
+
                   <textarea
                     aria-label="Toelichting op je review"
                     value={reviewComment}
                     disabled={submittingReview}
-                    onChange={(event) => setReviewComment(event.target.value)}
+                    onChange={(event) =>
+                      setReviewComment(event.target.value)
+                    }
                     rows={3}
                     placeholder="Vertel kort wat je van de les vond..."
                     className="w-full border-2 border-white/25 bg-transparent p-3 text-sm outline-none focus:border-[#D6FF3F]"
                   />
+
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
@@ -991,8 +1202,11 @@ function MijnBoekingenContent() {
                       onClick={() => void submitReview(booking)}
                       className="flex-1 bg-[#FF4B3E] px-3 py-3 font-display text-sm disabled:opacity-60"
                     >
-                      {submittingReview ? "PLAATSEN..." : "PLAATS REVIEW"}
+                      {submittingReview
+                        ? "PLAATSEN..."
+                        : "PLAATS REVIEW"}
                     </button>
+
                     <button
                       type="button"
                       disabled={submittingReview}
@@ -1025,6 +1239,7 @@ function MijnBoekingenContent() {
             </p>
           )}
 
+          {/* PROBLEEM MELDEN */}
           {canReportIssue && (
             <div className="mt-4 border-t border-white/10 pt-3">
               <button
@@ -1034,12 +1249,14 @@ function MijnBoekingenContent() {
               >
                 Iets mis met deze training? Meld het hier →
               </button>
+
               <p className="mt-1 text-[11px] text-[#8A8F94]">
                 Melden kan vanaf de start tot 24 uur daarna.
               </p>
             </div>
           )}
 
+          {/* BETALING HERVATTEN */}
           {canPay && (
             <button
               type="button"
@@ -1053,6 +1270,7 @@ function MijnBoekingenContent() {
             </button>
           )}
 
+          {/* LOSSE LES ANNULEREN */}
           {canPlayerCancel(booking, now) && (
             <button
               type="button"
@@ -1080,10 +1298,7 @@ function MijnBoekingenContent() {
     }
 
     const unreadCount = lessons.filter(
-      (lesson) =>
-        lesson.chat_state?.has_unread_trainer_message &&
-        lesson.status === "confirmed" &&
-        parseTime(lesson.availability_slots?.ends_at) > now
+      (lesson) => lesson.chat_state?.has_unread_trainer_message
     ).length;
 
     return (
@@ -1126,20 +1341,26 @@ function MijnBoekingenContent() {
               <p className="font-display text-lg text-[#FF4B3E]">
                 SPELER PORTAL
               </p>
+
               <h1 className="mt-3 font-display text-5xl leading-[0.83] sm:text-6xl lg:text-7xl">
-                HÉ, {firstName}.<br />
+                HÉ, {firstName}.
+                <br />
                 JOUW BOEKINGEN.
               </h1>
             </div>
+
             <div className="flex flex-wrap gap-3">
               <button
                 type="button"
                 onClick={() => void handleRefresh()}
-                disabled={refreshing || cancellingBookingId !== null}
+                disabled={
+                  refreshing || cancellingBookingId !== null
+                }
                 className="border-2 border-white px-4 py-3 font-display text-sm hover:border-[#D6FF3F] hover:text-[#D6FF3F] disabled:opacity-60"
               >
                 {refreshing ? "VERVERSEN..." : "↻ VERVERS"}
               </button>
+
               <Link
                 href="/trainers"
                 className="bg-[#FF4B3E] px-5 py-3 font-display text-sm text-white hover:bg-[#D6FF3F] hover:!text-[#14171A]"
@@ -1155,16 +1376,20 @@ function MijnBoekingenContent() {
             aria-label="Type boekingen"
             className="mt-8 flex flex-wrap gap-4 border-b-2 border-white/20 pb-7"
           >
-            {([
-              ["single", "LOSSE LESSEN"],
-              ["packages", "LESPAKKETTEN"],
-            ] as [MainTab, string][]).map(([tab, label]) => (
+            {(
+              [
+                ["single", "LOSSE LESSEN"],
+                ["packages", "LESPAKKETTEN"],
+              ] as [MainTab, string][]
+            ).map(([tab, label]) => (
               <button
                 key={tab}
                 type="button"
                 aria-pressed={activeTab === tab}
                 aria-controls={`bookings-panel-${tab}`}
-                disabled={cancellingBookingId !== null || submittingReview}
+                disabled={
+                  cancellingBookingId !== null || submittingReview
+                }
                 onClick={() => changeTab(tab)}
                 className={`border-2 px-6 py-4 font-display text-xl transition sm:px-8 ${
                   activeTab === tab
@@ -1177,24 +1402,37 @@ function MijnBoekingenContent() {
             ))}
           </div>
 
-          {/* ALGEMENE MELDINGEN */}
+          {/* ONGELEZEN BERICHTEN */}
           {unreadBookings.length > 0 && (
             <div className="mt-6 flex flex-wrap items-center justify-between gap-4 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5">
               <div>
                 <p className="font-display text-xl">
                   {unreadBookings.length} TRAINING
-                  {unreadBookings.length === 1 ? "" : "EN"} MET NIEUWE BERICHTEN
+                  {unreadBookings.length === 1 ? "" : "EN"} MET
+                  NIEUWE BERICHTEN
                 </p>
+
                 <p className="mt-1 text-sm">
-                  Van {unreadBookings[0].trainers?.name || "je trainer"} voor{" "}
-                  {formatDate(unreadBookings[0].availability_slots?.starts_at)}.
+                  Van{" "}
+                  {unreadBookings[0].trainers?.name || "je trainer"}{" "}
+                  voor{" "}
+                  {formatDate(
+                    unreadBookings[0].availability_slots?.starts_at
+                  )}
+                  .
                 </p>
               </div>
+
               <button
                 type="button"
                 onClick={() => {
                   const booking = unreadBookings[0];
-                  setActiveTab(booking.package_purchase_id ? "packages" : "single");
+
+                  setActiveTab(
+                    booking.package_purchase_id
+                      ? "packages"
+                      : "single"
+                  );
                   setChatBooking(booking);
                 }}
                 className="bg-[#14171A] px-5 py-3 font-display text-base !text-[#D6FF3F]"
@@ -1204,20 +1442,50 @@ function MijnBoekingenContent() {
             </div>
           )}
 
+          {/* TERUGKEER PAKKETBETALING */}
           {returnedFromPackage && activeTab === "packages" && (
-            <p role="status" className="mt-6 border border-[#D6FF3F] p-4 text-sm text-[#D7D9DA]">
-              Terug van de pakketbetaalflow? Zodra je betaling is bevestigd
-              en verwerkt, verschijnt je aankoop hier. Klik zo nodig op Ververs.
+            <p
+              role="status"
+              className="mt-6 border border-[#D6FF3F] p-4 text-sm text-[#D7D9DA]"
+            >
+              Terug van de pakketbetaalflow? Zodra je betaling is
+              bevestigd en verwerkt, verschijnt je aankoop hier.
+              Klik zo nodig op Ververs.
             </p>
           )}
 
+          {/* BERICHTENSTATUS NIET ACTUEEL */}
+          {chatStatusError && (
+            <div
+              role="status"
+              className="mt-6 border-2 border-[#FF4B3E] p-4 text-sm text-[#D7D9DA]"
+            >
+              <p className="font-semibold text-[#FF4B3E]">
+                BERICHTENSTATUS NIET ACTUEEL
+              </p>
+              <p className="mt-1">{chatStatusError}</p>
+              <p className="mt-1 text-xs text-[#B9BEC2]">
+                Eventuele badges tonen de laatst geladen status.
+                Klik op Ververs om opnieuw te controleren.
+              </p>
+            </div>
+          )}
+
+          {/* ALGEMENE MELDINGEN */}
           {errorMessage && (
-            <div role="alert" className="mt-6 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-4 font-semibold">
+            <div
+              role="alert"
+              className="mt-6 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-4 font-semibold"
+            >
               {errorMessage}
             </div>
           )}
+
           {successMessage && (
-            <div role="status" className="mt-6 border-2 border-[#D6FF3F] bg-[#D6FF3F] p-4 font-semibold text-[#14171A]">
+            <div
+              role="status"
+              className="mt-6 border-2 border-[#D6FF3F] bg-[#D6FF3F] p-4 font-semibold text-[#14171A]"
+            >
               {successMessage}
             </div>
           )}
@@ -1229,11 +1497,18 @@ function MijnBoekingenContent() {
               tabIndex={-1}
               className="mt-8 border-2 border-[#FF4B3E] bg-[#FF4B3E] p-5 outline-none sm:p-6"
             >
-              <h2 className="font-display text-3xl">TRAINING ANNULEREN?</h2>
+              <h2 className="font-display text-3xl">
+                TRAINING ANNULEREN?
+              </h2>
+
               <p className="mt-3">
-                {formatDate(pendingCancellation.availability_slots?.starts_at)}
+                {formatDate(
+                  pendingCancellation.availability_slots?.starts_at
+                )}
                 {" om "}
-                {formatTime(pendingCancellation.availability_slots?.starts_at)}
+                {formatTime(
+                  pendingCancellation.availability_slots?.starts_at
+                )}
                 {" bij "}
                 {pendingCancellation.trainers?.name || "je trainer"}.
               </p>
@@ -1241,32 +1516,43 @@ function MijnBoekingenContent() {
               <div className="mt-5 border-l-2 border-white pl-4">
                 {cancellationState === "timely" ? (
                   <>
-                    <p className="font-display text-lg">VOLLEDIGE TERUGBETALING</p>
+                    <p className="font-display text-lg">
+                      VOLLEDIGE TERUGBETALING
+                    </p>
+
                     <p className="mt-2 text-sm">
-                      Je annuleert binnen de vastgelegde kosteloze termijn.
-                      Er wordt een terugbetaling van{" "}
+                      Je annuleert binnen de vastgelegde kosteloze
+                      termijn. Er wordt een terugbetaling van{" "}
                       {formatEuro(
                         pendingCancellation.total_price_cents,
                         pendingCancellation.currency
                       )}{" "}
-                      klaargezet. De database controleert de termijn opnieuw
-                      bij bevestigen.
+                      klaargezet. De database controleert de termijn
+                      opnieuw bij bevestigen.
                     </p>
                   </>
                 ) : cancellationState === "late" ? (
                   <>
-                    <p className="font-display text-lg">GEEN AUTOMATISCHE TERUGBETALING</p>
+                    <p className="font-display text-lg">
+                      GEEN AUTOMATISCHE TERUGBETALING
+                    </p>
+
                     <p className="mt-2 text-sm">
                       De kosteloze annuleringsdeadline is verstreken.
-                      Je kunt de les annuleren, maar ontvangt geen automatische refund.
+                      Je kunt de les annuleren, maar ontvangt geen
+                      automatische refund.
                     </p>
                   </>
                 ) : (
                   <>
-                    <p className="font-display text-lg">CONTROLE DOOR GOWTRAIN NODIG</p>
+                    <p className="font-display text-lg">
+                      CONTROLE DOOR GOWTRAIN NODIG
+                    </p>
+
                     <p className="mt-2 text-sm">
-                      De oorspronkelijke voorwaarden ontbreken of de training
-                      is verplaatst. Neem contact op met Gowtrain.
+                      De oorspronkelijke voorwaarden ontbreken of de
+                      training is verplaatst. Neem contact op met
+                      Gowtrain.
                     </p>
                   </>
                 )}
@@ -1281,6 +1567,7 @@ function MijnBoekingenContent() {
                 >
                   TERUG
                 </button>
+
                 {cancellationState !== "review" && (
                   <button
                     type="button"
@@ -1288,7 +1575,9 @@ function MijnBoekingenContent() {
                       cancellingBookingId !== null ||
                       !canPlayerCancel(pendingCancellation, now)
                     }
-                    onClick={() => void handleCancellation(pendingCancellation)}
+                    onClick={() =>
+                      void handleCancellation(pendingCancellation)
+                    }
                     className="bg-[#14171A] px-5 py-3 font-display disabled:opacity-60"
                   >
                     {cancellingBookingId
@@ -1300,11 +1589,13 @@ function MijnBoekingenContent() {
             </section>
           )}
 
-          {/* MODALS */}
+          {/* PROBLEEMMELDING */}
           {pendingIssueBooking && (
             <BookingIssueModal
               bookingId={pendingIssueBooking.id}
-              trainerName={pendingIssueBooking.trainers?.name || "je trainer"}
+              trainerName={
+                pendingIssueBooking.trainers?.name || "je trainer"
+              }
               trainingLabel={`${formatDate(
                 pendingIssueBooking.availability_slots?.starts_at
               )} · ${formatTime(
@@ -1313,40 +1604,61 @@ function MijnBoekingenContent() {
               onClose={() => setPendingIssueBooking(null)}
               onSubmitted={() => {
                 setPendingIssueBooking(null);
-                setSuccessMessage("Je melding is verstuurd naar Gowtrain.");
+                setSuccessMessage(
+                  "Je melding is verstuurd naar Gowtrain."
+                );
               }}
             />
           )}
 
+          {/* CHAT */}
           {chatBooking && (
             <BookingChatModal
               bookingId={chatBooking.id}
-              recipientName={chatBooking.trainers?.name || "je trainer"}
-              trainingLabel={`${chatBooking.availability_slots?.sport?.toUpperCase() || "LES"} · ${formatDate(
+              recipientName={
+                chatBooking.trainers?.name || "je trainer"
+              }
+              trainingLabel={`${
+                chatBooking.availability_slots?.sport?.toUpperCase() ||
+                "LES"
+              } · ${formatDate(
                 chatBooking.availability_slots?.starts_at
-              )} (${formatTime(chatBooking.availability_slots?.starts_at)} - ${formatTime(
+              )} (${formatTime(
+                chatBooking.availability_slots?.starts_at
+              )} - ${formatTime(
                 chatBooking.availability_slots?.ends_at
               )})`}
-              venueLabel={getVenueLabel(chatBooking.availability_slots?.venue ?? null)}
+              venueLabel={getVenueLabel(
+                chatBooking.availability_slots?.venue ?? null
+              )}
               currentUserRole="player"
               currentUserId={currentUserId}
-              currentUserName={playerProfile?.full_name || "Speler"}
+              currentUserName={
+                playerProfile?.full_name || "Speler"
+              }
               onClose={() => setChatBooking(null)}
-              onMessagesRead={() => void loadPlayerBookings(false)}
+              onMessagesRead={() =>
+                setChatRefreshVersion((value) => value + 1)
+              }
             />
           )}
 
           {/* TAB: LOSSE LESSEN */}
           {activeTab === "single" && (
-            <section id="bookings-panel-single" aria-label="Losse lessen">
+            <section
+              id="bookings-panel-single"
+              aria-label="Losse lessen"
+            >
               <div className="mt-8 flex flex-col justify-between gap-4 border-b-2 border-white/20 pb-6 sm:flex-row sm:items-center">
                 <div className="flex flex-wrap gap-2">
-                  {([
-                    ["ALLES", "all"],
-                    ["AANKOMEND", "upcoming"],
-                    ["AFGEROND", "completed"],
-                    ["GEANNULEERD", "cancelled"],
-                  ] as [string, BookingFilter][]).map(([label, value]) => (
+                  {(
+                    [
+                      ["ALLES", "all"],
+                      ["AANKOMEND", "upcoming"],
+                      ["AFGEROND", "completed"],
+                      ["GEANNULEERD", "cancelled"],
+                    ] as [string, BookingFilter][]
+                  ).map(([label, value]) => (
                     <button
                       key={value}
                       type="button"
@@ -1368,9 +1680,13 @@ function MijnBoekingenContent() {
 
                 {monthOptions.length > 0 && (
                   <div className="flex items-center gap-2">
-                    <label htmlFor="booking-month" className="font-display text-xs text-[#D6FF3F]">
+                    <label
+                      htmlFor="booking-month"
+                      className="font-display text-xs text-[#D6FF3F]"
+                    >
                       PER MAAND:
                     </label>
+
                     <select
                       id="booking-month"
                       value={selectedMonth}
@@ -1381,13 +1697,24 @@ function MijnBoekingenContent() {
                       className="border-2 border-white/30 bg-[#14171A] px-3 py-2 font-display text-xs text-white"
                     >
                       <option value="all">ALLE MAANDEN</option>
+
                       {monthOptions.map((key) => {
-                        const [year, month] = key.split("-").map(Number);
-                        const label = new Intl.DateTimeFormat("nl-NL", {
-                          month: "long",
-                          year: "numeric",
-                          timeZone: "Europe/Amsterdam",
-                        }).format(new Date(Date.UTC(year, month - 1, 1, 12)));
+                        const [year, month] = key
+                          .split("-")
+                          .map(Number);
+
+                        const label = new Intl.DateTimeFormat(
+                          "nl-NL",
+                          {
+                            month: "long",
+                            year: "numeric",
+                            timeZone: "Europe/Amsterdam",
+                          }
+                        ).format(
+                          new Date(
+                            Date.UTC(year, month - 1, 1, 12)
+                          )
+                        );
 
                         return (
                           <option key={key} value={key}>
@@ -1416,6 +1743,7 @@ function MijnBoekingenContent() {
                       <h2 className="font-display text-lg text-[#FF4B3E]">
                         {section.title}
                       </h2>
+
                       <div className="mt-4 grid gap-6 lg:grid-cols-2">
                         {section.bookings.map(renderBookingCard)}
                       </div>
@@ -1426,7 +1754,9 @@ function MijnBoekingenContent() {
                     <div className="text-center">
                       <button
                         type="button"
-                        onClick={() => setVisibleLimit((value) => value + 6)}
+                        onClick={() =>
+                          setVisibleLimit((value) => value + 6)
+                        }
                         className="bg-[#D6FF3F] px-8 py-4 font-display text-xl text-[#14171A] shadow-[6px_6px_0_0_#FF4B3E]"
                       >
                         MEER LESSEN LADEN (+6) →
@@ -1440,7 +1770,10 @@ function MijnBoekingenContent() {
 
           {/* TAB: LESPAKKETTEN */}
           {activeTab === "packages" && (
-            <section id="bookings-panel-packages" aria-label="Lespakketten">
+            <section
+              id="bookings-panel-packages"
+              aria-label="Lespakketten"
+            >
               <PlayerPackageReservations refreshing={refreshing} />
 
               <PlayerPackagePurchases
@@ -1450,9 +1783,10 @@ function MijnBoekingenContent() {
               />
 
               <p className="mt-8 text-sm leading-relaxed text-[#8A8F94]">
-                Geen pakket zichtbaar? Een betaalde aankoop verschijnt hier
-                zodra de betaling en lesboekingen zijn verwerkt. Heb je al
-                betaald? Betaal niet opnieuw en klik over even op Ververs.
+                Geen pakket zichtbaar? Een betaalde aankoop verschijnt
+                hier zodra de betaling en lesboekingen zijn verwerkt.
+                Heb je al betaald? Betaal niet opnieuw en klik over
+                even op Ververs.
               </p>
             </section>
           )}
