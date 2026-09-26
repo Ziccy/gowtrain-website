@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -14,6 +14,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 90;
 
+const WORKER_REVISION = "gowtrain-worker-connection-check-v2";
+
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -27,6 +29,7 @@ function json(
     status,
     headers: {
       "Cache-Control": "no-store",
+      "X-Gowtrain-Worker-Revision": WORKER_REVISION,
     },
   });
 }
@@ -86,42 +89,41 @@ function isNonNegativeInteger(value: unknown): value is number {
 export async function POST(
   request: NextRequest
 ): Promise<NextResponse> {
-/*
- * Zowel lokale als gedeployde uitvoering vereist
- * expliciete server-side inschakeling.
- */
-if (process.env.ACCOUNT_DELETION_WORKER_ENABLED !== "true") {
-  return json({ error: "Niet beschikbaar." }, 404);
-}
+  /*
+   * Ook de verbindingscontrole vereist expliciete inschakeling.
+   * De versieheader wordt tevens bij dit 404-antwoord teruggegeven.
+   */
+  if (process.env.ACCOUNT_DELETION_WORKER_ENABLED !== "true") {
+    return json({ error: "Niet beschikbaar." }, 404);
+  }
 
-const localDevelopment =
-  process.env.NODE_ENV === "development" &&
-  ["localhost", "127.0.0.1", "[::1]"].includes(
-    request.nextUrl.hostname
-  );
+  const localDevelopment =
+    process.env.NODE_ENV === "development" &&
+    ["localhost", "127.0.0.1", "[::1]"].includes(
+      request.nextUrl.hostname
+    );
 
-const deployedWebsite =
-  process.env.NODE_ENV === "production" &&
-  request.nextUrl.protocol === "https:" &&
-  ["www.gowtrain.com", "gowtrain.com"].includes(
-    request.nextUrl.hostname
-  );
+  const deployedWebsite =
+    process.env.NODE_ENV === "production" &&
+    request.nextUrl.protocol === "https:" &&
+    ["www.gowtrain.com", "gowtrain.com"].includes(
+      request.nextUrl.hostname
+    );
 
-if (!localDevelopment && !deployedWebsite) {
-  return json({ error: "Niet beschikbaar." }, 404);
-}
+  if (!localDevelopment && !deployedWebsite) {
+    return json({ error: "Niet beschikbaar." }, 404);
+  }
 
-/*
- * Dit is een server-to-server-worker, geen browser-API.
- * De host- en Origin-controles zijn geen authenticatie:
- * de geheime workersleutel blijft verplicht.
- */
-if (request.headers.has("origin")) {
-  return json(
-    { error: "Geen browsertoegang tot deze worker." },
-    403
-  );
-}
+  /*
+   * Server-to-server-route.
+   * Host- en Origin-controles vervangen de workersleutel niet.
+   */
+  if (request.headers.has("origin")) {
+    return json(
+      { error: "Geen browsertoegang tot deze worker." },
+      403
+    );
+  }
 
   let stage = "configuration";
   let claimedRequestId: string | null = null;
@@ -142,6 +144,51 @@ if (request.headers.has("origin")) {
     }
 
     /*
+     * Bepaal expliciet of dit een infrastructuurcontrole is.
+     *
+     * Ondersteund:
+     * - header x-account-deletion-check: connection
+     * - queryparameter ?check=connection
+     * - beide, mits gelijk
+     *
+     * Een ongeldige controle mag nooit doorvallen naar uitvoering.
+     */
+    const headerCheck = request.headers.get(
+      "x-account-deletion-check"
+    );
+
+    const queryChecks = request.nextUrl.searchParams.getAll("check");
+
+    if (queryChecks.length > 1) {
+      return json(
+        {
+          error:
+            "Meerdere controlewaarden ontvangen. Er is niets geclaimd.",
+        },
+        400
+      );
+    }
+
+    const queryCheck = queryChecks[0] ?? null;
+
+    if (
+      (headerCheck !== null && headerCheck !== "connection") ||
+      (queryCheck !== null && queryCheck !== "connection")
+    ) {
+      return json(
+        {
+          error:
+            "Onbekende workercontrole. Er is niets geclaimd.",
+        },
+        400
+      );
+    }
+
+    const connectionCheck =
+      headerCheck === "connection" ||
+      queryCheck === "connection";
+
+    /*
      * De oude lokale testuitvoerder gebruikt deze
      * uitvoercoördinatie niet.
      */
@@ -158,13 +205,41 @@ if (request.headers.has("origin")) {
     }
 
     /*
-     * Controleer aanwezigheid van de lockconfiguratie vóór claimen.
-     * De daadwerkelijke verbinding wordt na claimen geopend.
-     *
-     * De database-URL en Supabase-URL moeten naar hetzelfde
-     * Supabase-project verwijzen.
+     * Controleer configuratie vóór een claim.
+     * Het openen van de PostgreSQL-verbinding gebeurt via de helper.
      */
     validateAccountDeletionDatabaseConfiguration();
+
+    /* NIET-DESTRUCTIEVE VERBINDINGSCONTROLE */
+
+    if (connectionCheck) {
+      stage = "check_execution_connection";
+
+      /*
+       * Willekeurige testsleutel.
+       * Niet gekoppeld aan een bestaand verwijderverzoek.
+       *
+       * Geen wachtrijclaim en geen verwijderfunctie aanroepen.
+       */
+      return await withAccountDeletionExecutionLock(
+        randomUUID(),
+        async ({ assertConnection }) => {
+          await assertConnection();
+
+          return json({
+            processed: 0,
+            mode: "connection",
+            workerRevision: WORKER_REVISION,
+            connectionCheckPassed: true,
+            executionLockChecked: true,
+            message:
+              "TLS-databaseverbinding en sessielock gecontroleerd. Geen opdracht geclaimd en geen accountgegevens gewijzigd.",
+          });
+        }
+      );
+    }
+
+    /* NORMALE WORKERUITVOERING */
 
     const admin = createClient(
       requiredEnv("NEXT_PUBLIC_SUPABASE_URL"),
@@ -178,8 +253,6 @@ if (request.headers.has("origin")) {
       }
     );
 
-    /* ÉÉN NIEUWE OPDRACHT CLAIMEN */
-
     stage = "claim";
 
     const { data: claim, error: claimError } = await admin.rpc(
@@ -188,9 +261,7 @@ if (request.headers.has("origin")) {
 
     /*
      * Alleen queued-opdrachten worden geclaimd.
-     *
-     * Een verloren claimantwoord niet automatisch herhalen:
-     * de opdracht kan al op claimed staan.
+     * Een verloren claimantwoord niet automatisch herhalen.
      */
     if (claimError) {
       throw new Error("Claim niet bevestigd.");
@@ -220,8 +291,6 @@ if (request.headers.has("origin")) {
     claimedRequestId = requestId;
     stage = "acquire_execution_lock";
 
-    /* EXCLUSIEVE VERZOEKLOCK VASTHOUDEN */
-
     return await withAccountDeletionExecutionLock(
       requestId,
       async ({ signal, assertConnection }) => {
@@ -229,7 +298,6 @@ if (request.headers.has("origin")) {
          * Controleer de vastgehouden databaseverbinding
          * en het eigenaarschap van de wachtrijclaim.
          *
-         * Dit is geen automatische claimovername.
          * De claimgebonden schrijf-RPC's controleren het token
          * daarnaast binnen hun eigen database-transactie.
          */
@@ -253,10 +321,6 @@ if (request.headers.has("origin")) {
             throw new Error("Eigen claim niet bevestigd.");
           }
 
-          /*
-           * Ook verbindingsverlies tijdens de claimquery
-           * detecteren voordat de volgende fase begint.
-           */
           await assertConnection();
         }
 
@@ -285,10 +349,7 @@ if (request.headers.has("origin")) {
             throw new Error("Wachtrijafronding niet bevestigd.");
           }
 
-          /*
-           * De opdracht staat nu niet meer op claimed.
-           * Daarom alleen de verbinding controleren.
-           */
+          // De opdracht staat nu niet meer op claimed.
           await assertConnection();
         }
 
@@ -299,8 +360,8 @@ if (request.headers.has("origin")) {
           await finishJob("needs_review");
 
           /*
-           * De reden wordt met de huidige opzet alleen
-           * teruggegeven, niet afzonderlijk duurzaam opgeslagen.
+           * De oorspronkelijke workerreden wordt momenteel
+           * alleen teruggegeven, niet afzonderlijk opgeslagen.
            */
           return json({
             requestId,
@@ -331,9 +392,8 @@ if (request.headers.has("origin")) {
         }
 
         /*
-         * Mogelijk is het verzoek elders al afgerond.
-         * De bestaande finish-RPC controleert het eindbewijs.
-         * Geen nieuwe accountverwijdering uitvoeren.
+         * Al afgerond: alleen de wachtrij administratief afronden.
+         * De finish-RPC controleert het opgeslagen eindbewijs.
          */
         if (deletionRequest.status === "completed") {
           stage = "finish_completed_job";
@@ -348,7 +408,7 @@ if (request.headers.has("origin")) {
           });
         }
 
-        /* BESTAANDE UITVOERING NIET AUTOMATISCH OVERNEMEN */
+        /* GEEN AUTOMATISCHE OVERNAME */
 
         await enterStage("read_execution");
 
@@ -384,14 +444,9 @@ if (request.headers.has("origin")) {
           return await needsReview("unsupported_account_role");
         }
 
-        /*
-         * Het beperkte trainerpad heeft een afzonderlijke
-         * server-side vrijgave.
-         */
         if (
           isTrainerRequest &&
-          process.env.ACCOUNT_DELETION_TRAINER_LOCAL_ENABLED !==
-            "true"
+          process.env.ACCOUNT_DELETION_TRAINER_LOCAL_ENABLED !== "true"
         ) {
           return await needsReview("trainer_path_not_enabled");
         }
@@ -405,7 +460,7 @@ if (request.headers.has("origin")) {
 
         const expectedUserId = deletionRequest.user_id;
 
-        /* ACTUELE AFHANKELIJKHEDEN BEOORDELEN */
+        /* AFHANKELIJKHEDEN BEOORDELEN */
 
         await enterStage("assess");
 
@@ -442,12 +497,6 @@ if (request.headers.has("origin")) {
           return await needsReview("dependencies_require_review");
         }
 
-        /*
-         * Aanvullende scope boven op de databasebeoordeling.
-         *
-         * Speler: geen trainerprofiel en geen mailtaken.
-         * Trainer: precies één gekoppeld trainerprofiel.
-         */
         const trainerProfileCount =
           assessment.counts.trainer_profiles;
 
@@ -467,9 +516,7 @@ if (request.headers.has("origin")) {
 
         if (isTrainerRequest) {
           if (trainerProfileCount !== 1) {
-            return await needsReview(
-              "outside_simple_trainer_scope"
-            );
+            return await needsReview("outside_simple_trainer_scope");
           }
 
           await enterStage("identify_trainer");
@@ -502,7 +549,7 @@ if (request.headers.has("origin")) {
           return await needsReview("outside_simple_player_scope");
         }
 
-        /* BESTAANDE EXTERNE AFHANDELING UITSLUITEN */
+        /* BESTAANDE EXTERNE TAKEN UITSLUITEN */
 
         await enterStage("check_external_tasks");
 
@@ -548,7 +595,7 @@ if (request.headers.has("origin")) {
           throw new Error("Database-opruiming niet bevestigd.");
         }
 
-        /* OORSPRONKELIJKE IDENTITEIT OPNIEUW CONTROLEREN */
+        /* UITVOERIDENTITEIT CONTROLEREN */
 
         await enterStage("verify_execution_identity");
 
@@ -572,15 +619,13 @@ if (request.headers.has("origin")) {
           throw new Error("Uitvoeridentiteit niet bevestigd.");
         }
 
-        if (
-          execution.target_trainer_id !== expectedTrainerId
-        ) {
+        if (execution.target_trainer_id !== expectedTrainerId) {
           throw new Error(
             "De trainerreferentie na opruiming wijkt af."
           );
         }
 
-        /* EXTERNE TAKEN NA OP RUIMING CONTROLEREN */
+        /* EXTERNE TAKEN NA OPRUIMING */
 
         await enterStage("recheck_external_tasks");
 
@@ -605,9 +650,8 @@ if (request.headers.has("origin")) {
         }
 
         /*
-         * Bij trainers mogen tijdens de gecontroleerde
-         * voorbereiding externe mailreferenties zijn vastgelegd.
-         * Die blijven open voor afzonderlijke afhandeling.
+         * Bij trainers blijven eventueel veiliggestelde externe
+         * mailreferenties open voor afzonderlijke afhandeling.
          */
 
         /* GEDEELDE AUTH- EN AFRONDINGSFASE */
@@ -637,14 +681,8 @@ if (request.headers.has("origin")) {
           : "WORKER_EXECUTION_NOT_CONFIRMED";
 
     /*
-     * Geen automatische:
-     * - claimreset;
-     * - nieuwe claimaanvraag;
-     * - reconnect en hervatting;
-     * - herhaling van Auth-verwijdering.
-     *
-     * Een fase kan al zijn vastgelegd terwijl het antwoord
-     * of de lockverbinding daarna verloren ging.
+     * Geen automatische claimreset, reconnect of retry.
+     * Ook bij een fout kan een eerdere fase al zijn vastgelegd.
      */
     return json(
       {
@@ -653,6 +691,7 @@ if (request.headers.has("origin")) {
           : {}),
         code,
         stage,
+        workerRevision: WORKER_REVISION,
         requestCompleted: false,
         error:
           "De workeruitvoering kon niet worden bevestigd. Een claim of eerdere uitvoerfase kan al zijn vastgelegd. Controleer de opgeslagen voortgang; er wordt niet automatisch opnieuw uitgevoerd.",
