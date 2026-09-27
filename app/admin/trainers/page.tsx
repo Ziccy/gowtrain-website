@@ -188,38 +188,60 @@ export default function AdminTrainersPage() {
         return;
       }
 
-      const { data, error } = await supabase
-        .from("trainers")
-        .select(
-          `
-            id,
-            user_id,
-            initials,
-            name,
-            sport,
-            focus,
-            bio,
-            city,
-            province,
-            radius_km,
-            price_per_hour,
-            image_url,
-            is_active,
-            approval_status,
-            rejection_reason,
-            created_at
-          `
-        )
-        .eq("approval_status", selectedFilter)
-        .order("created_at", { ascending: false });
+      const requestedFilter = selectedFilter;
+      const all: Trainer[] = [];
+      const seenIds = new Set<string>();
 
-      if (error) {
-        setErrorMessage("De trainers konden niet worden geladen.");
-        setTrainers([]);
-        return;
+      /*
+       * Alleen lezen via de admin-geautoriseerde RPC.
+       * Ophalen in blokken voorkomt stille afkapping door
+       * de standaard maximale resultaatgrootte.
+       */
+      for (let offset = 0; ; offset += 200) {
+        const { data, error } = await supabase.rpc(
+          "admin_read_trainers_v1",
+          {
+            p_approval_status: requestedFilter,
+            p_offset: offset,
+          }
+        );
+
+        if (error || !Array.isArray(data) || data.length > 200) {
+          throw new Error("Adminoverzicht niet bevestigd.");
+        }
+
+        for (const value of data) {
+          if (
+            !value ||
+            typeof value !== "object" ||
+            Array.isArray(value) ||
+            typeof value.id !== "string" ||
+            typeof value.name !== "string" ||
+            typeof value.is_active !== "boolean" ||
+            value.approval_status !== requestedFilter ||
+            typeof value.created_at !== "string" ||
+            !Number.isFinite(Date.parse(value.created_at)) ||
+            !(
+              value.user_id === null ||
+              typeof value.user_id === "string"
+            ) ||
+            !(
+              value.rejection_reason === null ||
+              typeof value.rejection_reason === "string"
+            ) ||
+            seenIds.has(value.id)
+          ) {
+            throw new Error("Ongeldig adminoverzicht.");
+          }
+
+          seenIds.add(value.id);
+          all.push(value as Trainer);
+        }
+
+        if (data.length < 200) break;
       }
 
-      setTrainers((data ?? []) as Trainer[]);
+      setTrainers(all);
       setNeedsStatusRefresh(false);
     } catch {
       setErrorMessage("De trainers konden niet worden geladen.");
@@ -233,13 +255,6 @@ export default function AdminTrainersPage() {
 
   async function handleRefresh(): Promise<void> {
     if (controlsDisabled || updateLock.current) return;
-
-if (needsStatusRefresh) {
-  setErrorMessage(
-    "Klik eerst op Ververs om de opgeslagen trainerstatus te controleren voordat je een nieuwe beheeractie start."
-  );
-  return;
-}
 
     setRefreshing(true);
     clearMessages();

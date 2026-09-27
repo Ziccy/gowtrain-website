@@ -792,25 +792,15 @@ export default function TrainerDashboardPage() {
 
       setCurrentUserId(user.id);
 
-      // calendar_feed_token wordt bewust niet opgehaald.
+      /*
+       * Alleen eigen opgeslagen trainer-/Connect-gegevens.
+       * De RPC bepaalt de eigenaar via auth.uid().
+       * Geen directe clientread van interne Stripe-kolommen.
+       */
       const { data: trainerData, error: trainerError } =
-        await supabase
-          .from("trainers")
-          .select(`
-            id,
-            name,
-            is_active,
-            approval_status,
-            stripe_account_id,
-            stripe_account_api,
-            stripe_account_livemode,
-            stripe_account_closed,
-            stripe_transfers_status,
-            stripe_payouts_status,
-            stripe_account_checked_at
-          `)
-          .eq("user_id", user.id)
-          .maybeSingle();
+        await supabase.rpc(
+          "get_own_trainer_connect_summary_v1"
+        );
 
       if (!isCurrent()) return false;
 

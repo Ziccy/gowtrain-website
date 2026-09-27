@@ -12,7 +12,6 @@ type PeriodFilter = "this_month" | "last_month" | "this_year" | "all";
 type TrainerAccount = {
   id: string;
   name: string;
-  stripe_payouts_enabled: boolean;
 };
 
 type EarningBooking = {
@@ -95,7 +94,7 @@ export default function TrainerInkomstenPage() {
 
       const { data: trainerData, error: trainerError } = await supabase
         .from("trainers")
-        .select("id, name, stripe_payouts_enabled")
+        .select("id, name")
         .eq("user_id", session.user.id)
         .single();
 
