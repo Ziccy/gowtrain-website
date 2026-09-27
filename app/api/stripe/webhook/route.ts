@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
+import { hasSingleLessonPaymentAttempt } from "@/lib/single-lesson-payment-guard";
 import { confirmPaidPackageSessionById } from "@/lib/confirm-paid-package-session";
 import { syncStripeRefund } from "@/lib/sync-stripe-refund";
 import { syncSingleLessonPayment } from "@/lib/sync-single-lesson-payment";
@@ -226,6 +227,25 @@ async function confirmPaidCheckoutSession(
     typeof session.payment_intent === "string"
       ? session.payment_intent
       : session.payment_intent?.id ?? null;
+
+      /*
+   * Een Checkout-event mag een boeking met nieuwe
+   * betaalregistratie niet via de oude bevestigings-RPC
+   * alsnog afronden.
+   *
+   * Bij een conflict niet stilzwijgend HTTP 200 teruggeven.
+   * Onderzoek eerst de daadwerkelijke betaling.
+   */
+  if (
+    await hasSingleLessonPaymentAttempt(
+      supabaseAdmin,
+      bookingId
+    )
+  ) {
+    throw new Error(
+      "LEGACY_CHECKOUT_CONFLICTS_WITH_SINGLE_PAYMENT_ATTEMPT"
+    );
+  }
 
   const { data: confirmed, error } = await supabaseAdmin.rpc(
     "confirm_paid_booking",

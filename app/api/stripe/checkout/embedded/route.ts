@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
+import { hasSingleLessonPaymentAttempt } from "@/lib/single-lesson-payment-guard";
 import { createClient } from "@supabase/supabase-js";
 import {
   createOrResumePackageCheckout,
@@ -318,6 +319,26 @@ export async function POST(
       return jsonResponse(
         { error: "Je hebt geen toegang tot deze boeking." },
         403
+      );
+    }
+
+    /*
+     * Alleen de oude losse-lesflow afschermen.
+     * De pakkettak hierboven blijft ongewijzigd.
+     */
+    if (
+      await hasSingleLessonPaymentAttempt(
+        supabaseAdmin,
+        booking.id
+      )
+    ) {
+      return jsonResponse(
+        {
+          code: "PAYMENT_FLOW_MISMATCH",
+          error:
+            "Deze reservering gebruikt een andere betaalflow. Ga terug naar de app en controleer daar je boeking. Start geen nieuwe betaling via deze ingang.",
+        },
+        409
       );
     }
 

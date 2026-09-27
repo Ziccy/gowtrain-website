@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
+import { hasSingleLessonPaymentAttempt } from "@/lib/single-lesson-payment-guard";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
@@ -290,6 +291,26 @@ if (
       return NextResponse.json(
         { error: "Je mag deze boeking niet betalen." },
         { status: 403 }
+      );
+    }
+
+    /*
+     * Nieuwe betaalregistraties niet via de oude
+     * hosted Checkout-route laten betalen.
+     */
+    if (
+      await hasSingleLessonPaymentAttempt(
+        supabaseAdmin,
+        booking.id
+      )
+    ) {
+      return NextResponse.json(
+        {
+          code: "PAYMENT_FLOW_MISMATCH",
+          error:
+            "Deze reservering gebruikt een andere betaalflow. Ga terug naar de app en controleer daar je boeking. Start geen nieuwe betaling via deze ingang.",
+        },
+        { status: 409 }
       );
     }
 
