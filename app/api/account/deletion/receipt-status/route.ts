@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -71,6 +71,7 @@ function addHeaders(
 ): NextResponse {
   response.headers.set("Cache-Control", "no-store");
   response.headers.set("Vary", "Origin");
+  response.headers.set("Access-Control-Expose-Headers", "Retry-After");
 
   const origin = request.headers.get("origin");
 
@@ -226,6 +227,78 @@ export async function POST(
         },
       }
     );
+
+    /*
+     * Een aparte, geheime HMAC-sleutel voor tijdelijke tellers.
+     *
+     * Niet de bestaande bewijs-hash in de limiettabel opslaan.
+     * Het verzoek-ID alleen bepaalt de teller niet.
+     */
+    const rateSecret = requiredEnv(
+      "ACCOUNT_DELETION_STATUS_RATE_LIMIT_SECRET"
+    );
+
+    if (!/^[0-9a-f]{64}$/.test(rateSecret)) {
+      throw new Error("STATUS_LIMIT_CONFIGURATION_INVALID");
+    }
+
+    const bucketHash = createHmac(
+      "sha256",
+      Buffer.from(rateSecret, "hex")
+    )
+      .update(
+        `gowtrain:receipt-status:v1:${requestId}:${receipt}`,
+        "utf8"
+      )
+      .digest("hex");
+
+    const {
+      data: limit,
+      error: limitError,
+    } = await admin.rpc(
+      "consume_account_deletion_status_attempt",
+      { p_bucket_hash: bucketHash }
+    );
+
+    /*
+     * Bij onzekere begrenzing niet doorvallen naar statusopvraging.
+     */
+    if (
+      limitError ||
+      !isObject(limit) ||
+      typeof limit.allowed !== "boolean" ||
+      typeof limit.retry_after_seconds !== "number" ||
+      !Number.isInteger(limit.retry_after_seconds) ||
+      limit.retry_after_seconds < 0 ||
+      limit.retry_after_seconds > 60 ||
+      (
+        limit.allowed
+          ? limit.retry_after_seconds !== 0
+          : limit.retry_after_seconds < 1
+      )
+    ) {
+      throw new Error("STATUS_LIMIT_NOT_CONFIRMED");
+    }
+
+    if (!limit.allowed) {
+      const response = respond(
+        request,
+        {
+          code: "STATUS_RATE_LIMITED",
+          retryAfterSeconds: limit.retry_after_seconds,
+          error:
+            "De statuscontrole is tijdelijk begrensd. Wacht even voordat je opnieuw controleert. Je statusbewijs blijft geldig volgens de bestaande vervaldatum.",
+        },
+        429
+      );
+
+      response.headers.set(
+        "Retry-After",
+        String(limit.retry_after_seconds)
+      );
+
+      return response;
+    }
 
     const { data, error } = await admin.rpc(
       "get_account_deletion_receipt_status",

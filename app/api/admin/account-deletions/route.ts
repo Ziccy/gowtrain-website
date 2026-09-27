@@ -56,6 +56,15 @@ type FollowupRow = {
   updated_at: string;
 };
 
+type DiagnosticRow = {
+  request_id: string;
+  kind: "review" | "worker_error";
+  code: string;
+  stage: string;
+  claimed_at: string;
+  recorded_at: string;
+};
+
 function json(
   body: Record<string, unknown>,
   status = 200
@@ -338,49 +347,77 @@ export async function GET(
       });
     }
 
-const [queueResult, executionResult, followupResult] =
-  await Promise.all([
-    admin
-      .from("account_deletion_queue")
-      .select(
-        "request_id, status, queued_at, claimed_at, finished_at"
-      )
-      .in("request_id", ids),
+const [
+      queueResult,
+      executionResult,
+      followupResult,
+      diagnosticResult,
+    ] = await Promise.all([
+      admin
+        .from("account_deletion_queue")
+        .select(
+          "request_id, status, queued_at, claimed_at, finished_at"
+        )
+        .in("request_id", ids),
 
-    admin
-      .from("account_deletion_executions")
-      .select(`
-        request_id,
-        created_at,
-        trainer_cleaned_at,
-        database_cleaned_at,
-        auth_delete_started_at,
-        auth_deleted_at,
-        local_completed_at,
-        target_reference_erased_at
-      `)
-      .in("request_id", ids),
+      admin
+        .from("account_deletion_executions")
+        .select(`
+          request_id,
+          created_at,
+          trainer_cleaned_at,
+          database_cleaned_at,
+          auth_delete_started_at,
+          auth_deleted_at,
+          local_completed_at,
+          target_reference_erased_at
+        `)
+        .in("request_id", ids),
 
-    admin
-      .from("account_deletion_followups")
-      .select(`
-        request_id,
-        assigned_admin_id,
-        next_action,
-        review_after,
-        version,
-        updated_at
-      `)
-      .in("request_id", ids),
-  ]);
+      admin
+        .from("account_deletion_followups")
+        .select(`
+          request_id,
+          assigned_admin_id,
+          next_action,
+          review_after,
+          version,
+          updated_at
+        `)
+        .in("request_id", ids),
 
-if (
-  queueResult.error ||
-  executionResult.error ||
-  followupResult.error
-) {
-  throw new Error("PROGRESS_LOOKUP_FAILED");
-}
+      admin
+        .from("account_deletion_diagnostics")
+        .select(`
+          request_id,
+          kind,
+          code,
+          stage,
+          claimed_at,
+          recorded_at
+        `)
+        .in("request_id", ids),
+    ]);
+
+    if (
+      queueResult.error ||
+      executionResult.error ||
+      followupResult.error ||
+      diagnosticResult.error
+    ) {
+      throw new Error("PROGRESS_LOOKUP_FAILED");
+    }
+
+    const diagnostics = new Map<string, DiagnosticRow[]>();
+
+    for (
+      const diagnostic of
+      (diagnosticResult.data ?? []) as DiagnosticRow[]
+    ) {
+      const rows = diagnostics.get(diagnostic.request_id) ?? [];
+      rows.push(diagnostic);
+      diagnostics.set(diagnostic.request_id, rows);
+    }
 
 const followups = new Map(
   ((followupResult.data ?? []) as FollowupRow[]).map(
@@ -431,6 +468,16 @@ const followups = new Map(
       queue: queues.get(item.id) ?? null,
       execution: executions.get(item.id) ?? null,
       externalTaskCount: countMap.get(item.id) ?? 0,
+
+      diagnostics: (diagnostics.get(item.id) ?? []).map(
+        (diagnostic) => ({
+          kind: diagnostic.kind,
+          code: diagnostic.code,
+          stage: diagnostic.stage,
+          claimedAt: diagnostic.claimed_at,
+          recordedAt: diagnostic.recorded_at,
+        })
+      ),
 
       followup: followup
         ? {

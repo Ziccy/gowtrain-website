@@ -85,12 +85,12 @@ export default function SiteFooter({
                 FAQ
               </a>
 
-              <a
-                href="mailto:info@gowtrain.nl"
+              <Link
+                href="/support"
                 className="transition hover:text-[#D6FF3F]"
               >
                 CONTACT
-              </a>
+              </Link>
 
               <a href="/privacy" className="transition hover:text-[#D6FF3F]">
                 PRIVACY

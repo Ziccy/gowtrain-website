@@ -371,6 +371,53 @@ export default function AccountDeletionFollowup({
             </select>
           </label>
 
+          {action === "review_external_data" ? (
+            <div className="border border-[#D6FF3F]/30 bg-white/5 p-4">
+              <h3 className="font-display text-base text-[#D6FF3F]">
+                EXTERNE AFHANDELING · RESEND
+              </h3>
+
+              <p className="mt-2 text-sm leading-relaxed text-[#B9BEC2]">
+                Resend vermeldt algemeen een retentie van 30 dagen
+                voor Free, Pro en Scale. Daarmee is niet bevestigd
+                wanneer die termijn voor een specifieke mail begint,
+                of alle gegevens automatisch verdwijnen en welke
+                back-upretentie geldt.
+              </p>
+
+              <ul className="mt-3 list-disc space-y-2 pl-5 text-xs leading-relaxed text-[#B9BEC2]">
+                <li>
+                  Controleer welke externe taken nog openstaan.
+                  De algemene retentietermijn is geen individueel
+                  verwijderbewijs.
+                </li>
+                <li>
+                  Laat een taak open zolang de noodzakelijke
+                  afhandeling niet voldoende is onderbouwd.
+                  Markeer taken niet uitsluitend vanwege hun
+                  leeftijd als afgerond.
+                </li>
+                <li>
+                  Bewaar de bestaande providerreferenties voor
+                  opvolging. Start geen nieuwe accountverwijdering
+                  om externe taken af te handelen.
+                </li>
+                <li>
+                  Leg hieronder een verantwoordelijke en
+                  hercontrolemoment vast. Dit verzendt geen
+                  herinnering en verlengt geen wettelijke termijn.
+                </li>
+              </ul>
+
+              <p className="mt-3 text-xs leading-relaxed text-[#B9BEC2]">
+                Deze toelichting is een werkinstructie. Opslaan
+                registreert alleen de gekozen opvolgactie,
+                verantwoordelijke en hercontroledatum; het
+                bevestigt geen verwijdering bij Resend.
+              </p>
+            </div>
+          ) : null}
+
           <label className="block">
             <span className="text-xs text-[#B9BEC2]">
               OPNIEUW CONTROLEREN

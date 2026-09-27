@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 import { confirmPaidPackageSessionById } from "@/lib/confirm-paid-package-session";
 import { syncStripeRefund } from "@/lib/sync-stripe-refund";
+import { syncSingleLessonPayment } from "@/lib/sync-single-lesson-payment";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
@@ -324,6 +325,95 @@ export async function POST(
           event.data.object as Stripe.Account;
 
         await syncTrainerStripeStatus(account);
+        break;
+      }
+
+      case "payment_intent.succeeded": {
+        const paymentIntent =
+          event.data.object as Stripe.PaymentIntent;
+
+        const declaresNativeAttempt = Boolean(
+          paymentIntent.metadata?.gowtrain_single_payment_attempt_id
+        );
+
+        /*
+         * De nieuwe native flow ondersteunt alleen testbetalingen
+         * op het platformaccount, niet op een connected account.
+         *
+         * Andere omgevingen niet via de platform-testsleutel ophalen.
+         */
+        if (event.livemode || event.account) {
+          if (declaresNativeAttempt) {
+            throw new Error(
+              "SINGLE_PAYMENT_UNSUPPORTED_EVENT_CONTEXT"
+            );
+          }
+
+          break;
+        }
+
+        /*
+         * De helper haalt PaymentIntent en Charge opnieuw bij Stripe op.
+         * Alleen het ID uit het ondertekende event wordt doorgegeven.
+         *
+         * Ook zonder metadata in het event controleren:
+         * de actuele Stripe-metadata en een bestaande databasekoppeling
+         * kunnen uitsluitsel geven.
+         */
+        const result = await syncSingleLessonPayment(
+          paymentIntent.id
+        );
+
+        if (!result.handled) {
+          if (declaresNativeAttempt) {
+            throw new Error(
+              "SINGLE_PAYMENT_EVENT_NOT_RECONCILED"
+            );
+          }
+
+          /*
+           * Geen nieuwe native betaling.
+           * Bestaande Checkout-betalingen blijven door hun
+           * checkout.session-events verwerkt worden.
+           */
+          break;
+        }
+
+        if (result.outcome === "not_succeeded") {
+          /*
+           * Het event zegt succeeded, maar de actuele controle
+           * bevestigt dat niet. Geen succesvolle verwerking claimen.
+           * De bestaande catch retourneert HTTP 500.
+           */
+          throw new Error(
+            "SINGLE_PAYMENT_SUCCESS_NOT_CONFIRMED"
+          );
+        }
+
+        if (result.outcome === "needs_review") {
+          /*
+           * De database heeft de betaling en uitzondering
+           * duurzaam opgeslagen. Dit bevestigt niet de boeking.
+           * Geen automatische refund of transfer starten.
+           */
+          console.warn("Native betaling vereist beoordeling:", {
+            eventId: event.id,
+            attemptId: result.attemptId,
+            bookingId: result.bookingId,
+            code: result.reviewCode,
+          });
+
+          break;
+        }
+
+        console.log("Native losse-lesbetaling verwerkt:", {
+          eventId: event.id,
+          attemptId: result.attemptId,
+          bookingId: result.bookingId,
+          outcome: result.outcome,
+          bookingStatus: result.bookingStatus,
+        });
+
         break;
       }
 

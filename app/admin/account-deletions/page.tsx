@@ -29,6 +29,14 @@ type Execution = {
   target_reference_erased_at: string | null;
 };
 
+type Diagnostic = {
+  kind: "review" | "worker_error";
+  code: string;
+  stage: string;
+  claimedAt: string;
+  recordedAt: string;
+};
+
 type DeletionItem = {
   id: string;
   requester_role: string;
@@ -39,6 +47,7 @@ type DeletionItem = {
   queue: Queue | null;
   execution: Execution | null;
   externalTaskCount: number;
+  diagnostics?: Diagnostic[];
   followup: {
   assigned: boolean;
   assignedToCurrentAdmin: boolean;
@@ -76,6 +85,37 @@ const FOLLOWUP_ACTION_LABELS: Record<string, string> = {
   review_external_data: "Externe gegevensafhandeling beoordelen",
   review_worker_progress: "Worker en uitvoervoortgang onderzoeken",
   await_resolution: "Wachten op noodzakelijke afhandeling",
+};
+
+const DIAGNOSTIC_LABELS: Record<string, string> = {
+  existing_execution_requires_recovery:
+    "Er bestaat al uitvoervoortgang; afzonderlijke herstelcontrole nodig.",
+  unsupported_account_role:
+    "De accountrol valt buiten het ondersteunde verwijderpad.",
+  trainer_path_not_enabled:
+    "Het lokale trainerpad was niet ingeschakeld.",
+  account_reference_missing:
+    "De oorspronkelijke accountreferentie ontbreekt.",
+  dependencies_require_review:
+    "De beoordeelde afhankelijkheden vereisen aanvullende afhandeling.",
+  outside_simple_trainer_scope:
+    "Het account valt buiten de eenvoudige trainerscope.",
+  outside_simple_player_scope:
+    "Het account valt buiten de eenvoudige spelersscope.",
+  external_tasks_present:
+    "Er waren al externe afhandeltaken aanwezig.",
+  external_tasks_detected_after_cleanup:
+    "Na database-opruiming zijn externe taken voor een speler gevonden.",
+  trainer_external_followup_pending:
+    "Het traineraccount is lokaal verwijderd; externe opvolging staat open.",
+  trainer_administrative_closure_pending:
+    "Het traineraccount is lokaal verwijderd; administratieve totaalafsluiting staat open.",
+  EXECUTION_LOCK_BUSY:
+    "De exclusieve verzoeklock kon niet worden verkregen.",
+  EXECUTION_CONNECTION_NOT_CONFIRMED:
+    "De vastgehouden uitvoerverbinding kon niet meer worden bevestigd.",
+  WORKER_EXECUTION_NOT_CONFIRMED:
+    "De worker kon een uitvoerstap niet bevestigen. Controleer de opgeslagen voortgang.",
 };
 
 function label(value: string): string {
@@ -295,8 +335,10 @@ export default function AdminAccountDeletionsPage() {
               </h1>
 
               <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[#B9BEC2]">
-                Inspecteer verzoeken en uitvoerfasen. Deze pagina start,
-                herhaalt of annuleert geen verwijderingen.
+                Inspecteer verzoeken, uitvoerfasen en opvolging.
+                Afzonderlijke herstelacties vereisen expliciete
+                bevestiging. Hervatten vóór de Auth-fase kan
+                daadwerkelijk het account verwijderen.
               </p>
             </div>
 
@@ -320,16 +362,17 @@ export default function AdminAccountDeletionsPage() {
           </div>
 
           <div className="mt-6 border border-white/20 p-4 text-sm leading-relaxed text-[#B9BEC2]">
-            <p>
-  <strong className="text-white">
-    Inspectie en opvolging.
-  </strong>{" "}
-  Je kunt werkafspraken vastleggen en ondersteunde afrondingsfouten
-laten herstellen. De herstelacties doen geen nieuwe
-Auth-verwijderaanroep en starten geen worker opnieuw. Een oude claim
-bewijst niet dat de worker gestopt is. Zet een opdracht niet
-handmatig terug op queued.
-</p>
+            <p><strong className="text-white">
+                Inspectie, opvolging en gecontroleerd herstel.
+              </strong>{" "}
+              Wachtrijherstel en afronding na bevestigde
+              Auth-afwezigheid doen geen nieuwe Auth-verwijderaanroep.
+              De afzonderlijke hervatactie vóór Auth kan die
+              verwijderaanroep wel uitvoeren. Een oude claim of
+              geregistreerde fout is nooit zelfstandig toestemming
+              voor overname of herhaling. Zet een opdracht niet
+              handmatig terug op queued.
+            </p>
 
 <p className="mt-2">
   Opvolglabels gelden per verzoek en zijn geen automatische
@@ -337,9 +380,10 @@ handmatig terug op queued.
   per pagina; controleer ook eventuele volgende pagina’s.
 </p>
             <p className="mt-2">
-              Automatische trainerverwijdering is nog niet aangesloten.
-              Een trainer kan daarom aanvullende afhandeling nodig hebben,
-              ook als de databasebeoordeling weinig afhankelijkheden vindt.
+              Het beperkte lokale trainerpad is gebouwd en heeft
+              een afzonderlijke uitvoervlag. Lokale verwijdering
+              betekent niet dat externe afhandeling of het
+              totaalverzoek is afgerond.
             </p>
           </div>
 
@@ -372,6 +416,19 @@ handmatig terug op queued.
             <div className="mt-6 space-y-4">
               {items.map((item) => {
                 const selected = selectedId === item.id;
+                const diagnostics = item.diagnostics ?? [];
+
+                const currentClaimTime = item.queue?.claimed_at
+                  ? Date.parse(item.queue.claimed_at)
+                  : NaN;
+
+                const currentWorkerError = diagnostics.find(
+                  (diagnostic) =>
+                    diagnostic.kind === "worker_error" &&
+                    Number.isFinite(currentClaimTime) &&
+                    Date.parse(diagnostic.claimedAt) ===
+                      currentClaimTime
+                );
 
                 const claimedTime = item.queue?.claimed_at
                   ? Date.parse(item.queue.claimed_at)
@@ -427,7 +484,11 @@ const attention =
   oldClaim ||
   needsReview ||
   queueNeedsReconciliation ||
-  followupNeedsAttention;
+  followupNeedsAttention ||
+  (
+    item.queue?.status === "claimed" &&
+    Boolean(currentWorkerError)
+  );
 
                 const phases: Array<[string, string | null]> = [
                   ["Aangevraagd", item.requested_at],
@@ -555,9 +616,18 @@ const attention =
                     ) : null}
 
                     {needsReview ? (
-                      <p className="mt-3 text-sm text-[#FF4B3E]">
-                        Aanvullende afhandeling nodig. De oorspronkelijke
-                        workerreden is nog niet apart opgeslagen.
+                      <p className="mt-3 text-sm text-[#FF8A80]">
+                        Aanvullende afhandeling nodig.
+                        Bekijk de vastgelegde diagnose en uitvoerfasen.
+                      </p>
+                    ) : null}
+
+                    {item.queue?.status === "claimed" &&
+                    currentWorkerError ? (
+                      <p className="mt-3 text-sm text-[#FF8A80]">
+                        Voor deze claim is een onzekere workeruitkomst
+                        vastgelegd. Er wordt niet automatisch opnieuw
+                        uitgevoerd.
                       </p>
                     ) : null}
 
@@ -622,7 +692,91 @@ item.execution?.database_cleaned_at &&
   key={item.id}
   requestId={item.id}
 />
+<div>
+                          <h2 className="font-display text-lg">
+                            VASTGELEGDE DIAGNOSTIEK
+                          </h2>
 
+                          {diagnostics.length === 0 ? (
+                            <p className="mt-2 text-sm text-[#B9BEC2]">
+                              Geen diagnostische registratie beschikbaar.
+                              Oudere verzoeken zijn niet achteraf ingevuld.
+                              Ook een abrupt gestopte worker of
+                              database-uitval kan registratie verhinderen.
+                              Dit bewijst niet dat de uitvoering foutloos was.
+                            </p>
+                          ) : (
+                            <div className="mt-3 space-y-3">
+                              {diagnostics.map((diagnostic) => {
+                                const matchesCurrentClaim =
+                                  Number.isFinite(currentClaimTime) &&
+                                  Date.parse(diagnostic.claimedAt) ===
+                                    currentClaimTime;
+
+                                return (
+                                  <div
+                                    key={diagnostic.kind}
+                                    className="border border-white/20 p-3"
+                                  >
+                                    <p className="font-display text-sm text-[#D6FF3F]">
+                                      {diagnostic.kind === "review"
+                                        ? "REDEN AANVULLENDE AFHANDELING"
+                                        : "ONZEKERE WORKERUITKOMST"}
+                                    </p>
+
+                                    <p className="mt-2 text-sm">
+                                      {DIAGNOSTIC_LABELS[diagnostic.code] ??
+                                        diagnostic.code}
+                                    </p>
+
+                                    <dl className="mt-3 space-y-1 text-xs text-[#B9BEC2]">
+                                      <div>
+                                        <dt className="inline">Code: </dt>
+                                        <dd className="inline break-all font-mono">
+                                          {diagnostic.code}
+                                        </dd>
+                                      </div>
+
+                                      <div>
+                                        <dt className="inline">Fase: </dt>
+                                        <dd className="inline break-all font-mono">
+                                          {diagnostic.stage}
+                                        </dd>
+                                      </div>
+
+                                      <div>
+                                        <dt className="inline">Claimmoment: </dt>
+                                        <dd className="inline">
+                                          {formatDate(diagnostic.claimedAt)}
+                                        </dd>
+                                      </div>
+
+                                      <div>
+                                        <dt className="inline">Vastgelegd: </dt>
+                                        <dd className="inline">
+                                          {formatDate(diagnostic.recordedAt)}
+                                        </dd>
+                                      </div>
+                                    </dl>
+
+                                    <p className="mt-3 text-xs text-[#B9BEC2]">
+                                      {matchesCurrentClaim
+                                        ? "Hoort bij het claimmoment in dit overzicht. De uitvoering kan inmiddels verder zijn afgerond."
+                                        : "Hoort niet bij het huidige claimmoment in dit overzicht. Behandel dit als eerdere diagnostiek."}
+                                    </p>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          <p className="mt-3 text-xs text-[#8A8F94]">
+                            Diagnostiek is een momentopname, geen
+                            herstelvrijgave. De foutfase geeft aan welke
+                            stap niet bevestigd kon worden; eerdere
+                            handelingen kunnen al zijn vastgelegd.
+                          </p>
+                        </div>
     <div>
       <h2 className="font-display text-lg">
         VASTGELEGDE FASEN

@@ -248,7 +248,30 @@ export async function executeDeletionAfterDatabase({
     }
 
     onStage("finish_trainer_queue");
-    await finishQueue("needs_review");
+    await checkpoint();
+
+    const reviewReason = local.external_followup_pending
+      ? "trainer_external_followup_pending"
+      : "trainer_administrative_closure_pending";
+
+    const {
+      data: queueFinished,
+      error: queueFinishError,
+    } = await admin.rpc(
+      "finish_account_deletion_job_with_review",
+      {
+        p_request_id: requestId,
+        p_claim_token: claimToken,
+        p_reason: reviewReason,
+        p_stage: "finish_trainer_queue",
+      }
+    );
+
+    if (queueFinishError || queueFinished !== true) {
+      throw new Error("QUEUE_COMPLETION_NOT_CONFIRMED");
+    }
+
+    await assertConnection();
 
     return {
       requestId,

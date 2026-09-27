@@ -128,6 +128,10 @@ export async function POST(
   let stage = "configuration";
   let claimedRequestId: string | null = null;
 
+  let recordClaimError:
+    | ((code: string, failedStage: string) => Promise<boolean>)
+    | null = null;
+
   try {
     const expectedSecret = requiredEnv(
       "ACCOUNT_DELETION_WORKER_SECRET"
@@ -289,6 +293,24 @@ export async function POST(
     const claimToken = claim.claim_token;
 
     claimedRequestId = requestId;
+
+    recordClaimError = async (
+      code: string,
+      failedStage: string
+    ): Promise<boolean> => {
+      const { data, error } = await admin.rpc(
+        "record_account_deletion_worker_error",
+        {
+          p_request_id: requestId,
+          p_claim_token: claimToken,
+          p_code: code,
+          p_stage: failedStage,
+        }
+      );
+
+      return !error && data === true;
+    };
+
     stage = "acquire_execution_lock";
 
     return await withAccountDeletionExecutionLock(
@@ -356,13 +378,27 @@ export async function POST(
         async function needsReview(
           reason: string
         ): Promise<NextResponse> {
-          stage = "record_review";
-          await finishJob("needs_review");
+          const detectedStage = stage;
 
-          /*
-           * De oorspronkelijke workerreden wordt momenteel
-           * alleen teruggegeven, niet afzonderlijk opgeslagen.
-           */
+          stage = "record_review";
+          await checkpoint();
+
+          const { data, error } = await admin.rpc(
+            "finish_account_deletion_job_with_review",
+            {
+              p_request_id: requestId,
+              p_claim_token: claimToken,
+              p_reason: reason,
+              p_stage: detectedStage,
+            }
+          );
+
+          if (error || data !== true) {
+            throw new Error("Reviewafronding niet bevestigd.");
+          }
+
+          await assertConnection();
+
           return json({
             requestId,
             processed: 1,
@@ -681,6 +717,24 @@ export async function POST(
           : "WORKER_EXECUTION_NOT_CONFIRMED";
 
     /*
+     * Alleen diagnostiek proberen vast te leggen.
+     * Dit gebruikt geen verloren uitvoerlock opnieuw en
+     * geeft geen toestemming voor een vervolgactie.
+     *
+     * Bij database-uitval, procesbeëindiging of een verloren
+     * claimantwoord kan deze registratie ontbreken.
+     */
+    let diagnosticRecorded = false;
+
+    if (recordClaimError) {
+      try {
+        diagnosticRecorded = await recordClaimError(code, stage);
+      } catch {
+        // De oorspronkelijke uitvoerfout niet overschrijven.
+      }
+    }
+
+    /*
      * Geen automatische claimreset, reconnect of retry.
      * Ook bij een fout kan een eerdere fase al zijn vastgelegd.
      */
@@ -691,6 +745,7 @@ export async function POST(
           : {}),
         code,
         stage,
+        diagnosticRecorded,
         workerRevision: WORKER_REVISION,
         requestCompleted: false,
         error:
