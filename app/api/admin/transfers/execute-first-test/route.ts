@@ -6,10 +6,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-const BOOKING_ID = "b7d8c195-2f03-428e-bbdb-8e7bf65f76db";
+const BOOKING_ID = "1be93a44-2570-475c-a061-ea574b638258";
 const PURCHASE_ID = "0ceb3427-c520-4351-9cb4-e2fb9ea08069";
 const AMOUNT_CENTS = 1900;
-const CONFIRMATION = "TRANSFER 19 EUR";
+const CONFIRMATION = "TWEEDE TRANSFER 19 EUR";
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -73,7 +73,8 @@ async function isCurrentAdmin(userId: string): Promise<boolean> {
 }
 
 /*
- * Uitsluitend de expliciet toegestane eerste testtransfer.
+ * Uitsluitend de expliciet toegestane tweede testtransfer.
+ * Het historische routepad blijft behouden; de scope staat hierboven vast.
  *
  * GET voert niets uit; Next.js retourneert daarvoor 405.
  * Geen automatische batches, retries of herstelacties.

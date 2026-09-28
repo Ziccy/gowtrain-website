@@ -12,10 +12,11 @@ import {
 import { syncSandboxTrainerTransfer } from "@/lib/sync-sandbox-trainer-transfer";
 
 /*
- * Eerste uitvoeringsversie: uitsluitend deze ene echte testles.
+ * Tweede expliciete sandboxtransfer: uitsluitend deze ene pakketles.
+ * De eerste, reeds toegepaste les valt buiten deze uitvoeringsscope.
  * Geen vrije keuze vanuit browserinput en geen automatische batch.
  */
-const ALLOWED_BOOKING_ID = "b7d8c195-2f03-428e-bbdb-8e7bf65f76db";
+const ALLOWED_BOOKING_ID = "1be93a44-2570-475c-a061-ea574b638258";
 const ALLOWED_PURCHASE_ID = "0ceb3427-c520-4351-9cb4-e2fb9ea08069";
 const ALLOWED_TRAINER_ID = "4c4a5ffc-7584-4ffb-9678-95d3a311c50e";
 const ALLOWED_DESTINATION_ID = "acct_1UHJRCBAMjpV6Qwm";

@@ -4,9 +4,9 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase-browser";
 
-const BOOKING_ID = "b7d8c195-2f03-428e-bbdb-8e7bf65f76db";
+const BOOKING_ID = "1be93a44-2570-475c-a061-ea574b638258";
 const PURCHASE_ID = "0ceb3427-c520-4351-9cb4-e2fb9ea08069";
-const CONFIRMATION = "TRANSFER 19 EUR";
+const CONFIRMATION = "TWEEDE TRANSFER 19 EUR";
 
 type Result = {
   httpStatus: number;
@@ -152,7 +152,7 @@ export default function AdminFirstTransferTestPage() {
         </Link>
 
         <p className="mt-8 font-display text-lg text-[#FF4B3E]">
-          ADMIN — EERSTE STRIPE-TESTTRANSFER
+          ADMIN — TWEEDE STRIPE-TESTTRANSFER
         </p>
 
         <h1 className="mt-3 font-display text-4xl">
@@ -200,17 +200,20 @@ export default function AdminFirstTransferTestPage() {
           </div>
 
           <div>
-            <dt className="text-[#B9BEC2]">Eerste les</dt>
+            <dt className="text-[#B9BEC2]">Testscope</dt>
             <dd className="mt-1">
-              20 september 2026, 19:00 Amsterdam
+              Eén volgende les uit dezelfde aankoop als de eerste
+              toegepaste transfer. De eerdere transfer blijft behouden
+              en moet in de historiecontrole worden meegenomen.
             </dd>
           </div>
 
           <div>
             <dt className="text-[#B9BEC2]">Vroegste transfermoment</dt>
             <dd className="mt-1">
-              21 september 2026, 19:00 Amsterdam.
-              De database controleert het daadwerkelijke tijdstip.
+              28 september 2026, 19:00 Amsterdam.
+              De database controleert de actuele planning en blokkades
+              opnieuw tijdens de uitvoering.
             </dd>
           </div>
         </dl>
