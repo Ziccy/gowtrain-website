@@ -81,11 +81,20 @@ export default function AdminHubPage() {
       setActiveVenuesCount(venuesCount ?? 0);
 
       // 5. Totaal aantal reviews tellen.
-      const { count: reviewsCount } = await supabase
+      const {
+        count: reviewsCount,
+        error: reviewsCountError,
+      } = await supabase
         .from("trainer_reviews")
         .select("id", { count: "exact", head: true });
 
-      setTotalReviewsCount(reviewsCount ?? 0);
+      if (reviewsCountError || reviewsCount === null) {
+        throw new Error(
+          "Het aantal reviews kon niet worden bevestigd."
+        );
+      }
+
+      setTotalReviewsCount(reviewsCount);
     } catch {
       setErrorMessage("Het admin overzicht kon niet worden geladen.");
     } finally {
