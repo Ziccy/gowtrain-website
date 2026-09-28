@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
+import AdminTransferSelection from "@/components/AdminTransferSelection";
 import { supabase } from "@/lib/supabase-browser";
 
 type OtherSourceTransfer = {
@@ -781,6 +782,7 @@ export default function AdminTransferRecoveryPage() {
               </div>
             </>
           )}
+        <AdminTransferSelection />
         </div>
       </section>
 
