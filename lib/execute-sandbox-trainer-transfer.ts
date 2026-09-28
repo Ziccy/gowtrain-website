@@ -20,9 +20,11 @@ const MANUAL_PURCHASE_ID = "0ceb3427-c520-4351-9cb4-e2fb9ea08069";
 const MANUAL_AMOUNT_CENTS = 1900;
 
 /*
- * Eerste automatische uitrol: dezelfde gecontroleerde trainer/bestemming.
- * Ook de SQL-selectie beperkt de trainer.
- * Uitbreiding vereist een afzonderlijke scopewijziging.
+ * Uitsluitend de vaste handmatige testscope.
+ *
+ * Automatische uitvoering gebruikt trainer en bestemming uit
+ * de bevestigde databaseclaim. De bestaande historie-, Connect-,
+ * prepare- en synchronisatiecontroles blijven verplicht.
  */
 const ALLOWED_TRAINER_ID = "4c4a5ffc-7584-4ffb-9678-95d3a311c50e";
 const ALLOWED_DESTINATION_ID = "acct_1UHJRCBAMjpV6Qwm";
@@ -181,8 +183,10 @@ function isClaim(value: unknown): value is ExecutionClaim {
     isUuid(value.request_id) &&
     isUuid(value.booking_id) &&
     isUuid(value.source_package_purchase_id) &&
-    value.trainer_id === ALLOWED_TRAINER_ID &&
-    value.destination_account_id === ALLOWED_DESTINATION_ID &&
+    isUuid(value.trainer_id) &&
+    typeof value.destination_account_id === "string" &&
+    /^acct_[A-Za-z0-9]+$/.test(value.destination_account_id) &&
+    value.destination_account_id.length <= 255 &&
     typeof value.amount_cents === "number" &&
     Number.isSafeInteger(value.amount_cents) &&
     value.amount_cents > 0 &&
@@ -299,11 +303,18 @@ async function executeClaimedTransfer(
 
     const claim = rawClaim;
 
+    /*
+     * Alleen het automatische pad gebruikt meerdere trainers
+     * en bestemmingen. De handmatige ingang blijft exact begrensd,
+     * ook na ontvangst van de claimresponse.
+     */
     if (
       mode === "manual" &&
       (
         claim.booking_id !== MANUAL_BOOKING_ID ||
         claim.source_package_purchase_id !== MANUAL_PURCHASE_ID ||
+        claim.trainer_id !== ALLOWED_TRAINER_ID ||
+        claim.destination_account_id !== ALLOWED_DESTINATION_ID ||
         claim.amount_cents !== MANUAL_AMOUNT_CENTS
       )
     ) {
