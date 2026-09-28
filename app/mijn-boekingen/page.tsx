@@ -745,23 +745,82 @@ function MijnBoekingenContent() {
 
       const loaded = (data ?? []) as unknown as PlayerBooking[];
 
-      const { data: reviews, error: reviewsError } = await supabase
-        .from("trainer_reviews")
-        .select("booking_id")
-        .eq("player_id", user.id);
+      const reviewedIds = new Set<string>();
+      const bookingIds = [...new Set(
+        loaded.map((booking) => booking.id)
+      )];
 
-      if (!isCurrent()) return;
+      try {
+        for (let offset = 0; offset < bookingIds.length; offset += 500) {
+          const batch = bookingIds.slice(offset, offset + 500);
+          const expectedIds = new Set(batch);
 
-      if (reviewsError) {
-        console.warn(
-          "Reviews ophalen mislukt:",
-          reviewsError.message
+          const { data: reviews, error: reviewsError } =
+            await supabase.rpc(
+              "get_own_booking_reviews_v1",
+              { p_booking_ids: batch }
+            );
+
+          if (!isCurrent()) return;
+
+          if (reviewsError || !Array.isArray(reviews)) {
+            throw new Error("Reviewcontrole niet bevestigd.");
+          }
+
+          for (const review of reviews) {
+            if (
+              !review ||
+              typeof review !== "object" ||
+              Array.isArray(review) ||
+              typeof review.booking_id !== "string" ||
+              !expectedIds.has(review.booking_id) ||
+              reviewedIds.has(review.booking_id)
+            ) {
+              throw new Error("Ongeldig reviewantwoord.");
+            }
+
+            reviewedIds.add(review.booking_id);
+          }
+        }
+
+        /*
+         * Geen resultaat van een eerder account verwerken.
+         */
+        const {
+          data: { user: currentUser },
+          error: currentUserError,
+        } = await supabase.auth.getUser();
+
+        if (!isCurrent()) return;
+
+        if (
+          currentUserError ||
+          !currentUser ||
+          currentUser.id !== user.id
+        ) {
+          throw new Error("Accountcontrole niet bevestigd.");
+        }
+      } catch {
+        if (!isCurrent()) return;
+
+        /*
+         * Onzeker is niet hetzelfde als "nog geen review".
+         * Maak de reviewstatus expliciet onbekend.
+         */
+        setBookings(
+          loaded.map((booking) => ({
+            ...booking,
+            has_review: undefined,
+          }))
+        );
+
+        setNow(Date.now());
+        setChatRefreshVersion((value) => value + 1);
+
+        throw new Error(
+          "Je boekingen zijn geladen, maar je reviewstatus kon niet worden bevestigd. Klik op Ververs voordat je een review plaatst."
         );
       }
-
-      const reviewedIds = new Set(
-        (reviews ?? []).map((review) => review.booking_id)
-      );
 
       /*
        * Behoud de laatst bevestigde chatstatus bij verversen.
@@ -1155,7 +1214,7 @@ function MijnBoekingenContent() {
 </div>
 
           {/* REVIEW */}
-          {isCompleted && !booking.has_review && (
+          {isCompleted && booking.has_review === false && (
             <div className="mt-5 border-2 border-[#D6FF3F] p-4">
               <p className="font-display text-base text-[#D6FF3F]">
                 BEOORDEEL DEZE LES
@@ -1191,6 +1250,7 @@ function MijnBoekingenContent() {
                       setReviewComment(event.target.value)
                     }
                     rows={3}
+                    maxLength={1000}
                     placeholder="Vertel kort wat je van de les vond..."
                     className="w-full border-2 border-white/25 bg-transparent p-3 text-sm outline-none focus:border-[#D6FF3F]"
                   />
@@ -1231,6 +1291,13 @@ function MijnBoekingenContent() {
                 </button>
               )}
             </div>
+          )}
+
+          {isCompleted && booking.has_review === undefined && (
+            <p className="mt-4 text-xs text-[#B9BEC2]">
+              Je reviewstatus is nog niet bevestigd. Klik bovenaan
+              op Ververs voordat je een beoordeling plaatst.
+            </p>
           )}
 
           {isCompleted && booking.has_review && (

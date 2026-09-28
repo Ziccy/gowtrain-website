@@ -45,7 +45,7 @@ export default function TrainerLoginPage() {
       return;
     }
 
-    const result = await getOrRepairTrainerRole(user.id);
+    const result = await getTrainerRole(user.id);
 
     if (result === "trainer") {
       router.replace("/trainer-dashboard");
@@ -85,7 +85,7 @@ export default function TrainerLoginPage() {
     return true;
   }
 
-  async function getOrRepairTrainerRole(
+  async function getTrainerRole(
     userId: string
   ): Promise<TrainerLoginResult> {
     const { data: profile, error: profileError } = await supabase
@@ -108,29 +108,14 @@ export default function TrainerLoginPage() {
       return false;
     }
 
-    const { data: trainer, error: trainerError } = await supabase
-      .from("trainers")
-      .select("id, name")
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    if (trainerError) {
-      showError("Je traineraccount kon niet worden gecontroleerd.");
-      return false;
-    }
-
-    if (trainer) {
-      await supabase.from("profiles").upsert({
-        id: userId,
-        role: "trainer",
-        full_name: trainer.name,
-      });
-
-      return "trainer";
-    }
-
-    await supabase.auth.signOut();
-    showError("Er is geen trainerprofiel gekoppeld aan dit account.");
+    /*
+     * Een ontbrekend of onbekend accountprofiel niet vanuit
+     * de loginpagina aanmaken of van een rol voorzien.
+     * Herstel vereist afzonderlijke gecontroleerde afhandeling.
+     */
+    showError(
+      "Je accountprofiel ontbreekt of heeft geen geldige rol. Neem contact op met Gowtrain. Maak niet opnieuw hetzelfde account aan."
+    );
     return false;
   }
 
@@ -162,7 +147,7 @@ export default function TrainerLoginPage() {
         return;
       }
 
-      const result = await getOrRepairTrainerRole(userId);
+      const result = await getTrainerRole(userId);
       if (!result) return;
 
       if (result === "admin") {

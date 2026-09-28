@@ -90,79 +90,101 @@ export default function AdminReviewsPage() {
     }
   }
 
-  async function loadReviews(): Promise<void> {
-    const { data: reviewData, error: reviewError } = await supabase
-      .from("trainer_reviews")
-      .select("*")
-      .order("created_at", { ascending: false });
+async function loadReviews(): Promise<void> {
+    /*
+     * Geen gegevens van een eerdere laadronde laten staan
+     * als de huidige toegang of aanvraag niet bevestigd is.
+     */
+    setReviews([]);
 
-    if (reviewError) {
-      showError("Reviews konden niet worden geladen.");
-      return;
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      throw new Error("Je account kon niet worden gecontroleerd.");
     }
 
-    if (!reviewData || reviewData.length === 0) {
-      setReviews([]);
-      return;
-    }
+    const expectedUserId = user.id;
+    const all: ReviewAdminItem[] = [];
+    const seenIds = new Set<string>();
 
-    const trainerIds = Array.from(new Set(reviewData.map((r) => r.trainer_id)));
-    const playerIds = Array.from(new Set(reviewData.map((r) => r.player_id)));
+    for (let offset = 0; ; offset += 200) {
+      /*
+       * De RPC controleert zelf de actuele adminrol.
+       * De clientcontrole verleent geen rechten.
+       */
+      const { data, error } = await supabase.rpc(
+        "admin_read_reviews_v1",
+        { p_offset: offset }
+      );
 
-    const { data: trainersData } = await supabase
-      .from("trainers")
-      .select("id, name, sport")
-      .in("id", trainerIds);
-
-    const { data: playersData } = await supabase
-      .from("profiles")
-      .select("id, full_name")
-      .in("id", playerIds);
-
-    const trainerMap = new Map(trainersData?.map((t) => [t.id, t]) || []);
-    const playerMap = new Map(playersData?.map((p) => [p.id, p.full_name]) || []);
-
-    const formattedReviews: ReviewAdminItem[] = reviewData.map((r) => {
-      const tr = trainerMap.get(r.trainer_id);
-      return {
-        id: r.id,
-        booking_id: r.booking_id,
-        trainer_id: r.trainer_id,
-        player_id: r.player_id,
-        rating: r.rating,
-        comment: r.comment,
-        created_at: r.created_at,
-        trainer_name: tr?.name || "Onbekende Trainer",
-        trainer_sport: tr?.sport || "Sport",
-        player_name: playerMap.get(r.player_id) || "Speler",
-      };
-    });
-
-    setReviews(formattedReviews);
-  }
-
-  async function deleteReview(reviewId: string, trainerName: string): Promise<void> {
-    setDeletingId(reviewId);
-    clearMessages();
-
-    try {
-      const { error } = await supabase
-        .from("trainer_reviews")
-        .delete()
-        .eq("id", reviewId);
-
-      if (error) {
-        showError("Review kon niet worden verwijderd.");
-        return;
+      if (
+        error ||
+        !Array.isArray(data) ||
+        data.length > 200
+      ) {
+        throw new Error("Reviews konden niet worden geladen.");
       }
 
-      setSuccessMessage(`Review voor ${trainerName} is verwijderd.`);
-      await loadReviews();
-    } catch {
-      showError("Review kon niet worden verwijderd.");
-    } finally {
-      setDeletingId(null);
+      for (const value of data) {
+        if (
+          !value ||
+          typeof value !== "object" ||
+          Array.isArray(value) ||
+          typeof value.id !== "string" ||
+          seenIds.has(value.id) ||
+          typeof value.booking_id !== "string" ||
+          typeof value.trainer_id !== "string" ||
+          typeof value.player_id !== "string" ||
+          typeof value.rating !== "number" ||
+          !Number.isInteger(value.rating) ||
+          value.rating < 1 ||
+          value.rating > 5 ||
+          !(
+            value.comment === null ||
+            typeof value.comment === "string"
+          ) ||
+          typeof value.created_at !== "string" ||
+          !Number.isFinite(Date.parse(value.created_at)) ||
+          typeof value.trainer_name !== "string" ||
+          typeof value.trainer_sport !== "string" ||
+          typeof value.player_name !== "string"
+        ) {
+          throw new Error("Het reviewoverzicht is niet geldig.");
+        }
+
+        seenIds.add(value.id);
+        all.push(value as ReviewAdminItem);
+      }
+
+      if (data.length < 200) break;
     }
+
+    const {
+      data: { user: currentUser },
+      error: currentUserError,
+    } = await supabase.auth.getUser();
+
+    if (
+      currentUserError ||
+      !currentUser ||
+      currentUser.id !== expectedUserId
+    ) {
+      throw new Error("Het ingelogde account is gewijzigd.");
+    }
+
+    setReviews(all);
+  }
+
+  async function deleteReview(
+    _reviewId: string,
+    _trainerName: string
+  ): Promise<void> {
+    showError(
+      "Reviewverwijdering is tijdelijk niet beschikbaar. Eerst worden de gecontroleerde beheeractie en herberekening van de trainer-rating aangesloten. Er is niets verwijderd."
+    );
   }
 
   const avgRating = useMemo(() => {
