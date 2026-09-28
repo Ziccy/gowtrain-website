@@ -185,28 +185,6 @@ export async function POST(
       );
     }
 
-    const allowedTestUser = process.env
-      .SINGLE_LESSON_PAYMENTSHEET_TEST_USER_ID
-      ?.trim();
-
-    if (
-      !allowedTestUser ||
-      !UUID_PATTERN.test(allowedTestUser)
-    ) {
-      throw new Error("PAYMENTSHEET_TEST_ACCESS_NOT_CONFIGURED");
-    }
-
-    if (user.id !== allowedTestUser.toLowerCase()) {
-      return json(
-        {
-          code: "PAYMENTSHEET_TEST_ACCESS_ONLY",
-          error:
-            "Native betalen is momenteel alleen beschikbaar voor het toegestane testaccount.",
-        },
-        403
-      );
-    }
-
     /*
      * Eigenaarscontrole vóór iedere Stripe- of afsluitactie.
      * Een gewijzigd e-mailadres blokkeert statuscontrole niet:

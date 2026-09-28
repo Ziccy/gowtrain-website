@@ -9,10 +9,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 90;
 
-const WORKER_REVISION = "single-payment-cleanup-v1";
-
-const TEST_PLAYER_ID =
-  "3c274d07-c386-4a93-9db7-a5541b836ca4";
+const WORKER_REVISION = "single-payment-cleanup-v2";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -164,14 +161,6 @@ export async function POST(
       );
     }
 
-    const configuredPlayer = requiredEnv(
-      "SINGLE_LESSON_PAYMENTSHEET_TEST_USER_ID"
-    ).toLowerCase();
-
-    if (configuredPlayer !== TEST_PLAYER_ID) {
-      throw new Error("CLEANUP_TEST_SCOPE_MISMATCH");
-    }
-
     const stripeKey = requiredEnv("STRIPE_SECRET_KEY");
 
     if (
@@ -279,11 +268,12 @@ export async function POST(
       .eq("id", attemptId)
       .maybeSingle();
 
-    if (
+if (
       attemptError ||
       !attempt ||
+      attempt.id !== attemptId ||
       attempt.booking_id !== bookingId ||
-      attempt.player_id !== TEST_PLAYER_ID ||
+      !isUuid(attempt.player_id) ||
       attempt.channel !== "paymentsheet" ||
       attempt.stripe_livemode !== false ||
       attempt.funds_flow !== "separate_transfers_v1"
