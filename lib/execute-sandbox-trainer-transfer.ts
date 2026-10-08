@@ -6,6 +6,12 @@ import { createClient } from "@supabase/supabase-js";
 import { inspectClaimedSandboxTransferHistory } from "@/lib/inspect-sandbox-transfer-history";
 import { retrieveTrainerConnectV2StatusSnapshot } from "@/lib/stripe-connect-v2-status";
 import {
+  inspectClaimedSingleTransferHistory,
+} from "@/lib/inspect-claimed-single-transfer-history";
+import {
+  buildSingleLessonTrainerTransferPayload,
+} from "@/lib/stripe-single-lesson-transfer-payload";
+import {
   buildTrainerTransferPayload,
   type TrainerTransferCreateParams,
 } from "@/lib/stripe-trainer-transfer-payload";
@@ -162,7 +168,6 @@ export type AutomaticSandboxTrainerTransferExecutionResult =
 type ExecutionClaim = {
   request_id: string;
   booking_id: string;
-  source_package_purchase_id: string;
   trainer_id: string;
   destination_account_id: string;
   amount_cents: number;
@@ -174,15 +179,42 @@ type ExecutionClaim = {
   lock_token: string;
   locked_until: string;
   attempts: 1;
-};
+} & (
+  | {
+      source_kind?: "package";
+      source_package_purchase_id: string;
+    }
+  | {
+      source_kind: "single_lesson";
+      source_package_purchase_id: null;
+    }
+);
 
 function isClaim(value: unknown): value is ExecutionClaim {
   if (!isObject(value)) return false;
 
+  /*
+   * Bestaande pakketclaims hebben nog geen source_kind.
+   * Losse lessen vereisen expliciet single_lesson én JSON-null.
+   * Een ontbrekend of ongeldig pakket-ID is geen losse-lesclaim.
+   */
+  const validSource =
+    (
+      isUuid(value.source_package_purchase_id) &&
+      (
+        value.source_kind === undefined ||
+        value.source_kind === "package"
+      )
+    ) ||
+    (
+      value.source_kind === "single_lesson" &&
+      value.source_package_purchase_id === null
+    );
+
   return (
+    validSource &&
     isUuid(value.request_id) &&
     isUuid(value.booking_id) &&
-    isUuid(value.source_package_purchase_id) &&
     isUuid(value.trainer_id) &&
     typeof value.destination_account_id === "string" &&
     /^acct_[A-Za-z0-9]+$/.test(value.destination_account_id) &&
@@ -190,6 +222,7 @@ function isClaim(value: unknown): value is ExecutionClaim {
     typeof value.amount_cents === "number" &&
     Number.isSafeInteger(value.amount_cents) &&
     value.amount_cents > 0 &&
+    value.amount_cents <= 2147483647 &&
     value.currency === "eur" &&
     typeof value.stripe_payment_intent_id === "string" &&
     /^pi_[A-Za-z0-9]+$/.test(value.stripe_payment_intent_id) &&
@@ -331,18 +364,28 @@ async function executeClaimedTransfer(
 
     stage = "inspect_claimed_history";
 
-    const history = await inspectClaimedSandboxTransferHistory({
-      expected: {
-        requestId,
-        bookingId: claim.booking_id,
-        purchaseId: claim.source_package_purchase_id,
-        trainerId: claim.trainer_id,
-        destinationAccountId: claim.destination_account_id,
-        paymentIntentId: claim.stripe_payment_intent_id,
-        amountCents: claim.amount_cents,
-      },
-      lockToken,
-    });
+    const expectedHistory = {
+      requestId,
+      bookingId: claim.booking_id,
+      trainerId: claim.trainer_id,
+      destinationAccountId: claim.destination_account_id,
+      paymentIntentId: claim.stripe_payment_intent_id,
+      amountCents: claim.amount_cents,
+    };
+
+    const history =
+      claim.source_kind === "single_lesson"
+        ? await inspectClaimedSingleTransferHistory({
+            expected: expectedHistory,
+            lockToken,
+          })
+        : await inspectClaimedSandboxTransferHistory({
+            expected: {
+              ...expectedHistory,
+              purchaseId: claim.source_package_purchase_id,
+            },
+            lockToken,
+          });
 
     const source = history.source;
 
@@ -350,10 +393,26 @@ async function executeClaimedTransfer(
       history.currentRequestId !== requestId ||
       history.historyComparison.comparisonConfirmed !== true ||
       history.databaseRequestCount !== history.completedRequestCount + 1 ||
-      source.purchaseId !== claim.source_package_purchase_id ||
       source.paymentIntentId !== claim.stripe_payment_intent_id ||
       source.transferInspection.destinationAccountId !==
         claim.destination_account_id
+    ) {
+      throw new Error("TRANSFER_EXECUTION_SOURCE_CONTEXT_MISMATCH");
+    }
+
+    if (claim.source_kind === "single_lesson") {
+      if (
+        !("sourceKind" in source) ||
+        source.sourceKind !== "single_lesson" ||
+        source.bookingId !== claim.booking_id ||
+        source.trainerId !== claim.trainer_id ||
+        history.historyComparison.currentSourceTransferredCents !== 0
+      ) {
+        throw new Error("TRANSFER_EXECUTION_SOURCE_CONTEXT_MISMATCH");
+      }
+    } else if (
+      !("purchaseId" in source) ||
+      source.purchaseId !== claim.source_package_purchase_id
     ) {
       throw new Error("TRANSFER_EXECUTION_SOURCE_CONTEXT_MISMATCH");
     }
@@ -425,19 +484,26 @@ async function executeClaimedTransfer(
       throw new Error("TRANSFER_EXECUTION_DESTINATION_REQUIRES_REVIEW");
     }
 
-    const built = buildTrainerTransferPayload({
+    const payloadContext = {
       requestId,
       bookingId: claim.booking_id,
       trainerId: claim.trainer_id,
-      packagePurchaseId: claim.source_package_purchase_id,
       amountCents: claim.amount_cents,
-      currency: "eur",
+      currency: "eur" as const,
       destinationAccountId: claim.destination_account_id,
       sourceChargeId: source.chargeId,
       paymentIntentId: source.paymentIntentId,
-      stripeLivemode: false,
-      fundsFlow: "separate_transfers_v1",
-    });
+      stripeLivemode: false as const,
+      fundsFlow: "separate_transfers_v1" as const,
+    };
+
+    const built =
+      claim.source_kind === "single_lesson"
+        ? buildSingleLessonTrainerTransferPayload(payloadContext)
+        : buildTrainerTransferPayload({
+            ...payloadContext,
+            packagePurchaseId: claim.source_package_purchase_id,
+          });
 
     stage = "prepare";
 
@@ -446,7 +512,9 @@ async function executeClaimedTransfer(
     }
 
     const { data: preparedData, error: prepareError } = await database.rpc(
-      "prepare_sandbox_trainer_transfer",
+      claim.source_kind === "single_lesson"
+        ? "prepare_sandbox_single_trainer_transfer"
+        : "prepare_sandbox_trainer_transfer",
       {
         p_request_id: requestId,
         p_lock_token: lockToken,

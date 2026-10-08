@@ -8,6 +8,9 @@ import {
   type SandboxTransferHistoryComparison,
 } from "@/lib/compare-sandbox-transfer-history";
 import {
+  validateCompletedSingleTransferHistory,
+} from "@/lib/validate-completed-single-transfer-history";
+import {
   separateClaimedTransferHistory,
 } from "@/lib/separate-claimed-transfer-history";
 
@@ -175,6 +178,42 @@ function validateCompletedHistory(
   for (const value of history.requests) {
     const row = requiredObject(value);
     const request = requiredObject(row.request);
+
+    /*
+     * Een eerdere losse-lestransfer expliciet valideren.
+     * Geen ontbrekende aankoop stilzwijgend overslaan.
+     */
+    if (request.source_package_purchase_id === null) {
+      const completed = validateCompletedSingleTransferHistory(row);
+
+      /*
+       * De huidige inspectie betreft een pakketaankoop.
+       * Een losse les mag nooit dezelfde PI of broncharge claimen.
+       */
+      if (
+        completed.expected.paymentIntentId === source.paymentIntentId ||
+        completed.expected.sourceChargeId === source.chargeId
+      ) {
+        throw new Error("TRANSFER_HISTORY_SOURCE_PURCHASE_MISMATCH");
+      }
+
+      /*
+       * De loader kan ruimer lezen dan de Stripe-scan.
+       * Ook losse-leshistorie buiten die scope niet negeren.
+       */
+      if (
+        completed.expected.destinationAccountId !==
+        source.transferInspection.destinationAccountId
+      ) {
+        throw new Error(
+          "TRANSFER_HISTORY_OUTSIDE_SCAN_SCOPE_REQUIRES_REVIEW",
+        );
+      }
+
+      completedRequests.push(completed);
+      continue;
+    }
+
     const booking = requiredObject(row.booking);
     const purchase = requiredObject(row.purchase);
 

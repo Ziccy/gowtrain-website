@@ -2,14 +2,16 @@ import "server-only";
 
 import { isDeepStrictEqual } from "node:util";
 import type Stripe from "stripe";
-import { buildTrainerTransferPayload } from "@/lib/stripe-trainer-transfer-payload";
+import {
+  buildSandboxTrainerTransferPayload,
+  type SandboxTrainerTransferPayloadInput,
+} from "@/lib/build-sandbox-trainer-transfer-payload";
 import {
   verifySandboxTrainerTransfer,
   type VerifiedSandboxTrainerTransfer,
 } from "@/lib/verify-sandbox-trainer-transfer";
 
-type ExpectedTransfer =
-  Parameters<typeof buildTrainerTransferPayload>[0];
+type ExpectedTransfer = SandboxTrainerTransferPayloadInput;
 
 export type OtherSourceTransferContext = {
   transferId: string;
@@ -73,7 +75,7 @@ export async function findSandboxTrainerTransfer(
     knownTransferId?: string | null;
   },
 ): Promise<SandboxTransferSearchResult> {
-  const built = buildTrainerTransferPayload(input.expected);
+  const built = buildSandboxTrainerTransferPayload(input.expected);
 
   if (
     input.storedIdempotencyKey !== built.idempotencyKey ||

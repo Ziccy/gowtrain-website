@@ -126,7 +126,10 @@ export async function syncSandboxTrainerTransfer(
   if (
     !isUuid(request.booking_id) ||
     !isUuid(request.trainer_id) ||
-    !isUuid(request.source_package_purchase_id) ||
+    (
+      request.source_package_purchase_id !== null &&
+      !isUuid(request.source_package_purchase_id)
+    ) ||
     request.stripe_livemode !== false ||
     request.funds_flow !== "separate_transfers_v1" ||
     request.currency !== "eur" ||
@@ -160,13 +163,31 @@ export async function syncSandboxTrainerTransfer(
    * Niet vervangen door een eventueel later gewijzigde
    * trainerkoppeling: we registreren het werkelijk uitgevoerde resultaat.
    */
+  /*
+   * De opgeslagen opdracht bepaalt de verwachte bronsoort.
+   *
+   * null is niet voldoende om een transfer goed te keuren:
+   * de verifier vereist daarnaast exact de losse-lespayload,
+   * metadata, bron, bestemming, bedrag en idempotency-key.
+   *
+   * SQL moet daarna opdracht en boeking onder locks controleren.
+   */
   const verified = await verifySandboxTrainerTransfer(stripe, {
     transferId,
     expected: {
       requestId: request.id,
       bookingId: request.booking_id,
       trainerId: request.trainer_id,
-      packagePurchaseId: request.source_package_purchase_id,
+
+      ...(request.source_package_purchase_id === null
+        ? {
+            sourceKind: "single_lesson" as const,
+          }
+        : {
+            sourceKind: "package" as const,
+            packagePurchaseId: request.source_package_purchase_id,
+          }),
+
       amountCents: request.amount_cents,
       currency: "eur",
       destinationAccountId: request.destination_account_id,

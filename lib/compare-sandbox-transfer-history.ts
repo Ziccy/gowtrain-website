@@ -2,14 +2,14 @@ import "server-only";
 
 import { isDeepStrictEqual } from "node:util";
 import {
-  buildTrainerTransferPayload,
-} from "@/lib/stripe-trainer-transfer-payload";
+  buildSandboxTrainerTransferPayload,
+  type SandboxTrainerTransferPayloadInput,
+} from "@/lib/build-sandbox-trainer-transfer-payload";
 import type {
   SandboxSourceTransferInspection,
 } from "@/lib/inspect-sandbox-source-transfers";
 
-type ExpectedTransfer =
-  Parameters<typeof buildTrainerTransferPayload>[0];
+type ExpectedTransfer = SandboxTrainerTransferPayloadInput;
 
 /*
  * Deze gegevens moeten door de backend uit opdracht én boeking
@@ -34,7 +34,7 @@ export type CompletedSandboxTransferHistoryEntry = {
   booking: {
     id: string;
     trainerId: string;
-    packagePurchaseId: string;
+    packagePurchaseId: string | null;
     trainerNetAmountCents: number;
     currency: string;
     trainerPayoutStatus: string;
@@ -53,7 +53,7 @@ export type SandboxTransferHistoryComparison = {
   matchedTransfers: Array<{
     requestId: string;
     bookingId: string;
-    packagePurchaseId: string;
+    packagePurchaseId: string | null;
     transferId: string;
     sourceChargeId: string;
     destinationAccountId: string;
@@ -212,12 +212,15 @@ export function compareSandboxTransferHistory(input: {
      * De builder valideert de financiële input en bouwt
      * de exact verwachte oorspronkelijke aanvraag opnieuw.
      */
-    const built = buildTrainerTransferPayload(entry.expected);
+    const built = buildSandboxTrainerTransferPayload(entry.expected);
 
     const requestId = entry.expected.requestId.toLowerCase();
     const bookingId = entry.expected.bookingId.toLowerCase();
     const trainerId = entry.expected.trainerId.toLowerCase();
-    const purchaseId = entry.expected.packagePurchaseId.toLowerCase();
+    const purchaseId =
+      entry.expected.sourceKind === "single_lesson"
+        ? null
+        : entry.expected.packagePurchaseId.toLowerCase();
 
     if (
       requestIds.has(requestId) ||

@@ -158,6 +158,22 @@ function harness({
       };
     }
 
+    if (name === "@/lib/inspect-claimed-single-transfer-history") {
+      return {
+        inspectClaimedSingleTransferHistory() {
+          return unexpected("single_history_inspection");
+        },
+      };
+    }
+
+    if (name === "@/lib/stripe-single-lesson-transfer-payload") {
+      return {
+        buildSingleLessonTrainerTransferPayload() {
+          return unexpected("single_payload_builder");
+        },
+      };
+    }
+
     return unexpected(`import:${name}`);
   }
 

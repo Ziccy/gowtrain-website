@@ -2,15 +2,17 @@ import "server-only";
 
 import { isDeepStrictEqual } from "node:util";
 import type Stripe from "stripe";
-import { buildTrainerTransferPayload } from "@/lib/stripe-trainer-transfer-payload";
+import {
+  buildSandboxTrainerTransferPayload,
+  type SandboxTrainerTransferPayloadInput,
+} from "@/lib/build-sandbox-trainer-transfer-payload";
 
-type TransferPayloadInput =
-  Parameters<typeof buildTrainerTransferPayload>[0];
+type TransferPayloadInput = SandboxTrainerTransferPayloadInput;
 
 export type VerifiedSandboxTrainerTransfer = {
   requestId: string;
   bookingId: string;
-  packagePurchaseId: string;
+  packagePurchaseId: string | null;
   trainerId: string;
 
   transferId: string;
@@ -61,7 +63,7 @@ export async function verifySandboxTrainerTransfer(
     throw new Error("TRAINER_TRANSFER_RESULT_ID_INVALID");
   }
 
-  const built = buildTrainerTransferPayload(input.expected);
+  const built = buildSandboxTrainerTransferPayload(input.expected);
 
   if (
     input.storedIdempotencyKey !== built.idempotencyKey ||
@@ -148,7 +150,10 @@ export async function verifySandboxTrainerTransfer(
   return {
     requestId: input.expected.requestId.toLowerCase(),
     bookingId: input.expected.bookingId.toLowerCase(),
-    packagePurchaseId: input.expected.packagePurchaseId.toLowerCase(),
+    packagePurchaseId:
+      input.expected.sourceKind === "single_lesson"
+        ? null
+        : input.expected.packagePurchaseId.toLowerCase(),
     trainerId: input.expected.trainerId.toLowerCase(),
 
     transferId: transfer.id,

@@ -25,6 +25,7 @@ const compiled = ts.transpileModule(
 const SELECT = "claim_next_sandbox_trainer_transfer";
 const MANUAL_CLAIM = "claim_sandbox_trainer_transfer";
 const PREPARE = "prepare_sandbox_trainer_transfer";
+const SINGLE_PREPARE = "prepare_sandbox_single_trainer_transfer";
 const REVIEW = "mark_sandbox_trainer_transfer_for_review";
 
 const BASE_FIXTURE = {
@@ -46,10 +47,13 @@ function plain(value) {
 }
 
 function harness(options = {}) {
+  const single = options.single === true;
+  const prepareName = single ? SINGLE_PREPARE : PREPARE;
+
   /*
    * De fixture bepaalt de verwachte context.
    * options.claim kan daar bewust van afwijken.
-   * Verwachtingen worden dus niet uit de ontvangen claim afgeleid.
+   * Verwachtingen worden niet uit de ontvangen claim afgeleid.
    */
   const {
     REQUEST,
@@ -75,6 +79,7 @@ function harness(options = {}) {
   const lease = new Date(Date.now() + 300_000).toISOString();
   const idempotencyKey = `gowtrain-trainer-transfer/${REQUEST}`;
 
+  // Alleen de nagebootste process.env binnen de VM.
   const env = {
     SANDBOX_TRAINER_TRANSFER_EXECUTION_ENABLED: "true",
     SANDBOX_TRAINER_TRANSFER_AUTOMATIC_ENABLED: "true",
@@ -86,7 +91,8 @@ function harness(options = {}) {
   const claim = {
     request_id: REQUEST,
     booking_id: BOOKING,
-    source_package_purchase_id: PURCHASE,
+    source_package_purchase_id: single ? null : PURCHASE,
+    ...(single ? { source_kind: "single_lesson" } : {}),
     trainer_id: TRAINER,
     destination_account_id: DESTINATION,
     amount_cents: AMOUNT,
@@ -106,12 +112,16 @@ function harness(options = {}) {
     currency: "eur",
     destination: DESTINATION,
     source_transaction: CHARGE,
-    transfer_group: `gowtrain-package/${PURCHASE}`,
+    transfer_group: single
+      ? `gowtrain-single/${BOOKING}`
+      : `gowtrain-package/${PURCHASE}`,
     metadata: {
       gowtrain_transfer_request_id: REQUEST,
       gowtrain_booking_id: BOOKING,
       gowtrain_trainer_id: TRAINER,
-      gowtrain_package_purchase_id: PURCHASE,
+      ...(single
+        ? { gowtrain_booking_type: "single_lesson" }
+        : { gowtrain_package_purchase_id: PURCHASE }),
       gowtrain_payment_intent_id: PAYMENT,
       gowtrain_funds_flow: "separate_transfers_v1",
     },
@@ -189,17 +199,30 @@ function harness(options = {}) {
         };
       }
 
-      if (name === PREPARE) {
+      if (name === prepareName) {
         guard(args.p_request_id === REQUEST, "Verkeerde prepareopdracht");
         guard(args.p_lock_token === TOKEN, "Verkeerd preparetoken");
+
         guard(
           isDeepStrictEqual(plain(args.p_payload), payload),
           "Preparepayload wijkt af",
         );
-        guard(
-          args.p_source.purchaseId === PURCHASE,
-          "Verkeerde prepareaankoop",
-        );
+
+        if (single) {
+          guard(
+            args.p_source.sourceKind === "single_lesson" &&
+              args.p_source.bookingId === BOOKING &&
+              args.p_source.trainerId === TRAINER &&
+              !("purchaseId" in args.p_source),
+            "Verkeerde losse-lespreparecontext",
+          );
+        } else {
+          guard(
+            args.p_source.purchaseId === PURCHASE,
+            "Verkeerde prepareaankoop",
+          );
+        }
+
         guard(
           args.p_source.paymentIntentId === PAYMENT,
           "Verkeerde preparebetaling",
@@ -248,7 +271,7 @@ function harness(options = {}) {
         };
       }
 
-      guard(false, `Onverwachte RPC of tweede claim: ${name}`);
+      guard(false, `Onverwachte RPC of verkeerde preparefunctie: ${name}`);
     },
 
     from(table) {
@@ -273,7 +296,10 @@ function harness(options = {}) {
               filters.stripe_account_id === DESTINATION,
               "Verkeerde bestemming",
             );
-            guard(filters.account_api === "accounts_v2", "Verkeerde account-API");
+            guard(
+              filters.account_api === "accounts_v2",
+              "Verkeerde account-API",
+            );
             guard(filters.status === "linked", "Verkeerde Connect-status");
 
             return {
@@ -295,10 +321,7 @@ function harness(options = {}) {
           }
 
           if (table === "trainer_transfer_requests") {
-            if (
-              options.manual &&
-              !events.includes(MANUAL_CLAIM)
-            ) {
+            if (options.manual && !events.includes(MANUAL_CLAIM)) {
               events.push("manual_request_read");
               guard(filters.id === REQUEST, "Verkeerde handmatige lookup");
 
@@ -382,50 +405,88 @@ function harness(options = {}) {
       };
     }
 
-    if (name === "@/lib/inspect-sandbox-transfer-history") {
-      return {
-        async inspectClaimedSandboxTransferHistory(input) {
-          events.push("history");
+    if (
+      name === "@/lib/inspect-sandbox-transfer-history" ||
+      name === "@/lib/inspect-claimed-single-transfer-history"
+    ) {
+      const singleHelper =
+        name === "@/lib/inspect-claimed-single-transfer-history";
 
-          guard(input.lockToken === TOKEN, "Verkeerd historietoken");
-          guard(input.expected.requestId === REQUEST, "Verkeerde historieopdracht");
-          guard(input.expected.bookingId === BOOKING, "Verkeerde historieboeking");
-          guard(input.expected.purchaseId === PURCHASE, "Verkeerde aankoop");
-          guard(input.expected.amountCents === AMOUNT, "Verkeerd bedrag");
-          guard(input.expected.trainerId === TRAINER, "Verkeerde historietrainer");
+      async function inspect(input) {
+        events.push(singleHelper ? "single_history" : "history");
+
+        guard(singleHelper === single, "Verkeerde historiehelper");
+        guard(input.lockToken === TOKEN, "Verkeerd historietoken");
+        guard(
+          input.expected.requestId === REQUEST,
+          "Verkeerde historieopdracht",
+        );
+        guard(
+          input.expected.bookingId === BOOKING,
+          "Verkeerde historieboeking",
+        );
+        guard(input.expected.amountCents === AMOUNT, "Verkeerd bedrag");
+        guard(
+          input.expected.trainerId === TRAINER,
+          "Verkeerde historietrainer",
+        );
+        guard(
+          input.expected.destinationAccountId === DESTINATION,
+          "Verkeerde historiebestemming",
+        );
+        guard(
+          input.expected.paymentIntentId === PAYMENT,
+          "Verkeerde historiebetaling",
+        );
+
+        if (single) {
           guard(
-            input.expected.destinationAccountId === DESTINATION,
-            "Verkeerde historiebestemming",
+            !("purchaseId" in input.expected),
+            "Losse historie bevat pakketinput",
           );
+        } else {
           guard(
-            input.expected.paymentIntentId === PAYMENT,
-            "Verkeerde historiebetaling",
+            input.expected.purchaseId === PURCHASE,
+            "Verkeerde aankoop",
           );
+        }
 
-          if (options.historyError) {
-            throw new Error("TRANSFER_HISTORY_TEST_REJECTED");
-          }
+        if (options.historyError) {
+          throw new Error("TRANSFER_HISTORY_TEST_REJECTED");
+        }
 
-          return {
-            currentRequestId: REQUEST,
-            databaseRequestCount: 3,
-            completedRequestCount: 2,
-            historyComparison: {
-              comparisonConfirmed: true,
-              currentSourceTransferredCents: 0,
-              currentDestinationTransferredCents: 3800,
+        return {
+          currentRequestId: REQUEST,
+          databaseRequestCount: 3,
+          completedRequestCount: 2,
+          historyComparison: {
+            comparisonConfirmed: true,
+            currentSourceTransferredCents:
+              options.usedSingleSource ? AMOUNT : 0,
+            currentDestinationTransferredCents: 3800,
+          },
+          source: {
+            ...(single
+              ? {
+                  sourceKind: "single_lesson",
+                  bookingId: options.wrongSourceBooking
+                    ? "99999999-9999-4999-8999-999999999999"
+                    : BOOKING,
+                  trainerId: TRAINER,
+                }
+              : { purchaseId: PURCHASE }),
+            paymentIntentId: PAYMENT,
+            chargeId: CHARGE,
+            transferInspection: {
+              destinationAccountId: DESTINATION,
             },
-            source: {
-              purchaseId: PURCHASE,
-              paymentIntentId: PAYMENT,
-              chargeId: CHARGE,
-              transferInspection: {
-                destinationAccountId: DESTINATION,
-              },
-            },
-          };
-        },
-      };
+          },
+        };
+      }
+
+      return singleHelper
+        ? { inspectClaimedSingleTransferHistory: inspect }
+        : { inspectClaimedSandboxTransferHistory: inspect };
     }
 
     if (name === "@/lib/stripe-connect-v2-status") {
@@ -433,9 +494,18 @@ function harness(options = {}) {
         async retrieveTrainerConnectV2StatusSnapshot(_stripe, input) {
           events.push("destination");
 
-          guard(input.accountId === DESTINATION, "Verkeerd Connect-account");
-          guard(input.trainerId === TRAINER, "Verkeerde Connect-trainer");
-          guard(input.attemptId === ATTEMPT, "Verkeerde Connect-poging");
+          guard(
+            input.accountId === DESTINATION,
+            "Verkeerd Connect-account",
+          );
+          guard(
+            input.trainerId === TRAINER,
+            "Verkeerde Connect-trainer",
+          );
+          guard(
+            input.attemptId === ATTEMPT,
+            "Verkeerde Connect-poging",
+          );
           guard(input.country === "NL", "Verkeerd Connect-land");
 
           return {
@@ -451,32 +521,56 @@ function harness(options = {}) {
       };
     }
 
-    if (name === "@/lib/stripe-trainer-transfer-payload") {
-      return {
-        buildTrainerTransferPayload(input) {
-          events.push("build_payload");
+    if (
+      name === "@/lib/stripe-trainer-transfer-payload" ||
+      name === "@/lib/stripe-single-lesson-transfer-payload"
+    ) {
+      const singleBuilder =
+        name === "@/lib/stripe-single-lesson-transfer-payload";
 
-          guard(input.requestId === REQUEST, "Verkeerde payloadopdracht");
-          guard(input.bookingId === BOOKING, "Verkeerde payloadboeking");
-          guard(input.packagePurchaseId === PURCHASE, "Verkeerde payloadaankoop");
-          guard(input.trainerId === TRAINER, "Verkeerde payloadtrainer");
-          guard(input.destinationAccountId === DESTINATION, "Verkeerde payloadbestemming");
-          guard(input.amountCents === AMOUNT, "Verkeerd payloadbedrag");
-          guard(input.paymentIntentId === PAYMENT, "Verkeerde payloadbetaling");
-          guard(input.sourceChargeId === CHARGE, "Verkeerde payloadbron");
-          guard(input.currency === "eur", "Verkeerde payloadvaluta");
-          guard(input.stripeLivemode === false, "Geen sandboxpayload");
+      function build(input) {
+        events.push("build_payload");
+
+        guard(singleBuilder === single, "Verkeerde payloadbuilder");
+        guard(input.requestId === REQUEST, "Verkeerde payloadopdracht");
+        guard(input.bookingId === BOOKING, "Verkeerde payloadboeking");
+
+        if (single) {
           guard(
-            input.fundsFlow === "separate_transfers_v1",
-            "Verkeerde geldstroom",
+            !("packagePurchaseId" in input),
+            "Losse payload bevat pakketinput",
           );
+        } else {
+          guard(
+            input.packagePurchaseId === PURCHASE,
+            "Verkeerde payloadaankoop",
+          );
+        }
 
-          return {
-            payload,
-            idempotencyKey,
-          };
-        },
-      };
+        guard(input.trainerId === TRAINER, "Verkeerde payloadtrainer");
+        guard(
+          input.destinationAccountId === DESTINATION,
+          "Verkeerde payloadbestemming",
+        );
+        guard(input.amountCents === AMOUNT, "Verkeerd payloadbedrag");
+        guard(
+          input.paymentIntentId === PAYMENT,
+          "Verkeerde payloadbetaling",
+        );
+        guard(input.sourceChargeId === CHARGE, "Verkeerde payloadbron");
+        guard(input.currency === "eur", "Verkeerde payloadvaluta");
+        guard(input.stripeLivemode === false, "Geen sandboxpayload");
+        guard(
+          input.fundsFlow === "separate_transfers_v1",
+          "Verkeerde geldstroom",
+        );
+
+        return { payload, idempotencyKey };
+      }
+
+      return singleBuilder
+        ? { buildSingleLessonTrainerTransferPayload: build }
+        : { buildTrainerTransferPayload: build };
     }
 
     if (name === "@/lib/sync-sandbox-trainer-transfer") {
@@ -504,6 +598,7 @@ function harness(options = {}) {
       };
     }
 
+    // Geen ongemockte imports, netwerkclients of echte helpers laden.
     guard(false, `Niet toegestane import: ${name}`);
   }
 
@@ -531,8 +626,8 @@ function harness(options = {}) {
 
     check(expectedEvents) {
       /*
-       * Ook controleren wanneer productiecode een fout uit
-       * een mock heeft opgevangen.
+       * Ook controleren als de uitvoerder een fout uit een mock
+       * heeft opgevangen en als not_confirmed heeft teruggegeven.
        */
       assert.deepEqual(violations, []);
       assert.deepEqual(events, expectedEvents);
@@ -578,7 +673,7 @@ async function test(name, run) {
 
 async function main() {
   await test(
-    "Bevestigde automatische claim: één create, geen tweede claim",
+    "Bevestigde automatische pakketclaim: één create, geen tweede claim",
     async () => {
       const h = harness();
       const result = await h.run();
@@ -592,11 +687,11 @@ async function main() {
   );
 
   await test(
-    "Tweede trainer gebruikt uitsluitend eigen context",
+    "Tweede trainer gebruikt uitsluitend eigen pakketcontext",
     async () => {
       /*
        * Volledig synthetische fixture.
-       * Geen goedkeuring van de echte €72,20-kandidaat.
+       * Geen goedkeuring van een echte databasekandidaat.
        */
       const fixture = {
         REQUEST: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -717,7 +812,7 @@ async function main() {
   );
 
   await test(
-    "Geweigerde historie: geen prepare of create",
+    "Geweigerde pakkethistorie: geen prepare of create",
     async () => {
       const h = harness({ historyError: true });
       const result = await h.run();
@@ -733,7 +828,7 @@ async function main() {
   );
 
   await test(
-    "Onzekere prepare: geen payload teruglezen of verzenden",
+    "Onzekere pakketprepare: geen payload teruglezen of verzenden",
     async () => {
       const h = harness({ prepareError: true });
       const result = await h.run();
@@ -749,7 +844,7 @@ async function main() {
   );
 
   await test(
-    "Gewijzigde claim bij pre-send: geen create",
+    "Gewijzigde pakketclaim bij pre-send: geen create",
     async () => {
       const h = harness({ changedClaim: true });
       const result = await h.run();
@@ -764,7 +859,7 @@ async function main() {
   );
 
   await test(
-    "Lokale vlagcheck vóór verzending wordt gerespecteerd",
+    "Lokale vlagcheck vóór pakketverzending wordt gerespecteerd",
     async () => {
       const h = harness({ disableBeforeSend: true });
       const result = await h.run();
@@ -779,7 +874,7 @@ async function main() {
   );
 
   await test(
-    "Stripe-timeout: één create, geen retry of sync",
+    "Stripe-timeout bij pakket: één create, geen retry of sync",
     async () => {
       const h = harness({ createTimeout: true });
       const result = await h.run();
@@ -796,7 +891,7 @@ async function main() {
   );
 
   await test(
-    "Syncfout na create: transfer-ID behouden, niet herverzenden",
+    "Pakketsyncfout na create: transfer-ID behouden, niet herverzenden",
     async () => {
       const h = harness({
         syncError: true,
@@ -816,6 +911,232 @@ async function main() {
       assert.equal(result.reviewRecorded, false);
     },
   );
+
+  /*
+   * Losse-lesfixture is volledig synthetisch.
+   * Geen echte boeking wordt opgehaald of gewijzigd.
+   */
+  const singleFixture = {
+    REQUEST: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    TOKEN: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    ATTEMPT: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    BOOKING: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    TRAINER: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    DESTINATION: "acct_SINGLETEST",
+    TRANSFER: "tr_SINGLETEST",
+    PAYMENT: "pi_SINGLETEST",
+    CHARGE: "py_SINGLETEST",
+    AMOUNT: 7600,
+  };
+
+  const singleBeforePrepare = [
+    SELECT,
+    "single_history",
+    "connect_read",
+    "destination",
+    "build_payload",
+  ];
+
+  const singleBeforeCreate = [
+    ...singleBeforePrepare,
+    SINGLE_PREPARE,
+    "pre_send_read",
+  ];
+
+  await test(
+    "Losse les: eigen historie, prepare en één create",
+    async () => {
+      const h = harness({
+        single: true,
+        fixture: singleFixture,
+      });
+
+      const result = await h.run();
+
+      h.check([...singleBeforeCreate, "create", "sync"]);
+      assert.equal(result.result, "synchronized");
+      assert.equal(result.requestId, singleFixture.REQUEST);
+      assert.equal(result.transferId, singleFixture.TRANSFER);
+      assert.equal(result.applicationResult, "applied");
+    },
+  );
+
+  await test(
+    "Ongeldige of tegenstrijdige bronsoort weigeren",
+    async () => {
+      for (const changedClaim of [
+        { source_package_purchase_id: null },
+        { source_package_purchase_id: undefined },
+        { source_kind: "single_lesson" },
+        { source_kind: "unknown" },
+        {
+          source_kind: "package",
+          source_package_purchase_id: null,
+        },
+      ]) {
+        const h = harness({ claim: changedClaim });
+        const result = await h.run();
+
+        h.check([SELECT, REVIEW]);
+        assert.equal(result.result, "not_confirmed");
+        assert.equal(
+          result.diagnosticCode,
+          "TRANSFER_EXECUTION_CLAIM_CONTEXT_MISMATCH",
+        );
+        assert.equal(result.reviewRecorded, true);
+      }
+    },
+  );
+
+  await test(
+    "Handmatige ingang weigert losse-lesclaim",
+    async () => {
+      const h = harness({
+        manual: true,
+        fixture: {
+          BOOKING: "1be93a44-2570-475c-a061-ea574b638258",
+          PURCHASE: "0ceb3427-c520-4351-9cb4-e2fb9ea08069",
+        },
+        claim: {
+          source_kind: "single_lesson",
+          source_package_purchase_id: null,
+        },
+      });
+
+      const result = await h.run();
+
+      h.check([
+        "manual_request_read",
+        MANUAL_CLAIM,
+        REVIEW,
+      ]);
+
+      assert.equal(result.result, "not_confirmed");
+      assert.equal(
+        result.diagnosticCode,
+        "TRANSFER_EXECUTION_OUTSIDE_TEST_SCOPE",
+      );
+      assert.equal(result.reviewRecorded, true);
+    },
+  );
+
+  await test(
+    "Losse broncontext of eerder brongebruik weigeren",
+    async () => {
+      for (const option of [
+        { wrongSourceBooking: true },
+        { usedSingleSource: true },
+      ]) {
+        const h = harness({
+          single: true,
+          fixture: singleFixture,
+          ...option,
+        });
+
+        const result = await h.run();
+
+        h.check([SELECT, "single_history", REVIEW]);
+        assert.equal(result.result, "not_confirmed");
+        assert.equal(
+          result.diagnosticCode,
+          "TRANSFER_EXECUTION_SOURCE_CONTEXT_MISMATCH",
+        );
+        assert.equal(result.reviewRecorded, true);
+      }
+    },
+  );
+
+  const singleFailures = [
+    {
+      name: "historie geweigerd",
+      options: { historyError: true },
+      events: [SELECT, "single_history", REVIEW],
+      stage: "inspect_claimed_history",
+      code: "TRANSFER_HISTORY_TEST_REJECTED",
+    },
+    {
+      name: "verkeerde Connect-trainer",
+      options: { wrongConnectTrainer: true },
+      events: [
+        SELECT,
+        "single_history",
+        "connect_read",
+        REVIEW,
+      ],
+      stage: "destination_context",
+      code: "TRANSFER_EXECUTION_CONNECT_PAYLOAD_INVALID",
+    },
+    {
+      name: "onzekere prepare",
+      options: { prepareError: true },
+      events: [
+        ...singleBeforePrepare,
+        SINGLE_PREPARE,
+        REVIEW,
+      ],
+      stage: "prepare",
+      code: "TRANSFER_EXECUTION_PREPARE_NOT_CONFIRMED",
+    },
+    {
+      name: "gewijzigde claim vóór verzending",
+      options: { changedClaim: true },
+      events: [...singleBeforeCreate, REVIEW],
+      stage: "pre_send_check",
+      code: "TRANSFER_EXECUTION_PRE_SEND_CHECK_FAILED",
+    },
+    {
+      name: "uitgeschakeld vóór verzending",
+      options: { disableBeforeSend: true },
+      events: [...singleBeforeCreate, REVIEW],
+      stage: "pre_send_check",
+      code: "TRANSFER_EXECUTION_DISABLED_AFTER_PREPARATION",
+    },
+    {
+      name: "Stripe-timeout zonder herverzending",
+      options: { createTimeout: true },
+      events: [...singleBeforeCreate, "create", REVIEW],
+      stage: "stripe_create",
+      code: "TRANSFER_EXECUTION_STRIPE_CONNECTION_ERROR",
+    },
+    {
+      name: "syncfout met behoud transfer-ID",
+      options: {
+        syncError: true,
+        reviewFalse: true,
+      },
+      events: [
+        ...singleBeforeCreate,
+        "create",
+        "sync",
+        REVIEW,
+      ],
+      stage: "synchronize",
+      code: "TRAINER_TRANSFER_SYNC_APPLICATION_NOT_CONFIRMED",
+      transferId: singleFixture.TRANSFER,
+    },
+  ];
+
+  for (const scenario of singleFailures) {
+    await test(`Losse les: ${scenario.name}`, async () => {
+      const h = harness({
+        single: true,
+        fixture: singleFixture,
+        ...scenario.options,
+      });
+
+      const result = await h.run();
+
+      h.check(scenario.events);
+      assert.equal(result.result, "not_confirmed");
+      assert.equal(result.stage, scenario.stage);
+      assert.equal(result.diagnosticCode, scenario.code);
+      assert.equal(result.transferId, scenario.transferId ?? null);
+      assert.equal(
+        result.reviewRecorded,
+        !scenario.options.reviewFalse,
+      );
+    });
+  }
 
   console.log(
     `\nALLE ${passed} UITVOERINGSTESTS GESLAAGD. ` +

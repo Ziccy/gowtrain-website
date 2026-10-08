@@ -167,7 +167,10 @@ export async function reconcileSandboxTrainerTransfer(
   if (
     request.stripe_livemode !== false ||
     request.funds_flow !== "separate_transfers_v1" ||
-    !isUuid(request.source_package_purchase_id)
+    (
+      request.source_package_purchase_id !== null &&
+      !isUuid(request.source_package_purchase_id)
+    )
   ) {
     throw new Error("TRANSFER_RECOVERY_UNSUPPORTED_CONTEXT");
   }
@@ -270,7 +273,10 @@ export async function reconcileSandboxTrainerTransfer(
   if (
     !isUuid(request.booking_id) ||
     !isUuid(request.trainer_id) ||
-    !isUuid(request.source_package_purchase_id) ||
+    (
+      request.source_package_purchase_id !== null &&
+      !isUuid(request.source_package_purchase_id)
+    ) ||
     request.currency !== "eur" ||
     request.stripe_livemode !== false ||
     request.funds_flow !== "separate_transfers_v1" ||
@@ -294,7 +300,16 @@ export async function reconcileSandboxTrainerTransfer(
       requestId: request.id,
       bookingId: request.booking_id,
       trainerId: request.trainer_id,
-      packagePurchaseId: request.source_package_purchase_id,
+
+      ...(request.source_package_purchase_id === null
+        ? {
+            sourceKind: "single_lesson" as const,
+          }
+        : {
+            sourceKind: "package" as const,
+            packagePurchaseId: request.source_package_purchase_id,
+          }),
+
       amountCents: request.amount_cents,
       currency: "eur",
       destinationAccountId: request.destination_account_id,

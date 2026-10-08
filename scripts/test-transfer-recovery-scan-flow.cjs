@@ -70,7 +70,7 @@ function makeSearch(found = true) {
   };
 }
 
-// Normaliseer objecten uit verschillende VM-contexten voor vergelijking.
+// Normaliseer objecten uit verschillende VM-contexten.
 function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -112,6 +112,7 @@ function harness({
               return {
                 async maybeSingle() {
                   events.push({ name: "read" });
+
                   return {
                     data: structuredClone(request),
                     error: null,
@@ -129,8 +130,12 @@ function harness({
 
       if (name === START_NEXT) {
         guard(!explicit, "Verkeerde startfunctie");
+
         return {
-          data: { request_id: REQUEST, check_id: CHECK },
+          data: {
+            request_id: REQUEST,
+            check_id: CHECK,
+          },
           error: null,
         };
       }
@@ -138,25 +143,41 @@ function harness({
       if (name === START_ONE) {
         guard(explicit, "Verkeerde startfunctie");
         guard(args.p_request_id === REQUEST, "Verkeerde startopdracht");
-        return { data: CHECK, error: null };
+
+        return {
+          data: CHECK,
+          error: null,
+        };
       }
 
       if (name === RECORD) {
         guard(args.p_check_id === CHECK, "Verkeerd scanonderzoek");
 
         if (scanThrows) throw scanThrows;
-        if (scanError) return { data: null, error: scanError };
+        if (scanError) {
+          return {
+            data: null,
+            error: scanError,
+          };
+        }
 
         if (scanResponse === true) {
           savedScans.push(plain(args));
         }
 
-        return { data: scanResponse, error: null };
+        return {
+          data: scanResponse,
+          error: null,
+        };
       }
 
       if (name === FINISH) {
         guard(args.p_check_id === CHECK, "Verkeerd afgesloten onderzoek");
-        return { data: finishResponse, error: null };
+
+        return {
+          data: finishResponse,
+          error: null,
+        };
       }
 
       guard(false, `Onverwachte RPC: ${name}`);
@@ -165,8 +186,8 @@ function harness({
 
   /*
    * Constructor zonder API-methoden.
-   * De echte zoek- en sync-afhankelijkheden worden hieronder
-   * expliciet vervangen; echte Stripe-aanroepen zijn niet beschikbaar.
+   * Zoek- en sync-afhankelijkheden worden expliciet vervangen.
+   * Echte Stripe-aanroepen zijn niet beschikbaar.
    */
   class FakeStripe {
     constructor(key, options) {
@@ -184,10 +205,13 @@ function harness({
       "Onverwachte lokale module",
     );
 
-    if (cache.has(name)) return cache.get(name).exports;
+    if (cache.has(name)) {
+      return cache.get(name).exports;
+    }
 
     const filename = path.join(ROOT, "lib", `${name}.ts`);
     const source = fs.readFileSync(filename, "utf8");
+
     const compiled = ts.transpileModule(source, {
       compilerOptions: {
         target: ts.ScriptTarget.ES2022,
@@ -211,12 +235,19 @@ function harness({
               url === "https://database.example.invalid",
               "Onverwachte database-URL",
             );
-            guard(key === "LOCAL_SERVICE_ROLE", "Onverwachte databasekey");
-            guard(options.auth.persistSession === false, "Sessiepersistentie");
+            guard(
+              key === "LOCAL_SERVICE_ROLE",
+              "Onverwachte databasekey",
+            );
+            guard(
+              options.auth.persistSession === false,
+              "Sessiepersistentie",
+            );
             guard(
               options.auth.autoRefreshToken === false,
               "Automatische tokenrefresh",
             );
+
             return database;
           },
         };
@@ -230,12 +261,56 @@ function harness({
         return {
           async findSandboxTrainerTransfer(_stripe, input) {
             events.push({ name: "search" });
+
             guard(
               input.expected.requestId === REQUEST,
               "Verkeerde zoekopdracht",
             );
+            guard(
+              input.expected.bookingId === BOOKING,
+              "Verkeerde zoekboeking",
+            );
+            guard(
+              input.expected.trainerId === TRAINER,
+              "Verkeerde zoektrainer",
+            );
+            guard(
+              input.expected.destinationAccountId === "acct_LOCALTEST",
+              "Verkeerde zoekbestemming",
+            );
+            guard(
+              input.expected.paymentIntentId === "pi_LOCALTEST" &&
+                input.expected.sourceChargeId === "py_LOCALTEST",
+              "Verkeerde zoekbron",
+            );
+
+            if (request.source_package_purchase_id === null) {
+              guard(
+                input.expected.sourceKind === "single_lesson",
+                "Losse-lescontext ontbreekt",
+              );
+              guard(
+                !("packagePurchaseId" in input.expected),
+                "Losse-leszoekopdracht bevat pakketinput",
+              );
+              guard(
+                input.expected.amountCents === 7600,
+                "Verkeerd losse-lesbedrag",
+              );
+            } else {
+              guard(
+                input.expected.sourceKind === "package" &&
+                  input.expected.packagePurchaseId === PURCHASE,
+                "Verkeerde pakketcontext",
+              );
+              guard(
+                input.expected.amountCents === 1900,
+                "Verkeerd pakketbedrag",
+              );
+            }
 
             if (searchError) throw searchError;
+
             return structuredClone(search);
           },
         };
@@ -248,7 +323,10 @@ function harness({
 
             guard(requestId === REQUEST, "Verkeerde syncopdracht");
             guard(transferId === TRANSFER, "Verkeerde synctransfer");
-            guard(savedScans.length === 1, "Sync vóór bevestigde scanopslag");
+            guard(
+              savedScans.length === 1,
+              "Sync vóór bevestigde scanopslag",
+            );
 
             if (syncError) throw syncError;
 
@@ -295,18 +373,22 @@ function harness({
   return {
     events,
     savedScans,
+
     async run() {
       return explicit
         ? api.runSandboxTransferRecoveryCheck(REQUEST)
         : api.runNextSandboxTransferRecoveryCheck();
     },
+
     assertOrder(expected) {
+      // Ook fouten die de productiecode heeft opgevangen zichtbaar maken.
       assert.deepEqual(violations, []);
       assert.deepEqual(
         events.map((event) => event.name),
         expected,
       );
     },
+
     finishArgs() {
       const calls = events.filter((event) => event.name === FINISH);
       assert.equal(calls.length, 1);
@@ -324,73 +406,108 @@ async function test(name, run) {
 }
 
 async function main() {
-  await test("Echte functies: start → scanopslag → sync → afsluiting", async () => {
-    const h = harness();
-    const result = await h.run();
+  await test(
+    "Echte functies met mocks: start → scanopslag → sync → afsluiting",
+    async () => {
+      const h = harness();
+      const result = await h.run();
 
-    assert.equal(result.result, "recorded");
-    assert.equal(result.recovery.synchronization.result, "already_applied");
+      assert.equal(result.result, "recorded");
+      assert.equal(
+        result.recovery.synchronization.result,
+        "already_applied",
+      );
 
-    h.assertOrder([START_NEXT, "read", "search", RECORD, "sync", FINISH]);
+      h.assertOrder([
+        START_NEXT, "read", "search", RECORD, "sync", FINISH,
+      ]);
 
-    assert.deepEqual(h.savedScans, [{
-      p_check_id: CHECK,
-      p_checked_at: TIME,
-      p_finished_at: TIME,
-      p_scanned_transfer_count: 2,
-      p_search_outcome: "verified_match",
-      p_own_transfer_id: TRANSFER,
-      p_other_source_transfers: [otherTransfer],
-    }]);
+      assert.deepEqual(h.savedScans, [{
+        p_check_id: CHECK,
+        p_checked_at: TIME,
+        p_finished_at: TIME,
+        p_scanned_transfer_count: 2,
+        p_search_outcome: "verified_match",
+        p_own_transfer_id: TRANSFER,
+        p_other_source_transfers: [otherTransfer],
+      }]);
 
-    assert.equal(h.finishArgs().p_outcome, "already_applied");
-    assert.equal(h.finishArgs().p_transfer_id, TRANSFER);
-  });
+      assert.equal(h.finishArgs().p_outcome, "already_applied");
+      assert.equal(h.finishArgs().p_transfer_id, TRANSFER);
+    },
+  );
 
-  await test("Expliciete controle gebruikt dezelfde scanopslag", async () => {
-    const h = harness({ explicit: true });
-    const result = await h.run();
+  await test(
+    "Expliciete controle gebruikt dezelfde scanopslag",
+    async () => {
+      const h = harness({ explicit: true });
+      const result = await h.run();
 
-    assert.equal(result.result, "recorded");
-    h.assertOrder([START_ONE, "read", "search", RECORD, "sync", FINISH]);
-    assert.equal(h.savedScans[0].p_check_id, CHECK);
-  });
+      assert.equal(result.result, "recorded");
 
-  await test("Geen eigen transfer: scan bewaren, geen sync", async () => {
-    const h = harness({ search: makeSearch(false) });
-    const result = await h.run();
+      h.assertOrder([
+        START_ONE, "read", "search", RECORD, "sync", FINISH,
+      ]);
 
-    assert.equal(result.result, "recorded");
-    assert.equal(result.recovery.result, "not_found_requires_review");
+      assert.equal(h.savedScans[0].p_check_id, CHECK);
+    },
+  );
 
-    h.assertOrder([START_NEXT, "read", "search", RECORD, FINISH]);
-    assert.equal(h.savedScans[0].p_own_transfer_id, null);
-    assert.equal(
-      h.savedScans[0].p_search_outcome,
-      "not_found_requires_review",
-    );
-    assert.equal(h.finishArgs().p_outcome, "not_found_requires_review");
-  });
+  await test(
+    "Geen eigen transfer: scan bewaren, geen sync",
+    async () => {
+      const h = harness({ search: makeSearch(false) });
+      const result = await h.run();
+
+      assert.equal(result.result, "recorded");
+      assert.equal(
+        result.recovery.result,
+        "not_found_requires_review",
+      );
+
+      h.assertOrder([
+        START_NEXT, "read", "search", RECORD, FINISH,
+      ]);
+
+      assert.equal(h.savedScans[0].p_own_transfer_id, null);
+      assert.equal(
+        h.savedScans[0].p_search_outcome,
+        "not_found_requires_review",
+      );
+      assert.equal(
+        h.finishArgs().p_outcome,
+        "not_found_requires_review",
+      );
+    },
+  );
 
   const failures = [
     {
       name: "Databasefout bij scanopslag",
-      options: { scanError: { code: "FAKE_DATABASE_ERROR" } },
+      options: {
+        scanError: { code: "FAKE_DATABASE_ERROR" },
+      },
       code: "TRANSFER_RECOVERY_SCAN_NOT_CONFIRMED",
     },
     {
       name: "Verbindingsfout bij scanopslag",
-      options: { scanThrows: new Error("Simulated connection failure") },
+      options: {
+        scanThrows: new Error("Simulated connection failure"),
+      },
       code: "TRANSFER_RECOVERY_SCAN_NOT_CONFIRMED",
     },
     {
       name: "Geweigerde scanopslag",
-      options: { scanResponse: false },
+      options: {
+        scanResponse: false,
+      },
       code: "TRANSFER_RECOVERY_SCAN_REJECTED",
     },
     {
       name: "Ongeldige opslagresponse",
-      options: { scanResponse: null },
+      options: {
+        scanResponse: null,
+      },
       code: "TRANSFER_RECOVERY_SCAN_RESPONSE_INVALID",
     },
   ];
@@ -404,71 +521,190 @@ async function main() {
       assert.equal(result.diagnosticCode, scenario.code);
       assert.equal(result.failureRecorded, true);
 
-      h.assertOrder([START_NEXT, "read", "search", RECORD, FINISH]);
+      h.assertOrder([
+        START_NEXT, "read", "search", RECORD, FINISH,
+      ]);
+
       assert.equal(h.savedScans.length, 0);
       assert.equal(h.finishArgs().p_outcome, null);
       assert.equal(h.finishArgs().p_error_code, scenario.code);
     });
   }
 
-  await test("Syncfout na opslag: geen tweede scan of herverzending", async () => {
-    const h = harness({
-      syncError: new Error("TRAINER_TRANSFER_SYNC_APPLICATION_NOT_CONFIRMED"),
-    });
+  await test(
+    "Syncfout na opslag: geen tweede scan of herverzending",
+    async () => {
+      const h = harness({
+        syncError: new Error(
+          "TRAINER_TRANSFER_SYNC_APPLICATION_NOT_CONFIRMED",
+        ),
+      });
 
-    const result = await h.run();
+      const result = await h.run();
 
-    assert.equal(result.result, "investigation_failed");
-    assert.equal(
-      result.diagnosticCode,
-      "TRAINER_TRANSFER_SYNC_APPLICATION_NOT_CONFIRMED",
-    );
+      assert.equal(result.result, "investigation_failed");
+      assert.equal(
+        result.diagnosticCode,
+        "TRAINER_TRANSFER_SYNC_APPLICATION_NOT_CONFIRMED",
+      );
 
-    h.assertOrder([START_NEXT, "read", "search", RECORD, "sync", FINISH]);
-    assert.equal(h.savedScans.length, 1);
-    assert.equal(h.finishArgs().p_transfer_id, null);
-  });
+      h.assertOrder([
+        START_NEXT, "read", "search", RECORD, "sync", FINISH,
+      ]);
 
-  await test("Onvoorbereide opdracht: geen zoekscan of scanopslag", async () => {
-    const h = harness({
-      request: {
-        ...preparedRequest,
-        first_stripe_request_at: null,
-        stripe_request_payload: null,
-        stripe_source_charge_id: null,
-        source_verified_at: null,
-      },
-    });
+      assert.equal(h.savedScans.length, 1);
+      assert.equal(h.finishArgs().p_transfer_id, null);
+    },
+  );
 
-    const result = await h.run();
+  await test(
+    "Onvoorbereide opdracht: geen zoekscan of scanopslag",
+    async () => {
+      const h = harness({
+        request: {
+          ...preparedRequest,
+          first_stripe_request_at: null,
+          stripe_request_payload: null,
+          stripe_source_charge_id: null,
+          source_verified_at: null,
+        },
+      });
 
-    assert.equal(result.result, "recorded");
-    assert.equal(result.recovery.result, "unprepared_requires_review");
-    h.assertOrder([START_NEXT, "read", FINISH]);
-    assert.equal(h.savedScans.length, 0);
-  });
+      const result = await h.run();
 
-  await test("Afgebroken zoekscan: geen voltooide scan opslaan", async () => {
-    const h = harness({
-      searchError: new Error("TRANSFER_SEARCH_LIMIT_REACHED"),
-    });
+      assert.equal(result.result, "recorded");
+      assert.equal(
+        result.recovery.result,
+        "unprepared_requires_review",
+      );
 
-    const result = await h.run();
+      h.assertOrder([START_NEXT, "read", FINISH]);
+      assert.equal(h.savedScans.length, 0);
+    },
+  );
 
-    assert.equal(result.result, "investigation_failed");
-    assert.equal(result.diagnosticCode, "TRANSFER_SEARCH_LIMIT_REACHED");
-    h.assertOrder([START_NEXT, "read", "search", FINISH]);
-    assert.equal(h.savedScans.length, 0);
-  });
+  await test(
+    "Afgebroken zoekscan: geen voltooide scan opslaan",
+    async () => {
+      const h = harness({
+        searchError: new Error("TRANSFER_SEARCH_LIMIT_REACHED"),
+      });
 
-  await test("Afsluiting niet bevestigd: scan niet opnieuw opslaan", async () => {
-    const h = harness({ finishResponse: false });
-    const result = await h.run();
+      const result = await h.run();
 
-    assert.equal(result.result, "completion_not_confirmed");
-    h.assertOrder([START_NEXT, "read", "search", RECORD, "sync", FINISH]);
-    assert.equal(h.savedScans.length, 1);
-  });
+      assert.equal(result.result, "investigation_failed");
+      assert.equal(
+        result.diagnosticCode,
+        "TRANSFER_SEARCH_LIMIT_REACHED",
+      );
+
+      h.assertOrder([START_NEXT, "read", "search", FINISH]);
+      assert.equal(h.savedScans.length, 0);
+    },
+  );
+
+  await test(
+    "Afsluiting niet bevestigd: scan niet opnieuw opslaan",
+    async () => {
+      const h = harness({ finishResponse: false });
+      const result = await h.run();
+
+      assert.equal(result.result, "completion_not_confirmed");
+
+      h.assertOrder([
+        START_NEXT, "read", "search", RECORD, "sync", FINISH,
+      ]);
+
+      assert.equal(h.savedScans.length, 1);
+    },
+  );
+
+  /*
+   * De zoekhelper blijft hier gemockt.
+   * Dit test bronsoortdoorgifte en opslag/sync-volgorde,
+   * niet de inhoudelijke verificatie van de transferpayload.
+   */
+  const singleRequest = {
+    ...preparedRequest,
+    source_package_purchase_id: null,
+    amount_cents: 7600,
+  };
+
+  await test(
+    "Losse les: juiste zoekcontext en scanopslag vóór sync",
+    async () => {
+      const h = harness({ request: singleRequest });
+      const result = await h.run();
+
+      assert.equal(result.result, "recorded");
+      assert.equal(
+        result.recovery.synchronization.result,
+        "already_applied",
+      );
+
+      h.assertOrder([
+        START_NEXT, "read", "search", RECORD, "sync", FINISH,
+      ]);
+
+      assert.equal(h.savedScans.length, 1);
+      assert.equal(h.finishArgs().p_outcome, "already_applied");
+      assert.equal(h.finishArgs().p_transfer_id, TRANSFER);
+    },
+  );
+
+  await test(
+    "Losse les: scanopslagfout stopt sync zonder retry",
+    async () => {
+      const h = harness({
+        request: singleRequest,
+        scanError: { code: "FAKE_DATABASE_ERROR" },
+      });
+
+      const result = await h.run();
+
+      assert.equal(result.result, "investigation_failed");
+      assert.equal(
+        result.diagnosticCode,
+        "TRANSFER_RECOVERY_SCAN_NOT_CONFIRMED",
+      );
+      assert.equal(result.failureRecorded, true);
+
+      h.assertOrder([
+        START_NEXT, "read", "search", RECORD, FINISH,
+      ]);
+
+      assert.equal(h.savedScans.length, 0);
+    },
+  );
+
+  await test(
+    "Losse les: niet gevonden betekent review, geen sync",
+    async () => {
+      const h = harness({
+        request: singleRequest,
+        search: makeSearch(false),
+      });
+
+      const result = await h.run();
+
+      assert.equal(result.result, "recorded");
+      assert.equal(
+        result.recovery.result,
+        "not_found_requires_review",
+      );
+
+      h.assertOrder([
+        START_NEXT, "read", "search", RECORD, FINISH,
+      ]);
+
+      assert.equal(h.savedScans.length, 1);
+      assert.equal(h.savedScans[0].p_own_transfer_id, null);
+      assert.equal(
+        h.finishArgs().p_outcome,
+        "not_found_requires_review",
+      );
+    },
+  );
 
   console.log(
     `\nALLE ${passed} SCANFLOWTESTS GESLAAGD. ` +
